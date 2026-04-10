@@ -55,9 +55,17 @@ export async function POST(req: Request) {
         : null,
     });
   } catch (e) {
+    const msg = e instanceof Error ? e.message : "unknown error";
+    const missingService =
+      msg.includes("SUPABASE_SERVICE_ROLE_KEY") || msg.includes("service_role");
     return NextResponse.json(
-      { error: e instanceof Error ? e.message : "unknown error" },
-      { status: 500 }
+      {
+        error: msg,
+        hint: missingService
+          ? ".env.local 에 SUPABASE_SERVICE_ROLE_KEY (Settings → API → service_role) 를 설정하세요."
+          : undefined,
+      },
+      { status: missingService ? 503 : 500 }
     );
   }
 }
