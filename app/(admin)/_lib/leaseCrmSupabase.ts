@@ -1,0 +1,1408 @@
+import { devLog } from "@/app/_lib/devLog";
+import { SEED_LEADS } from "./leaseCrmSeed";
+import { getSupabaseConfigStatus, supabase } from "./supabaseClient";
+import {
+  CREDIT_REVIEW_STATUS_OPTIONS,
+  defaultLeadOperationalFields,
+  LEAD_PRIORITY_OPTIONS,
+  normalizeCounselingStatus,
+  type CounselingRecord,
+  type ContractInfo,
+  type CreditReviewStatus,
+  type CustomerType,
+  type ExportProgress,
+  type Lead,
+  type LeadPriority,
+  type Notice,
+  type QuoteDeliveryType,
+  type QuoteHistoryEntry,
+} from "./leaseCrmTypes";
+import type { UserRole } from "./usersSupabase";
+import {
+  applyContractExtraToInfo,
+  applyContractSnapshotBeforeSave,
+  buildContractExtraFromInfo,
+  clampPercent,
+  formatDepositDbLine,
+  joinContractNote,
+  normalizeQuoteMoneyForPersistence,
+  parseDigitsToInt,
+  parseLegacyDepositLine,
+  percentFromAmount,
+  safeNonNegativeInt,
+  shouldPersistContractExtra,
+  splitContractNote,
+} from "./leaseCrmContractPersist";
+function ensureSupabaseConfigured() {
+  const status = getSupabaseConfigStatus();
+  if (!status.ok) {
+    throw new Error(
+      "Supabase 환경변수가 유효하지 않습니다. .env.local의 NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY를 실제 값으로 설정하세요."
+    );
+  }
+}
+
+export function formatSupabaseError(error: unknown) {
+  if (!error || typeof error !== "object") return String(error);
+  const e = error as Record<string, unknown>;
+  return [e.message, e.details, e.hint, e.code].filter(Boolean).join(" | ");
+}
+
+/** PostgREST/DB에 counselor·method 등 확장 컬럼이 없을 때도 insert가 되도록 memo에 구조화 저장 */
+const CRM_CONSULTATION_MEMO_PREFIX = "CRM1:";
+
+/** leads 테이블에 없는 확장 필드(고객유형·메모·심사·견적 등)를 consultations 한 행으로 영속화 */
+const CRM_LEAD_EXTRA_PREFIX = "CRM_EXTRA:v1:";
+
+type LeadExtraPayloadV1 = {
+  v?: number;
+  customerType?: string;
+  memo?: string;
+  contractTerm?: string;
+  depositOrPrepaymentAmount?: string;
+  wantedMonthlyPayment?: number;
+  hasDepositOrPrepayment?: boolean;
+  leadPriority?: string;
+  failureReason?: string;
+  failureReasonNote?: string;
+  creditReviewStatus?: string;
+  quoteHistory?: unknown;
+};
+
+function coalescePriority(raw: string | undefined): LeadPriority {
+  if (raw && (LEAD_PRIORITY_OPTIONS as readonly string[]).includes(raw)) {
+    return raw as LeadPriority;
+  }
+  return "일반";
+}
+
+function coalesceCreditReview(raw: string | undefined): CreditReviewStatus {
+  if (raw && (CREDIT_REVIEW_STATUS_OPTIONS as readonly string[]).includes(raw)) {
+    return raw as CreditReviewStatus;
+  }
+  return "심사 전";
+}
+
+function normalizeQuoteHistory(raw: unknown): QuoteHistoryEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const out: QuoteHistoryEntry[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const id = typeof o.id === "string" ? o.id : "";
+    const quotedAt = typeof o.quotedAt === "string" ? o.quotedAt.slice(0, 10) : "";
+    if (!id || !quotedAt) continue;
+    const productType = o.productType === "리스" ? "리스" : "렌트";
+    const vehiclePrice = safeNonNegativeInt(o.vehiclePrice);
+
+    const legacyDep = typeof o.deposit === "string" ? o.deposit : "";
+    const legacyPre = typeof o.prepayment === "string" ? o.prepayment : "";
+    let depositAmount = safeNonNegativeInt(o.depositAmount);
+    if (!depositAmount && legacyDep) depositAmount = parseDigitsToInt(legacyDep);
+    let prepaymentAmount = safeNonNegativeInt(o.prepaymentAmount);
+    if (!prepaymentAmount && legacyPre) prepaymentAmount = parseDigitsToInt(legacyPre);
+
+    const depositPercent = clampPercent(
+      typeof o.depositPercent === "number" && Number.isFinite(o.depositPercent)
+        ? o.depositPercent
+        : 0
+    );
+    const prepaymentPercent = clampPercent(
+      typeof o.prepaymentPercent === "number" && Number.isFinite(o.prepaymentPercent)
+        ? o.prepaymentPercent
+        : 0
+    );
+    const feeAmountRaw = safeNonNegativeInt(o.feeAmount);
+    const feePercentRaw = clampPercent(
+      typeof o.feePercent === "number" && Number.isFinite(o.feePercent) ? o.feePercent : 0
+    );
+
+    const money = normalizeQuoteMoneyForPersistence(vehiclePrice, {
+      depositAmount,
+      depositPercent,
+      prepaymentAmount,
+      prepaymentPercent,
+      feeAmount: feeAmountRaw,
+      feePercent: feePercentRaw,
+    });
+
+    const deliveryRaw = o.deliveryType;
+    const deliveryType: QuoteDeliveryType =
+      deliveryRaw === "special" || deliveryRaw === "agency" ? deliveryRaw : "agency";
+
+    out.push({
+      id,
+      quotedAt,
+      productType,
+      financeCompany: typeof o.financeCompany === "string" ? o.financeCompany : "",
+      vehicleModel: typeof o.vehicleModel === "string" ? o.vehicleModel : "",
+      vehiclePrice,
+      contractTerm: typeof o.contractTerm === "string" ? o.contractTerm : "36개월",
+      depositAmount: money.depositAmount,
+      depositPercent: money.depositPercent,
+      prepaymentAmount: money.prepaymentAmount,
+      prepaymentPercent: money.prepaymentPercent,
+      feeAmount: money.feeAmount,
+      feePercent: money.feePercent,
+      monthlyPayment:
+        typeof o.monthlyPayment === "number" && Number.isFinite(o.monthlyPayment)
+          ? Math.max(0, o.monthlyPayment)
+          : 0,
+      deliveryType,
+      maintenanceIncluded: o.maintenanceIncluded === true,
+      note: typeof o.note === "string" ? o.note : "",
+    });
+  }
+  return out;
+}
+
+function parseLeadExtraMemo(memo: string | null | undefined): LeadExtraPayloadV1 | null {
+  const m = memo ?? "";
+  if (!m.startsWith(CRM_LEAD_EXTRA_PREFIX)) return null;
+  try {
+    return JSON.parse(m.slice(CRM_LEAD_EXTRA_PREFIX.length)) as LeadExtraPayloadV1;
+  } catch {
+    return null;
+  }
+}
+
+function serializeLeadExtraMemo(lead: Lead): string {
+  const payload: LeadExtraPayloadV1 = {
+    v: 1,
+    customerType: lead.base.customerType,
+    memo: lead.base.memo,
+    contractTerm: lead.base.contractTerm,
+    depositOrPrepaymentAmount: lead.base.depositOrPrepaymentAmount,
+    wantedMonthlyPayment: lead.base.wantedMonthlyPayment,
+    hasDepositOrPrepayment: lead.base.hasDepositOrPrepayment,
+    leadPriority: lead.leadPriority,
+    failureReason: lead.failureReason,
+    failureReasonNote: lead.failureReasonNote,
+    creditReviewStatus: lead.creditReviewStatus,
+    quoteHistory: lead.quoteHistory,
+  };
+  return CRM_LEAD_EXTRA_PREFIX + JSON.stringify(payload);
+}
+
+function isUuidString(value: string | undefined | null): boolean {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    value
+  );
+}
+
+export function normalizeLeadForPersistence(lead: Lead): Lead {
+  const fill = defaultLeadOperationalFields();
+  return {
+    ...lead,
+    leadPriority: lead.leadPriority ?? fill.leadPriority,
+    failureReason: lead.failureReason ?? fill.failureReason,
+    failureReasonNote: lead.failureReasonNote ?? fill.failureReasonNote,
+    creditReviewStatus: lead.creditReviewStatus ?? fill.creditReviewStatus,
+    quoteHistory: Array.isArray(lead.quoteHistory) ? lead.quoteHistory : fill.quoteHistory,
+    counselingRecords: Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [],
+  };
+}
+
+function coalesceConsultMethod(
+  raw: string | null | undefined
+): CounselingRecord["method"] {
+  if (raw === "전화" || raw === "문자" || raw === "카톡" || raw === "방문") return raw;
+  return "전화";
+}
+
+function coalesceConsultImportance(
+  raw: string | null | undefined
+): CounselingRecord["importance"] {
+  if (raw === "높음" || raw === "낮음" || raw === "보통") return raw;
+  return "보통";
+}
+
+function serializeConsultationToMemo(r: CounselingRecord): string {
+  return `${CRM_CONSULTATION_MEMO_PREFIX}${JSON.stringify({
+    v: 1,
+    counselor: r.counselor,
+    method: r.method,
+    importance: r.importance,
+    reaction: r.reaction,
+    desiredProgressAt: r.desiredProgressAt,
+    nextContactAt: r.nextContactAt,
+    nextContactMemo: r.nextContactMemo,
+    content: r.content,
+  })}`;
+}
+
+async function resolveManagerUserId(lead: Lead, scope?: ViewerScope) {
+  if (scope?.role === "staff") return scope.userId;
+  if (lead.managerUserId) return lead.managerUserId;
+  const { data, error } = await supabase
+    .from("users")
+    .select("id")
+    .eq("name", lead.base.ownerStaff)
+    .maybeSingle();
+  if (error) throw new Error(`담당자 매핑 조회 실패: ${formatSupabaseError(error)}`);
+  return (data as { id: string } | null)?.id ?? null;
+}
+
+
+type LeadRow = {
+  id: string;
+  name: string;
+  phone: string;
+  car_model: string;
+  source: string;
+  status: string;
+  sensitivity: string;
+  manager: string;
+  manager_user_id: string | null;
+  next_contact_at: string | null;
+  created_at: string;
+};
+
+export type LeadSupabaseScope = {
+  role: UserRole;
+  userId: string;
+};
+
+type ViewerScope = LeadSupabaseScope;
+
+type ConsultationRow = {
+  id: string;
+  lead_id: string;
+  counselor: string | null;
+  method: string | null;
+  importance: string | null;
+  reaction: string | null;
+  desired_progress_at: string | null;
+  next_action_at: string | null;
+  next_contact_memo: string | null;
+  memo: string;
+  created_at: string;
+};
+
+type ContractRow = {
+  id: string;
+  lead_id: string;
+  product: string | null;
+  vehicle_name: string | null;
+  monthly_payment: number | null;
+  contract_term: string | null;
+  deposit_or_prepayment: string | null;
+  customer_support_amount: number | null;
+  supplies_support_content: string | null;
+  supplies_support_amount: number | null;
+  total_support_cost: number | null;
+  note: string | null;
+  fee: number | null;
+  profit_memo: string | null;
+  status: string | null;
+  dealer: string | null;
+  finance_company: string | null;
+  contract_date: string | null;
+  customer_commitment_date: string | null;
+  delivery_date: string | null;
+  final_vehicle_price?: number | string | null;
+  final_deposit_amount?: number | string | null;
+  final_fee_amount?: number | string | null;
+  final_delivery_type?: string | null;
+};
+
+type ExportProgressRow = {
+  id: string;
+  lead_id: string;
+  stage: string;
+  order_date: string | null;
+  vehicle_model: string | null;
+  trim: string | null;
+  options: string | null;
+  color: string | null;
+  dealer_name: string | null;
+  dealer_staff_name: string | null;
+  finance_company: string | null;
+  vehicle_contract_number: string | null;
+  customer_commitment_date: string | null;
+  expected_delivery_date: string | null;
+  actual_delivery_date: string | null;
+  special_note: string | null;
+  order_requested_at: string | null;
+  order_completed_at: string | null;
+  e_contract_started_at: string | null;
+  e_contract_completed_at: string | null;
+  delivery_coordinated_at: string | null;
+  delivered_at: string | null;
+  transport_company_received_at: string | null;
+};
+
+function counselingFieldsFromMemoOrRow(
+  memo: string,
+  c: ConsultationRow,
+  row: LeadRow
+): Omit<CounselingRecord, "id" | "occurredAt"> {
+  if (memo.startsWith(CRM_CONSULTATION_MEMO_PREFIX)) {
+    try {
+      const p = JSON.parse(memo.slice(CRM_CONSULTATION_MEMO_PREFIX.length)) as {
+        v?: number;
+        counselor?: string;
+        method?: string;
+        importance?: string;
+        reaction?: string;
+        desiredProgressAt?: string;
+        nextContactAt?: string;
+        nextContactMemo?: string;
+        content?: string;
+      };
+      if (p?.v === 1) {
+        return {
+          counselor: p.counselor ?? row.manager,
+          method: coalesceConsultMethod(p.method),
+          content: p.content ?? "",
+          reaction: p.reaction ?? "",
+          desiredProgressAt: p.desiredProgressAt ?? c.created_at,
+          nextContactAt:
+            p.nextContactAt ?? c.next_action_at ?? row.next_contact_at ?? c.created_at,
+          nextContactMemo: p.nextContactMemo ?? "",
+          importance: coalesceConsultImportance(p.importance),
+        };
+      }
+    } catch {
+      /* fall through: plain memo */
+    }
+  }
+  return {
+    counselor: c.counselor ?? row.manager,
+    method: coalesceConsultMethod(c.method),
+    content: memo,
+    reaction: c.reaction ?? "",
+    desiredProgressAt: c.desired_progress_at ?? c.next_action_at ?? c.created_at,
+    nextContactAt: c.next_action_at ?? row.next_contact_at ?? c.created_at,
+    nextContactMemo: c.next_contact_memo ?? "",
+    importance: coalesceConsultImportance(c.importance),
+  };
+}
+
+async function logActivity(
+  userId: string,
+  activityType:
+    | "consultation_created"
+    | "lead_created"
+    | "status_changed"
+    | "contract_progress",
+  leadId: string
+) {
+  const { error } = await supabase.from("crm_activity_logs").insert({
+    user_id: userId,
+    date: new Date().toISOString().slice(0, 10),
+    activity_type: activityType,
+    lead_id: leadId,
+  });
+  if (error) {
+    const e = error as { code?: string; message?: string };
+    // 본 저장(리드/계약)은 유지하고, 부가 로그만 스킵
+    if (e.code === "42P01" || e.code === "42703") {
+      console.warn(
+        "[Supabase] crm_activity_logs migration/column missing, skip:",
+        e.message
+      );
+      return;
+    }
+    if (e.code === "42501") {
+      console.warn("[Supabase] crm_activity_logs insert denied (RLS), skip:", e.message);
+      return;
+    }
+    throw error;
+  }
+}
+
+function actorUserKey(lead: Lead) {
+  return lead.managerUserId ?? lead.base.ownerStaff;
+}
+
+function coalesceCustomerType(raw: string | undefined): CustomerType {
+  if (raw === "법인" || raw === "개인사업자" || raw === "개인") return raw;
+  return "개인";
+}
+
+function mapRowToLead(
+  row: LeadRow,
+  consultations: ConsultationRow[],
+  contractRow: ContractRow | null,
+  exportRow: ExportProgressRow | null
+): Lead {
+  const forLead = consultations.filter((c) => c.lead_id === row.id);
+  let extraPayload: LeadExtraPayloadV1 | null = null;
+  const visibleConsultations: ConsultationRow[] = [];
+  for (const rowC of forLead) {
+    const p = parseLeadExtraMemo(rowC.memo ?? "");
+    if (p) {
+      if (!extraPayload) extraPayload = p;
+      continue;
+    }
+    visibleConsultations.push(rowC);
+  }
+
+  const records: CounselingRecord[] = visibleConsultations.map((c) => {
+    const fields = counselingFieldsFromMemoOrRow(c.memo ?? "", c, row);
+    return {
+      id: c.id,
+      occurredAt: c.created_at,
+      ...fields,
+    };
+  });
+
+  const contract: ContractInfo | null = contractRow
+    ? (() => {
+        const depositDb = contractRow.deposit_or_prepayment ?? "";
+        const noteRaw = contractRow.note ?? "";
+        const { userNote, extra: contractNoteExtra } = splitContractNote(noteRaw);
+        const feeRaw = contractRow.fee;
+        const feeNum =
+          typeof feeRaw === "number"
+            ? feeRaw
+            : feeRaw != null
+              ? Number(String(feeRaw).replace(/,/g, "").trim())
+              : 0;
+        const fee = Number.isFinite(feeNum) ? feeNum : 0;
+
+        let draftContract: ContractInfo = {
+          contractDate: contractRow.contract_date ?? row.created_at.slice(0, 10),
+          customerCommitmentDate:
+            contractRow.customer_commitment_date ?? row.created_at.slice(0, 10),
+          product:
+            contractRow.product === "운용리스" || contractRow.product === "금융리스"
+              ? contractRow.product
+              : "장기렌트",
+          vehicleName: contractRow.vehicle_name ?? row.car_model,
+          vehiclePrice: 0,
+          monthlyPayment: contractRow.monthly_payment ?? 0,
+          contractTerm: contractRow.contract_term ?? "36개월",
+          depositAmount: 0,
+          depositPercent: 0,
+          depositOrPrepayment: depositDb,
+          prepaymentSupportAmount: contractRow.customer_support_amount ?? 0,
+          suppliesSupportContent: contractRow.supplies_support_content ?? "",
+          suppliesSupportAmount: contractRow.supplies_support_amount ?? 0,
+          totalSupportCost: contractRow.total_support_cost ?? 0,
+          note: userNote,
+          fee,
+          feePercent: 0,
+          profitMemo: contractRow.profit_memo ?? "",
+          pickupPlannedAt: contractRow.delivery_date ?? row.created_at.slice(0, 10),
+          deliveryType: "",
+          finalVehiclePrice: coerceNumericForDb(contractRow.final_vehicle_price),
+          finalDepositAmount: coerceNumericForDb(contractRow.final_deposit_amount),
+          finalFeeAmount: coerceNumericForDb(contractRow.final_fee_amount),
+          finalDeliveryType:
+            contractRow.final_delivery_type === "대리점 출고" ||
+            contractRow.final_delivery_type === "특판 출고"
+              ? contractRow.final_delivery_type
+              : null,
+        };
+
+        if (contractNoteExtra) {
+          draftContract = applyContractExtraToInfo(draftContract, contractNoteExtra);
+          const line = formatDepositDbLine(draftContract.depositAmount, draftContract.depositPercent);
+          if (line) draftContract.depositOrPrepayment = line;
+        } else {
+          const leg = parseLegacyDepositLine(depositDb);
+          draftContract.depositAmount = leg.amount;
+          draftContract.depositPercent = leg.percent;
+          const vp = draftContract.vehiclePrice;
+          if (vp > 0 && draftContract.fee > 0)
+            draftContract.feePercent = percentFromAmount(draftContract.fee, vp);
+        }
+        return draftContract;
+      })()
+    : null;
+
+  const exportProgress: ExportProgress | null = exportRow
+    ? {
+        stage: (exportRow.stage as ExportProgress["stage"]) ?? "계약완료",
+        orderDate: exportRow.order_date ?? undefined,
+        vehicleModel: exportRow.vehicle_model ?? undefined,
+        trim: exportRow.trim ?? undefined,
+        options: exportRow.options ?? undefined,
+        color: exportRow.color ?? undefined,
+        dealerName: exportRow.dealer_name ?? undefined,
+        dealerStaffName: exportRow.dealer_staff_name ?? undefined,
+        financeCompany: exportRow.finance_company ?? undefined,
+        vehicleContractNumber: exportRow.vehicle_contract_number ?? undefined,
+        customerCommitmentDate: exportRow.customer_commitment_date ?? undefined,
+        expectedDeliveryDate: exportRow.expected_delivery_date ?? undefined,
+        actualDeliveryDate: exportRow.actual_delivery_date ?? null,
+        specialNote: exportRow.special_note ?? undefined,
+        orderRequestedAt: exportRow.order_requested_at ?? undefined,
+        orderCompletedAt: exportRow.order_completed_at ?? undefined,
+        eContractStartedAt: exportRow.e_contract_started_at ?? undefined,
+        eContractCompletedAt: exportRow.e_contract_completed_at ?? undefined,
+        deliveryCoordinatedAt: exportRow.delivery_coordinated_at ?? undefined,
+        deliveredAt: exportRow.delivered_at ?? null,
+        transportCompanyReceivedAt:
+          exportRow.transport_company_received_at ?? undefined,
+      }
+    : null;
+
+  const ext = extraPayload;
+  const depositAmt =
+    typeof ext?.depositOrPrepaymentAmount === "string" ? ext.depositOrPrepaymentAmount : "";
+  const lead: Lead = {
+    id: row.id,
+    managerUserId: row.manager_user_id,
+    createdAt: row.created_at,
+    updatedAt: row.created_at,
+    base: {
+      name: row.name,
+      phone: row.phone,
+      desiredVehicle: row.car_model,
+      source: row.source,
+      leadTemperature:
+        row.sensitivity === "상" || row.sensitivity === "하" ? row.sensitivity : "중",
+      customerType: coalesceCustomerType(ext?.customerType),
+      wantedMonthlyPayment:
+        typeof ext?.wantedMonthlyPayment === "number" && Number.isFinite(ext.wantedMonthlyPayment)
+          ? ext.wantedMonthlyPayment
+          : 0,
+      contractTerm: (ext?.contractTerm ?? "").trim() || "36개월",
+      hasDepositOrPrepayment: !!(ext?.hasDepositOrPrepayment || depositAmt.trim().length > 0),
+      depositOrPrepaymentAmount: depositAmt,
+      ownerStaff: row.manager,
+      memo: typeof ext?.memo === "string" ? ext.memo : "",
+    },
+    counselingStatus: normalizeCounselingStatus(row.status),
+    statusUpdatedAt: row.created_at,
+    nextContactAt: row.next_contact_at,
+    nextContactMemo: "",
+    counselingRecords: records,
+    contract,
+    exportProgress,
+    deliveredAt: exportProgress?.deliveredAt ?? null,
+    lastHandledAt: row.created_at,
+    ...defaultLeadOperationalFields(),
+    leadPriority: coalescePriority(ext?.leadPriority),
+    failureReason: typeof ext?.failureReason === "string" ? ext.failureReason : "",
+    failureReasonNote: typeof ext?.failureReasonNote === "string" ? ext.failureReasonNote : "",
+    creditReviewStatus: coalesceCreditReview(ext?.creditReviewStatus),
+    quoteHistory: normalizeQuoteHistory(ext?.quoteHistory),
+  };
+  return lead;
+}
+
+/** leads.next_contact_at: 빈 문자열은 null (timestamptz invalid input 방지) */
+function normalizeNextContactAtForLeadColumn(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s.length > 0 ? s : null;
+}
+
+function toLeadInsertRow(lead: Lead) {
+  return {
+    name: lead.base.name,
+    phone: lead.base.phone,
+    car_model: lead.base.desiredVehicle,
+    source: lead.base.source,
+    status: lead.counselingStatus,
+    sensitivity: lead.base.leadTemperature,
+    manager: lead.base.ownerStaff,
+    manager_user_id: lead.managerUserId ?? null,
+    next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
+    created_at: lead.createdAt,
+  };
+}
+
+function toLeadUpdateRow(lead: Lead) {
+  return {
+    name: lead.base.name,
+    phone: lead.base.phone,
+    car_model: lead.base.desiredVehicle,
+    source: lead.base.source,
+    status: lead.counselingStatus,
+    sensitivity: lead.base.leadTemperature,
+    manager: lead.base.ownerStaff,
+    manager_user_id: lead.managerUserId ?? null,
+    next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
+  };
+}
+
+type ConsultationInsert = {
+  lead_id: string;
+  memo: string;
+  created_at: string;
+  id?: string;
+};
+
+/** DB에 counselor 등 컬럼이 없어도 동작하도록 memo(CRM1 JSON) + 필수 컬럼만 insert */
+/** Postgres `date` 컬럼: 빈 문자열/잘못된 값은 null (invalid input syntax 방지) */
+function normalizeDateForPostgres(value: unknown): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  if (!s) return null;
+  const head = s.length >= 10 ? s.slice(0, 10) : s;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(head)) return null;
+  return head;
+}
+
+/** numeric 컬럼: 문자열·콤마 입력도 안전하게 숫자 또는 null */
+function coerceNumericForDb(value: unknown): number | null {
+  if (value == null) return null;
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  const s = String(value).replace(/,/g, "").trim();
+  if (s === "") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toConsultationRows(lead: Lead): ConsultationInsert[] {
+  const extraRow: ConsultationInsert = {
+    lead_id: lead.id,
+    memo: serializeLeadExtraMemo(lead),
+    created_at: lead.createdAt,
+  };
+  const list = Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [];
+  const rows = list.map((r) => {
+    const row: ConsultationInsert = {
+      lead_id: lead.id,
+      memo: serializeConsultationToMemo(r),
+      created_at: r.occurredAt,
+    };
+    if (isUuidString(r.id)) {
+      row.id = r.id;
+    }
+    return row;
+  });
+  return [extraRow, ...rows];
+}
+
+/** contracts INSERT 시 snake_case 컬럼 → UI/의미 (누락 경고용) */
+const CONTRACT_DB_COLUMN_HINT: Record<string, string> = {
+  lead_id: "시스템 · lead_id",
+  product: "계약 탭 · 상품(운용리스/금융리스/장기렌트)",
+  vehicle_name: "계약 탭 · 계약 차량명",
+  monthly_payment: "계약 탭 · 월 납입금",
+  contract_term: "계약 탭 · 계약기간",
+  deposit_or_prepayment: "계약 탭 · 보증금/선납금(문자)",
+  customer_support_amount: "계약 탭 · 선납금 지원금액",
+  supplies_support_content: "계약 탭 · 용품지원 내용",
+  supplies_support_amount: "계약 탭 · 용품지원 금액",
+  total_support_cost: "계약 탭 · 총 지원 비용",
+  note: "계약 탭 · 비고",
+  fee: "계약 탭 · 수수료",
+  profit_memo: "계약 탭 · 수익 메모",
+  status: "상담결과(Lead) · contracts.status 스냅샷",
+  dealer: "출고 탭 · 대리점명 → contracts.dealer",
+  finance_company: "출고 탭 · 금융사 → contracts.finance_company",
+  contract_date: "계약 탭 · 계약일",
+  customer_commitment_date: "계약 탭 · 고객 약정일",
+  delivery_date:
+    "인도예정: 출고 탭 인도 예정일 우선, 없을 때만 계약 탭 출고 예정일 → delivery_date",
+  final_vehicle_price: "확정·출고 시 스냅샷 · 차량가",
+  final_deposit_amount: "확정·출고 시 스냅샷 · 보증금",
+  final_fee_amount: "확정·출고 시 스냅샷 · 수수료",
+  final_delivery_type: "확정·출고 시 스냅샷 · 출고 유형",
+};
+
+function logContractDeliveryDateResolution(lead: Lead) {
+  const c = lead.contract;
+  if (!c) return;
+  const fromExport = normalizeDateForPostgres(lead.exportProgress?.expectedDeliveryDate);
+  const fromContract = normalizeDateForPostgres(c.pickupPlannedAt);
+  const chosen = fromExport ?? fromContract ?? null;
+  devLog("[Supabase] contracts delivery_date 결정 (성공 저장 시에도 값이 기대와 다를 수 있음)", {
+    최종_delivery_date: chosen,
+    출고탭_인도예정일: fromExport ?? null,
+    계약탭_출고예정일_pickupPlannedAt: fromContract ?? null,
+    안내:
+      "출고 탭에 인도 예정일이 있으면 계약 탭 출고 예정일은 contracts.delivery_date에 쓰이지 않습니다.",
+  });
+}
+
+function toContractRow(lead: Lead) {
+  if (!lead.contract) return null;
+  const c = lead.contract;
+  const deliveryFromExport = normalizeDateForPostgres(lead.exportProgress?.expectedDeliveryDate);
+  const deliveryFromContract = normalizeDateForPostgres(c.pickupPlannedAt);
+  const product =
+    c.product === "운용리스" || c.product === "금융리스" || c.product === "장기렌트"
+      ? c.product
+      : null;
+  const builtExtra = buildContractExtraFromInfo(c);
+  const extraForNote = shouldPersistContractExtra(builtExtra) ? builtExtra : null;
+  const noteJoined = joinContractNote(c.note ?? "", extraForNote);
+  const depLine =
+    formatDepositDbLine(c.depositAmount ?? 0, c.depositPercent ?? 0) ||
+    (c.depositOrPrepayment?.trim() || null);
+  return {
+    lead_id: lead.id,
+    product,
+    vehicle_name: c.vehicleName?.trim() || null,
+    monthly_payment: coerceNumericForDb(c.monthlyPayment),
+    contract_term: c.contractTerm?.trim() || null,
+    deposit_or_prepayment: depLine,
+    customer_support_amount: coerceNumericForDb(c.prepaymentSupportAmount),
+    supplies_support_content: c.suppliesSupportContent?.trim() || null,
+    supplies_support_amount: coerceNumericForDb(c.suppliesSupportAmount),
+    total_support_cost: coerceNumericForDb(c.totalSupportCost),
+    note: noteJoined.trim() || null,
+    fee: coerceNumericForDb(c.fee),
+    profit_memo: c.profitMemo?.trim() || null,
+    status: lead.counselingStatus,
+    dealer: lead.exportProgress?.dealerName?.trim() || null,
+    finance_company: lead.exportProgress?.financeCompany?.trim() || null,
+    contract_date: normalizeDateForPostgres(c.contractDate),
+    customer_commitment_date: normalizeDateForPostgres(c.customerCommitmentDate),
+    delivery_date: deliveryFromExport ?? deliveryFromContract ?? null,
+  } as Record<string, unknown>;
+}
+
+function normalizeTimestamptzForDb(value: unknown): string | null {
+  if (value == null) return null;
+  const s = String(value).trim();
+  return s ? s : null;
+}
+
+function toExportRow(lead: Lead) {
+  if (!lead.exportProgress) return null;
+  const e = lead.exportProgress;
+  const stage =
+    typeof e.stage === "string" && e.stage.trim() ? e.stage.trim() : "계약완료";
+  return {
+    lead_id: lead.id,
+    stage,
+    order_date: normalizeDateForPostgres(e.orderDate),
+    vehicle_model: e.vehicleModel?.trim() || null,
+    trim: e.trim?.trim() || null,
+    options: e.options?.trim() || null,
+    color: e.color?.trim() || null,
+    dealer_name: e.dealerName?.trim() || null,
+    dealer_staff_name: e.dealerStaffName?.trim() || null,
+    finance_company: e.financeCompany?.trim() || null,
+    vehicle_contract_number: e.vehicleContractNumber?.trim() || null,
+    customer_commitment_date: normalizeDateForPostgres(e.customerCommitmentDate),
+    expected_delivery_date: normalizeDateForPostgres(e.expectedDeliveryDate),
+    actual_delivery_date: normalizeDateForPostgres(e.actualDeliveryDate),
+    special_note: e.specialNote?.trim() || null,
+    order_requested_at: normalizeTimestamptzForDb(e.orderRequestedAt),
+    order_completed_at: normalizeTimestamptzForDb(e.orderCompletedAt),
+    e_contract_started_at: normalizeTimestamptzForDb(e.eContractStartedAt),
+    e_contract_completed_at: normalizeTimestamptzForDb(e.eContractCompletedAt),
+    delivery_coordinated_at: normalizeTimestamptzForDb(e.deliveryCoordinatedAt),
+    delivered_at: normalizeTimestamptzForDb(e.deliveredAt),
+    transport_company_received_at: normalizeTimestamptzForDb(e.transportCompanyReceivedAt),
+  } as Record<string, unknown>;
+}
+
+/**
+ * 원격 DB 스키마에 없는 컬럼이 있으면 PostgREST PGRST204가 납니다.
+ * 마이그레이션 없이도 저장되도록 해당 키만 제거 후 재시도합니다.
+ */
+function unknownColumnFromPostgrestError(error: unknown): string | null {
+  const e = error as { code?: string; message?: string };
+  const msg = e.message ?? "";
+  // 스키마에 없는 컬럼을 body에 넣었을 때 흔한 메시지 (코드는 PGRST204 등으로 올 수 있음)
+  const m = msg.match(/Could not find the '([a-zA-Z0-9_]+)' column/i);
+  return m?.[1] ?? null;
+}
+
+async function insertRowOmittingUnknownColumns(
+  table: "contracts" | "export_progress",
+  row: Record<string, unknown>
+): Promise<{ omitted: string[]; finalPayload: Record<string, unknown> }> {
+  const omitted: string[] = [];
+  let payload: Record<string, unknown> = { ...row };
+  for (let attempt = 0; attempt < 24; attempt++) {
+    devLog(`[Supabase] ${table} insert 시도 직전 body`, {
+      키목록: Object.keys(payload),
+      payload,
+    });
+    const { error } = await supabase.from(table).insert(payload as never);
+    if (!error) {
+      return { omitted, finalPayload: payload };
+    }
+    const col = unknownColumnFromPostgrestError(error);
+    if (!col || !(col in payload)) throw error;
+    const removedValue = payload[col];
+    omitted.push(col);
+    console.warn(
+      `[Supabase] ${table} insert: 컬럼 '${col}' 은(는) 원격 스키마에 없어 body에서 제거 후 재시도`,
+      { 제거된값: removedValue, postgrestMessage: (error as { message?: string }).message }
+    );
+    const next = { ...payload };
+    delete next[col];
+    payload = next;
+  }
+  throw new Error(`[Supabase] ${table} insert: 반복 실패(알 수 없는 컬럼)`);
+}
+
+async function logStatusHistory(params: {
+  leadId: string;
+  changedBy: string;
+  statusType: "counseling_status" | "export_stage";
+  fromValue: string | null;
+  toValue: string;
+}) {
+  const { error } = await supabase.from("lead_status_history").insert({
+    lead_id: params.leadId,
+    changed_by: params.changedBy,
+    status_type: params.statusType,
+    from_value: params.fromValue,
+    to_value: params.toValue,
+  });
+  if (error) {
+    const e = error as { code?: string; message?: string };
+    // Don't block lead save when history table/column migration is missing.
+    if (e.code === "42P01" || e.code === "42703") {
+      console.warn(
+        "[Supabase] lead_status_history migration not applied, skip history insert:",
+        e.message
+      );
+      return;
+    }
+    throw new Error(`상태 이력 저장 실패: ${formatSupabaseError(error)}`);
+  }
+}
+
+export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
+  ensureSupabaseConfigured();
+  let query = supabase
+    .from("leads")
+    .select("*")
+    .order("created_at", { ascending: false });
+  if (scope && scope.role === "staff") {
+    query = query.eq("manager_user_id", scope.userId);
+  }
+  const { data: leadsData, error: leadsError } = await query;
+  console.log("leads fetch:", leadsData, leadsError);
+
+  if (leadsError) {
+    console.error("[Supabase] leads fetch error:", leadsError);
+    throw new Error(`고객 조회 실패: ${formatSupabaseError(leadsError)}`);
+  }
+
+  const leadRows = (leadsData ?? []) as LeadRow[];
+  if (leadRows.length === 0) return [];
+
+  const leadIds = leadRows.map((l) => l.id);
+
+  const [
+    { data: consultationsData, error: consultationsError },
+    { data: contractsData, error: contractsError },
+    { data: exportData, error: exportError },
+  ] =
+    await Promise.all([
+      supabase.from("consultations").select("*").in("lead_id", leadIds),
+      supabase.from("contracts").select("*").in("lead_id", leadIds),
+      supabase.from("export_progress").select("*").in("lead_id", leadIds),
+    ]);
+
+  if (consultationsError) throw consultationsError;
+  if (contractsError) throw contractsError;
+  if (exportError) throw exportError;
+
+  const consultations = (consultationsData ?? []) as ConsultationRow[];
+  const contracts = (contractsData ?? []) as ContractRow[];
+  const exportRows = (exportData ?? []) as ExportProgressRow[];
+
+  return leadRows.map((row) => {
+    const latestContract =
+      contracts
+        .filter((c) => c.lead_id === row.id)
+        .sort((a, b) =>
+          (a.contract_date ?? "") < (b.contract_date ?? "") ? 1 : -1
+        )[0] ?? null;
+    const latestExport =
+      exportRows
+        .filter((e) => e.lead_id === row.id)
+        .sort((a, b) =>
+          (a.expected_delivery_date ?? a.delivered_at ?? "") <
+          (b.expected_delivery_date ?? b.delivered_at ?? "")
+            ? 1
+            : -1
+        )[0] ?? null;
+    return mapRowToLead(row, consultations, latestContract, latestExport);
+  });
+}
+
+/** DB 컬럼은 `name`, `phone` (고객명 / 연락처). 표시·API용 별칭은 hit 객체 필드명으로 매핑합니다. */
+export type LeadSearchHit = {
+  id: string;
+  /** 고객명 — DB `name` */
+  customerName: string;
+  phone: string;
+  /** 상담결과 등 — DB `status` */
+  status: string;
+  /** 담당자 표시명 — DB `manager` */
+  manager: string;
+  /** 유입 — DB `source` */
+  source: string;
+};
+
+function sanitizeLeadSearchKeyword(raw: string): string {
+  return raw.trim().replace(/[%_,]/g, "").replace(/'/g, "");
+}
+
+/**
+ * 고객명(`name`)·연락처(`phone`) ilike 검색. 직원은 담당 고객만.
+ */
+export async function searchLeads(
+  keyword: string,
+  scope?: LeadSupabaseScope
+): Promise<LeadSearchHit[]> {
+  ensureSupabaseConfigured();
+  const q = sanitizeLeadSearchKeyword(keyword);
+  if (q.length < 1) return [];
+
+  const pattern = `%${q}%`;
+  let query = supabase
+    .from("leads")
+    .select("id,name,phone,status,manager,source")
+    .or(`name.ilike.${pattern},phone.ilike.${pattern}`)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (scope?.role === "staff") {
+    query = query.eq("manager_user_id", scope.userId);
+  }
+
+  const { data, error } = await query;
+  if (error) {
+    console.error("[Supabase] searchLeads error:", error);
+    throw new Error(`고객 검색 실패: ${formatSupabaseError(error)}`);
+  }
+
+  const rows = (data ?? []) as Array<{
+    id: string;
+    name: string;
+    phone: string;
+    status: string;
+    manager: string;
+    source: string;
+  }>;
+  return rows.map((r) => ({
+    id: r.id,
+    customerName: r.name,
+    phone: r.phone,
+    status: r.status ?? "",
+    manager: r.manager ?? "",
+    source: r.source ?? "",
+  }));
+}
+
+/** 단일 고객 전체 관계 포함 조회 (전역 검색 모달 등). */
+export async function fetchLeadById(
+  leadId: string,
+  scope?: LeadSupabaseScope
+): Promise<Lead | null> {
+  ensureSupabaseConfigured();
+  let q = supabase.from("leads").select("*").eq("id", leadId);
+  if (scope?.role === "staff") {
+    q = q.eq("manager_user_id", scope.userId);
+  }
+  const { data: rowData, error: rowError } = await q.maybeSingle();
+  if (rowError) {
+    throw new Error(`고객 조회 실패: ${formatSupabaseError(rowError)}`);
+  }
+  const row = rowData as LeadRow | null;
+  if (!row) return null;
+
+  const [
+    { data: consultationsData, error: consultationsError },
+    { data: contractsData, error: contractsError },
+    { data: exportData, error: exportError },
+  ] = await Promise.all([
+    supabase.from("consultations").select("*").eq("lead_id", leadId),
+    supabase.from("contracts").select("*").eq("lead_id", leadId),
+    supabase.from("export_progress").select("*").eq("lead_id", leadId),
+  ]);
+
+  if (consultationsError) throw consultationsError;
+  if (contractsError) throw contractsError;
+  if (exportError) throw exportError;
+
+  const consultations = (consultationsData ?? []) as ConsultationRow[];
+  const contracts = (contractsData ?? []) as ContractRow[];
+  const exportRows = (exportData ?? []) as ExportProgressRow[];
+
+  const latestContract =
+    contracts.sort((a, b) =>
+      (a.contract_date ?? "") < (b.contract_date ?? "") ? 1 : -1
+    )[0] ?? null;
+  const latestExport =
+    exportRows.sort((a, b) =>
+      (a.expected_delivery_date ?? a.delivered_at ?? "") <
+      (b.expected_delivery_date ?? b.delivered_at ?? "")
+        ? 1
+        : -1
+    )[0] ?? null;
+
+  return mapRowToLead(row, consultations, latestContract, latestExport);
+}
+
+export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead> {
+  ensureSupabaseConfigured();
+  const managerUserId = await resolveManagerUserId(lead, scope);
+  const leadForInsert = { ...lead, managerUserId };
+  const payload = toLeadInsertRow(leadForInsert);
+  devLog("[Supabase] leads insert payload:", payload);
+  const { data, error } = await supabase
+    .from("leads")
+    .insert(payload)
+    .select("*")
+    .single();
+  if (error) {
+    console.error("[Supabase] leads insert error:", error, "payload:", payload);
+    throw new Error(`고객 저장 실패: ${formatSupabaseError(error)}`);
+  }
+
+  const insertedRow = data as LeadRow;
+  const createdLead: Lead = {
+    ...leadForInsert,
+    id: insertedRow.id,
+    createdAt: insertedRow.created_at,
+    updatedAt: insertedRow.created_at,
+    statusUpdatedAt: insertedRow.created_at,
+    lastHandledAt: insertedRow.created_at,
+  };
+
+  await replaceLeadRelations(normalizeLeadForPersistence(createdLead));
+  await logActivity(actorUserKey(createdLead), "lead_created", createdLead.id);
+  await logStatusHistory({
+    leadId: createdLead.id,
+    changedBy: actorUserKey(createdLead),
+    statusType: "counseling_status",
+    fromValue: null,
+    toValue: createdLead.counselingStatus,
+  });
+  if (createdLead.exportProgress?.stage) {
+    await logStatusHistory({
+      leadId: createdLead.id,
+      changedBy: actorUserKey(createdLead),
+      statusType: "export_stage",
+      fromValue: null,
+      toValue: createdLead.exportProgress.stage,
+    });
+  }
+  return createdLead;
+}
+
+export async function updateLead(lead: Lead, scope?: ViewerScope) {
+  ensureSupabaseConfigured();
+  if (scope?.role === "staff" && lead.managerUserId && lead.managerUserId !== scope.userId) {
+    throw new Error("본인 담당 고객만 수정할 수 있습니다.");
+  }
+  const managerUserId = await resolveManagerUserId(lead, scope);
+  const leadForUpdate = normalizeLeadForPersistence({ ...lead, managerUserId });
+  const [
+    { data: prevData, error: prevError },
+    { count: prevConsultationCount, error: prevConsultationError },
+    { data: prevContractData, error: prevContractError },
+    { data: prevExportData, error: prevExportError },
+  ] = await Promise.all([
+    supabase
+    .from("leads")
+    .select("status")
+    .eq("id", leadForUpdate.id)
+    .maybeSingle(),
+    supabase
+      .from("consultations")
+      .select("*", { count: "exact", head: true })
+      .eq("lead_id", leadForUpdate.id),
+    supabase
+      .from("contracts")
+      .select("id")
+      .eq("lead_id", leadForUpdate.id)
+      .limit(1)
+      .maybeSingle(),
+    supabase
+      .from("export_progress")
+      .select("id, stage")
+      .eq("lead_id", leadForUpdate.id)
+      .limit(1)
+      .maybeSingle(),
+  ]);
+  if (prevError) throw new Error(`수정 전 상태 조회 실패: ${formatSupabaseError(prevError)}`);
+  if (prevConsultationError)
+    throw new Error(`수정 전 상담기록 조회 실패: ${formatSupabaseError(prevConsultationError)}`);
+  if (prevContractError)
+    throw new Error(`수정 전 계약 조회 실패: ${formatSupabaseError(prevContractError)}`);
+  if (prevExportError)
+    throw new Error(`수정 전 출고 조회 실패: ${formatSupabaseError(prevExportError)}`);
+
+  const payload = toLeadUpdateRow(leadForUpdate);
+  devLog("[Supabase] leads update payload (계약 탭 필드는 포함되지 않음):", payload);
+  if (leadForUpdate.contract) {
+    devLog(
+      "[Supabase] 동일 요청에서 이어서 contracts 테이블은 delete 후 INSERT 됩니다. 계약 컬럼 매핑은 toContractRow 로그를 참고하세요."
+    );
+  }
+  let updateQuery = supabase.from("leads").update(payload).eq("id", leadForUpdate.id);
+  if (scope?.role === "staff") {
+    updateQuery = updateQuery.eq("manager_user_id", scope.userId);
+  }
+  const { error } = await updateQuery;
+  if (error) {
+    console.error("[Supabase] leads update error:", error, {
+      leadId: leadForUpdate.id,
+      counselingStatus: leadForUpdate.counselingStatus,
+      leadsTablePayload: payload,
+    });
+    throw new Error(`고객 수정 실패: ${formatSupabaseError(error)}`);
+  }
+
+  devLog("[Supabase] updateLead replaceLeadRelations", {
+    leadId: leadForUpdate.id,
+    counselingStatus: leadForUpdate.counselingStatus,
+    counselingRecordCount: leadForUpdate.counselingRecords.length,
+    hasContract: leadForUpdate.contract != null,
+    hasExport: leadForUpdate.exportProgress != null,
+  });
+
+  await replaceLeadRelations(leadForUpdate);
+
+  if ((prevData?.status ?? "") !== leadForUpdate.counselingStatus) {
+    await logActivity(actorUserKey(leadForUpdate), "status_changed", leadForUpdate.id);
+    await logStatusHistory({
+      leadId: leadForUpdate.id,
+      changedBy: actorUserKey(leadForUpdate),
+      statusType: "counseling_status",
+      fromValue: (prevData?.status as string | null) ?? null,
+      toValue: leadForUpdate.counselingStatus,
+    });
+  }
+  const hadContract = !!prevContractData?.id;
+  if (leadForUpdate.contract && !hadContract) {
+    await logActivity(actorUserKey(leadForUpdate), "contract_progress", leadForUpdate.id);
+  }
+  if (leadForUpdate.counselingRecords.length > (prevConsultationCount ?? 0)) {
+    await logActivity(actorUserKey(leadForUpdate), "consultation_created", leadForUpdate.id);
+  }
+  const prevExportStage = (prevExportData as { stage?: string } | null)?.stage ?? null;
+  const nextExportStage = leadForUpdate.exportProgress?.stage ?? null;
+  if (nextExportStage && prevExportStage !== nextExportStage) {
+    await logStatusHistory({
+      leadId: leadForUpdate.id,
+      changedBy: actorUserKey(leadForUpdate),
+      statusType: "export_stage",
+      fromValue: prevExportStage,
+      toValue: nextExportStage,
+    });
+  }
+}
+
+export async function deleteLead(leadId: string, scope?: ViewerScope) {
+  ensureSupabaseConfigured();
+  if (scope?.role === "staff") {
+    const { data, error } = await supabase
+      .from("leads")
+      .select("id")
+      .eq("id", leadId)
+      .eq("manager_user_id", scope.userId)
+      .maybeSingle();
+    if (error) throw new Error(`삭제 권한 확인 실패: ${formatSupabaseError(error)}`);
+    if (!data) throw new Error("본인 담당 고객만 삭제할 수 있습니다.");
+  }
+  await Promise.all([
+    supabase.from("consultations").delete().eq("lead_id", leadId),
+    supabase.from("contracts").delete().eq("lead_id", leadId),
+  ]);
+  const { error } = await supabase.from("leads").delete().eq("id", leadId);
+  if (error) {
+    console.error("[Supabase] leads delete error:", error, "leadId:", leadId);
+    throw new Error(`고객 삭제 실패: ${formatSupabaseError(error)}`);
+  }
+}
+
+async function replaceLeadRelations(lead: Lead) {
+  await Promise.all([
+    supabase.from("consultations").delete().eq("lead_id", lead.id),
+    supabase.from("contracts").delete().eq("lead_id", lead.id),
+    supabase.from("export_progress").delete().eq("lead_id", lead.id),
+  ]);
+
+  const consultations = toConsultationRows(lead);
+  if (consultations.length > 0) {
+    const { error: cErr } = await supabase.from("consultations").insert(consultations);
+    if (cErr) {
+      console.error("[Supabase] consultations insert failed", {
+        leadId: lead.id,
+        counselingStatus: lead.counselingStatus,
+        rowCount: consultations.length,
+        firstRow: consultations[0],
+        error: cErr,
+      });
+      throw cErr;
+    }
+  }
+
+  const contract = toContractRow(lead);
+  if (contract) {
+    logContractDeliveryDateResolution(lead);
+    devLog("[Supabase] contracts INSERT 의도 payload (toContractRow 전체)", contract);
+    try {
+      const { omitted, finalPayload } = await insertRowOmittingUnknownColumns(
+        "contracts",
+        contract
+      );
+      devLog("[Supabase] contracts INSERT 실제 적용된 body (전송·저장됨)", finalPayload);
+      if (omitted.length > 0) {
+        const 누락값요약 = Object.fromEntries(omitted.map((k) => [k, contract[k]]));
+        console.warn(
+          "[계약 저장] INSERT는 성공했으나 원격 DB에 없는 컬럼은 저장되지 않았습니다. 재조회 시 해당 값이 비거나 기본값으로 보일 수 있습니다.",
+          {
+            제외된_DB_컬럼: omitted,
+            CRM_필드_안내: omitted.map((k) => CONTRACT_DB_COLUMN_HINT[k] ?? k),
+            제외직전_의도값: 누락값요약,
+          }
+        );
+      } else {
+        devLog(
+          "[계약 저장] contracts: 의도한 컬럼이 스키마 제약 없이 모두 INSERT body에 포함되었습니다."
+        );
+      }
+    } catch (kErr) {
+      console.error("계약 저장 오류", kErr, contract);
+      throw kErr;
+    }
+  }
+  const exportProgress = toExportRow(lead);
+  if (exportProgress) {
+    devLog("[Supabase] export_progress INSERT 의도 payload (전체)", exportProgress);
+    try {
+      const { omitted, finalPayload } = await insertRowOmittingUnknownColumns(
+        "export_progress",
+        exportProgress
+      );
+      devLog("[Supabase] export_progress INSERT 실제 적용된 body", finalPayload);
+      if (omitted.length > 0) {
+        console.warn("[출고 저장] INSERT 성공 · DB에 없어 제외된 컬럼", {
+          제외된_DB_컬럼: omitted,
+          제외직전_의도값: Object.fromEntries(omitted.map((k) => [k, exportProgress[k]])),
+        });
+      }
+    } catch (eErr) {
+      console.error("출고 저장 오류", eErr, exportProgress);
+      throw eErr;
+    }
+  }
+}
+
+export async function seedLeadsIfEmpty() {
+  ensureSupabaseConfigured();
+  const { count, error } = await supabase
+    .from("leads")
+    .select("*", { count: "exact", head: true });
+  if (error) throw new Error(`초기 데이터 확인 실패: ${formatSupabaseError(error)}`);
+  if ((count ?? 0) > 0) return;
+
+  for (const lead of SEED_LEADS.slice(0, 10)) {
+    await createLead(lead);
+  }
+}
+
+type NoticeRow = {
+  id: string;
+  title: string;
+  content: string;
+  created_by: string;
+  created_at: string;
+  is_active: boolean;
+};
+
+function mapNoticeRow(row: NoticeRow): Notice {
+  return {
+    id: row.id,
+    title: row.title ?? "",
+    content: row.content ?? "",
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    isActive: row.is_active === true,
+  };
+}
+
+function isNoticesUnavailableError(error: unknown): boolean {
+  const msg = formatSupabaseError(error).toLowerCase();
+  return (
+    msg.includes("notices") ||
+    msg.includes("schema cache") ||
+    msg.includes("could not find") ||
+    msg.includes("pgrst205") ||
+    msg.includes("42p01")
+  );
+}
+
+/** 활성 공지만, 최신순 (테이블·RLS 미적용 시 빈 배열) */
+export async function listNotices(limit = 5): Promise<Notice[]> {
+  ensureSupabaseConfigured();
+  const lim = Math.min(Math.max(limit, 1), 20);
+  const { data, error } = await supabase
+    .from("notices")
+    .select("id, title, content, created_by, created_at, is_active")
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(lim);
+  if (error) {
+    if (isNoticesUnavailableError(error)) {
+      console.warn("[Supabase] notices:", formatSupabaseError(error));
+      return [];
+    }
+    throw new Error(`공지 조회 실패: ${formatSupabaseError(error)}`);
+  }
+  return ((data ?? []) as NoticeRow[]).map(mapNoticeRow);
+}
+
+export async function createNotice(input: {
+  title: string;
+  content: string;
+  createdBy: string;
+}): Promise<Notice> {
+  ensureSupabaseConfigured();
+  const title = input.title.trim();
+  const content = input.content.trim();
+  if (!title) throw new Error("제목을 입력해 주세요.");
+  const { data, error } = await supabase
+    .from("notices")
+    .insert({
+      title,
+      content,
+      created_by: input.createdBy,
+      is_active: true,
+    })
+    .select("id, title, content, created_by, created_at, is_active")
+    .single();
+  if (error) throw new Error(`공지 등록 실패: ${formatSupabaseError(error)}`);
+  return mapNoticeRow(data as NoticeRow);
+}
+
+export async function updateNotice(
+  id: string,
+  patch: { title?: string; content?: string; isActive?: boolean }
+): Promise<Notice> {
+  ensureSupabaseConfigured();
+  const row: Record<string, unknown> = {};
+  if (patch.title !== undefined) row.title = patch.title.trim();
+  if (patch.content !== undefined) row.content = patch.content.trim();
+  if (patch.isActive !== undefined) row.is_active = patch.isActive;
+  if (Object.keys(row).length === 0) {
+    const { data, error } = await supabase
+      .from("notices")
+      .select("id, title, content, created_by, created_at, is_active")
+      .eq("id", id)
+      .single();
+    if (error) throw new Error(`공지 조회 실패: ${formatSupabaseError(error)}`);
+    return mapNoticeRow(data as NoticeRow);
+  }
+  const { data, error } = await supabase
+    .from("notices")
+    .update(row)
+    .eq("id", id)
+    .select("id, title, content, created_by, created_at, is_active")
+    .single();
+  if (error) throw new Error(`공지 수정 실패: ${formatSupabaseError(error)}`);
+  return mapNoticeRow(data as NoticeRow);
+}
+
+export async function deleteNotice(id: string): Promise<void> {
+  ensureSupabaseConfigured();
+  const { error } = await supabase.from("notices").delete().eq("id", id);
+  if (error) throw new Error(`공지 삭제 실패: ${formatSupabaseError(error)}`);
+}
+
