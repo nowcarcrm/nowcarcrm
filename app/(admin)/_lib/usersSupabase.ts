@@ -1,7 +1,7 @@
 import { EMPLOYEES } from "./leaseCrmSeed";
 import { supabase } from "./supabaseClient";
 
-export type UserRole = "admin" | "staff";
+export type UserRole = "admin" | "manager" | "staff";
 
 export type UserApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -31,6 +31,7 @@ export function effectiveApprovalStatus(row: Pick<UserRow, "approval_status">): 
 
 export function roleLabelKo(role: UserRole): string {
   if (role === "admin") return "관리자";
+  if (role === "manager") return "매니저";
   return "직원";
 }
 

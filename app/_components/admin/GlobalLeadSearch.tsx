@@ -397,8 +397,16 @@ export default function GlobalLeadSearch({
           onClose={() => setModalLead(null)}
           onUpdate={async (next) => {
             if (!profile) return;
-            await updateLead(next, { role: profile.role, userId: profile.userId });
-            setModalLead(next);
+            const payload =
+              profile.role === "staff"
+                ? {
+                    ...next,
+                    managerUserId: profile.userId,
+                    base: { ...next.base, ownerStaff: profile.name },
+                  }
+                : next;
+            await updateLead(payload, { role: profile.role, userId: profile.userId });
+            setModalLead(payload);
           }}
           onDelete={(id) => {
             if (!profile) return;

@@ -18,6 +18,8 @@ export default function LeadCreateModal({
   defaultOwner,
   categoryKey,
   categoryLabel,
+  canAssignOwner = true,
+  lockedOwnerDisplayName = "",
 }: {
   onClose: () => void;
   onCreate: (lead: Lead) => Promise<Lead>;
@@ -25,13 +27,19 @@ export default function LeadCreateModal({
   defaultOwner?: string;
   categoryKey: LeadCategoryKey;
   categoryLabel: string;
+  /** false면 담당 직원은 lockedOwnerDisplayName만 사용(직원 계정) */
+  canAssignOwner?: boolean;
+  lockedOwnerDisplayName?: string;
 }) {
+  const initialOwner = canAssignOwner
+    ? (defaultOwner ?? ownerOptions[0] ?? "")
+    : (lockedOwnerDisplayName || defaultOwner || "").trim();
   const [draft, setDraft] = useState<DraftBase>({
     name: "",
     phone: "",
     desiredVehicle: "",
     source: "",
-    ownerStaff: defaultOwner ?? ownerOptions[0] ?? "",
+    ownerStaff: initialOwner,
   });
   const [error, setError] = useState<string | null>(null);
 
@@ -46,7 +54,8 @@ export default function LeadCreateModal({
     if (!draft.phone.trim()) return "연락처를 입력해주세요.";
     if (!draft.desiredVehicle.trim()) return "원하는 차종을 입력해주세요.";
     if (!draft.source.trim()) return "유입 경로를 선택해주세요.";
-    if (!draft.ownerStaff.trim()) return "담당 직원을 입력해주세요.";
+    if (canAssignOwner && !draft.ownerStaff.trim()) return "담당 직원을 입력해주세요.";
+    if (!canAssignOwner && !lockedOwnerDisplayName.trim()) return "로그인 사용자 정보를 확인할 수 없습니다.";
     return null;
   }
 
@@ -101,6 +110,9 @@ export default function LeadCreateModal({
                 typeof crypto !== "undefined" && "randomUUID" in crypto
                   ? crypto.randomUUID()
                   : `lead_${Math.random().toString(16).slice(2)}`;
+              const ownerStaff = canAssignOwner
+                ? draft.ownerStaff.trim()
+                : lockedOwnerDisplayName.trim();
               const base: CustomerBase = {
                 name: draft.name.trim(),
                 phone: draft.phone.trim(),
@@ -112,7 +124,7 @@ export default function LeadCreateModal({
                 contractTerm: "36개월",
                 hasDepositOrPrepayment: false,
                 depositOrPrepaymentAmount: "",
-                ownerStaff: draft.ownerStaff.trim(),
+                ownerStaff,
                 memo: "",
               };
               const lead: Lead = {
@@ -136,6 +148,7 @@ export default function LeadCreateModal({
                 try {
                   setError(null);
                   await onCreate(lead);
+                  setError(null);
                 } catch (err) {
                   const message =
                     err instanceof Error ? err.message : "고객 저장에 실패했습니다.";
@@ -203,17 +216,28 @@ export default function LeadCreateModal({
               <label className="mb-1.5 block text-xs font-medium text-[var(--crm-accent-muted)] dark:text-zinc-400">
                 담당 직원
               </label>
-              <select
-                value={draft.ownerStaff}
-                onChange={(e) => setDraft((p) => ({ ...p, ownerStaff: e.target.value }))}
-                className="crm-field crm-field-select"
-              >
-                {ownerOptions.map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
-              </select>
+              {canAssignOwner ? (
+                <select
+                  value={draft.ownerStaff}
+                  onChange={(e) => setDraft((p) => ({ ...p, ownerStaff: e.target.value }))}
+                  className="crm-field crm-field-select"
+                >
+                  {ownerOptions.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  readOnly
+                  disabled
+                  value={lockedOwnerDisplayName}
+                  className="crm-field cursor-not-allowed opacity-90 dark:opacity-95"
+                  title="직원 계정은 본인만 담당으로 등록됩니다."
+                />
+              )}
             </div>
 
             <div className="sm:col-span-2 flex items-center justify-end gap-2 pt-1">

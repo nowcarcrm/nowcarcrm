@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import { TapButton } from "@/app/_components/ui/crm-motion";
 import {
@@ -51,6 +51,7 @@ import {
 import { counselingStatusFromExportProgress } from "../../_lib/leaseCrmLogic";
 import { formatSupabaseError } from "../../_lib/leaseCrmSupabase";
 import { EMPLOYEES } from "../../_lib/leaseCrmSeed";
+import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
@@ -334,6 +335,46 @@ export default function LeadDetailModal({
   const prevLeadIdRef = useRef<string | null>(null);
   const { profile } = useAuth();
   const staffContractLocked = profile?.role === "staff";
+  const canReassignLeadOwner = profile?.role === "admin" || profile?.role === "manager";
+
+  const [leadOwnerOptions, setLeadOwnerOptions] = useState<string[]>(() => [...EMPLOYEES]);
+
+  const leadPayloadForServer = useCallback(
+    (l: Lead): Lead => {
+      if (!profile || profile.role !== "staff") return l;
+      return {
+        ...l,
+        managerUserId: profile.userId,
+        base: { ...l.base, ownerStaff: profile.name },
+      };
+    },
+    [profile]
+  );
+
+  useEffect(() => {
+    if (!canReassignLeadOwner) return;
+    let cancelled = false;
+    void listActiveUsers()
+      .then((users) => {
+        if (cancelled) return;
+        const names = users.map((u) => u.name).filter(Boolean) as string[];
+        setLeadOwnerOptions(names.length > 0 ? names : [...EMPLOYEES]);
+      })
+      .catch(() => {
+        if (!cancelled) setLeadOwnerOptions([...EMPLOYEES]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canReassignLeadOwner]);
+
+  const leadOwnerSelectChoices = useMemo(() => {
+    const base = leadOwnerOptions.length > 0 ? leadOwnerOptions : [...EMPLOYEES];
+    const set = new Set<string>(base);
+    const cur = draft.base.ownerStaff?.trim();
+    if (cur) set.add(cur);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ko"));
+  }, [leadOwnerOptions, draft.base.ownerStaff]);
 
   const base = draft.base;
 
@@ -397,7 +438,7 @@ export default function LeadDetailModal({
   );
 
   async function persist(next: Lead) {
-    const payload = ensureLeadShape(next);
+    const payload = leadPayloadForServer(ensureLeadShape(next));
     devLog("[LeadDetailModal] persist 저장 직전 payload", payload);
     setSaving(true);
     try {
@@ -414,10 +455,12 @@ export default function LeadDetailModal({
 
   async function saveBase() {
     const nextIso = new Date().toISOString();
-    const next = ensureLeadShape({
-      ...draft,
-      updatedAt: nextIso,
-    });
+    const next = leadPayloadForServer(
+      ensureLeadShape({
+        ...draft,
+        updatedAt: nextIso,
+      })
+    );
     devLog("[LeadDetailModal] 기본정보 저장 직전 payload", next);
     setSaving(true);
     try {
@@ -539,10 +582,11 @@ export default function LeadDetailModal({
     );
     setSaving(true);
     try {
-      await Promise.resolve(onUpdate(payload));
+      const toSave = leadPayloadForServer(payload);
+      await Promise.resolve(onUpdate(toSave));
       devLog("[계약 저장] onUpdate 완료(서버 성공)", {
-        leadId: payload.id,
-        contract: payload.contract,
+        leadId: toSave.id,
+        contract: toSave.contract,
       });
       let extra = false;
       if (contract && shouldPersistContractAmountSnapshot(counselingForSnap)) {
@@ -555,7 +599,7 @@ export default function LeadDetailModal({
         }
       }
       if (!extra) toast.success("저장했습니다.");
-      setDraft(payload);
+      setDraft(toSave);
     } catch (error) {
       console.error("계약 저장 오류", error, payload);
       toast.error("저장하지 못했습니다.");
@@ -582,8 +626,9 @@ export default function LeadDetailModal({
     devLog("[LeadDetailModal] 출고 저장 직전 payload", payload);
     setSaving(true);
     try {
-      await Promise.resolve(onUpdate(payload));
-      setDraft(payload);
+      const toSave = leadPayloadForServer(payload);
+      await Promise.resolve(onUpdate(toSave));
+      setDraft(toSave);
       toast.success("저장했습니다.");
     } catch (error) {
       console.error("출고 저장 오류", error, payload);
@@ -939,22 +984,33 @@ export default function LeadDetailModal({
                   </Field>
 
                   <Field label="담당 직원">
-                    <select
-                      value={draft.base.ownerStaff}
-                      onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          base: { ...p.base, ownerStaff: e.target.value },
-                        }))
-                      }
-                      className="crm-field crm-field-select"
-                    >
-                      {EMPLOYEES.map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
-                    </select>
+                    {canReassignLeadOwner ? (
+                      <select
+                        value={draft.base.ownerStaff}
+                        onChange={(e) =>
+                          setDraft((p) => ({
+                            ...p,
+                            base: { ...p.base, ownerStaff: e.target.value },
+                          }))
+                        }
+                        className="crm-field crm-field-select"
+                      >
+                        {leadOwnerSelectChoices.map((s) => (
+                          <option key={s} value={s}>
+                            {s}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type="text"
+                        readOnly
+                        disabled
+                        value={profile?.name ?? draft.base.ownerStaff}
+                        className="crm-field cursor-not-allowed opacity-90 dark:opacity-95"
+                        title="직원 계정은 담당 직원을 변경할 수 없습니다."
+                      />
+                    )}
                   </Field>
 
                   <div className="sm:col-span-2">
@@ -1240,8 +1296,9 @@ export default function LeadDetailModal({
                       devLog("[LeadDetailModal] 상담기록 추가 직전 payload", nextLead);
                       void (async () => {
                         try {
-                          await Promise.resolve(onUpdate(nextLead));
-                          setDraft(nextLead);
+                          const toSave = leadPayloadForServer(nextLead);
+                          await Promise.resolve(onUpdate(toSave));
+                          setDraft(toSave);
                         } catch (err) {
                           console.error(
                             "[LeadDetailModal] 상담기록 추가 저장 실패",

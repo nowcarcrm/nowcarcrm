@@ -232,8 +232,8 @@ function serializeConsultationToMemo(r: CounselingRecord): string {
   })}`;
 }
 
-async function resolveManagerUserId(lead: Lead, scope?: ViewerScope) {
-  if (scope?.role === "staff") return scope.userId;
+/** 관리자·매니저: 클라이언트가 넘긴 managerUserId 또는 담당명(users.name)으로 UUID 조회 */
+async function resolveManagerUserIdForAdmin(lead: Lead): Promise<string | null> {
   if (lead.managerUserId) return lead.managerUserId;
   const { data, error } = await supabase
     .from("users")
@@ -242,6 +242,80 @@ async function resolveManagerUserId(lead: Lead, scope?: ViewerScope) {
     .maybeSingle();
   if (error) throw new Error(`담당자 매핑 조회 실패: ${formatSupabaseError(error)}`);
   return (data as { id: string } | null)?.id ?? null;
+}
+
+async function fetchUserDisplayNameById(userId: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("users")
+    .select("name")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) throw new Error(`담당자 이름 조회 실패: ${formatSupabaseError(error)}`);
+  return (data as { name: string } | null)?.name?.trim() || null;
+}
+
+/** PostgREST/Supabase 클라이언트 에러 형태를 로그용으로 정규화 */
+function postgrestLikeFields(err: unknown): {
+  code: string | null;
+  message: string;
+  details: string | null;
+  hint: string | null;
+} {
+  if (err && typeof err === "object") {
+    const o = err as Record<string, unknown>;
+    const code = o.code != null ? String(o.code) : null;
+    const message =
+      typeof o.message === "string"
+        ? o.message
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    const details = typeof o.details === "string" ? o.details : null;
+    const hint = typeof o.hint === "string" ? o.hint : null;
+    return { code, message, details, hint };
+  }
+  return {
+    code: null,
+    message: err instanceof Error ? err.message : String(err),
+    details: null,
+    hint: null,
+  };
+}
+
+/**
+ * 저장 직전: 직원(staff)은 항상 본인 userId + public.users 기준 표시명으로 덮어씀(프론트 조작 방지).
+ * 관리자·매니저는 기존 매핑 규칙 유지.
+ *
+ * throw 가능 지점(내부 호출):
+ * - staff: fetchUserDisplayNameById → users 조회 error 시 throw
+ * - admin/manager: resolveManagerUserIdForAdmin → users 조회 error 시 throw
+ */
+async function prepareLeadForSupabaseWrite(lead: Lead, scope?: ViewerScope): Promise<Lead> {
+  try {
+    if (scope?.role === "staff") {
+      const fromDb = await fetchUserDisplayNameById(scope.userId);
+      const ownerStaff = fromDb || lead.base.ownerStaff;
+      return {
+        ...lead,
+        managerUserId: scope.userId,
+        base: { ...lead.base, ownerStaff },
+      };
+    }
+    const managerUserId = await resolveManagerUserIdForAdmin(lead);
+    return { ...lead, managerUserId };
+  } catch (raw) {
+    const { code, message, details, hint } = postgrestLikeFields(raw);
+    console.error("[prepareLeadForSupabaseWrite] failed(full)", {
+      code,
+      message,
+      details,
+      hint,
+      lead,
+      scope: scope ?? null,
+      raw,
+    });
+    throw raw;
+  }
 }
 
 
@@ -378,43 +452,6 @@ function counselingFieldsFromMemoOrRow(
     nextContactMemo: c.next_contact_memo ?? "",
     importance: coalesceConsultImportance(c.importance),
   };
-}
-
-async function logActivity(
-  userId: string,
-  activityType:
-    | "consultation_created"
-    | "lead_created"
-    | "status_changed"
-    | "contract_progress",
-  leadId: string
-) {
-  const { error } = await supabase.from("crm_activity_logs").insert({
-    user_id: userId,
-    date: new Date().toISOString().slice(0, 10),
-    activity_type: activityType,
-    lead_id: leadId,
-  });
-  if (error) {
-    const e = error as { code?: string; message?: string };
-    // 본 저장(리드/계약)은 유지하고, 부가 로그만 스킵
-    if (e.code === "42P01" || e.code === "42703") {
-      console.warn(
-        "[Supabase] crm_activity_logs migration/column missing, skip:",
-        e.message
-      );
-      return;
-    }
-    if (e.code === "42501") {
-      console.warn("[Supabase] crm_activity_logs insert denied (RLS), skip:", e.message);
-      return;
-    }
-    throw error;
-  }
-}
-
-function actorUserKey(lead: Lead) {
-  return lead.managerUserId ?? lead.base.ownerStaff;
 }
 
 function coalesceCustomerType(raw: string | undefined): CustomerType {
@@ -833,34 +870,6 @@ async function insertRowOmittingUnknownColumns(
   throw new Error(`[Supabase] ${table} insert: 반복 실패(알 수 없는 컬럼)`);
 }
 
-async function logStatusHistory(params: {
-  leadId: string;
-  changedBy: string;
-  statusType: "counseling_status" | "export_stage";
-  fromValue: string | null;
-  toValue: string;
-}) {
-  const { error } = await supabase.from("lead_status_history").insert({
-    lead_id: params.leadId,
-    changed_by: params.changedBy,
-    status_type: params.statusType,
-    from_value: params.fromValue,
-    to_value: params.toValue,
-  });
-  if (error) {
-    const e = error as { code?: string; message?: string };
-    // Don't block lead save when history table/column migration is missing.
-    if (e.code === "42P01" || e.code === "42703") {
-      console.warn(
-        "[Supabase] lead_status_history migration not applied, skip history insert:",
-        e.message
-      );
-      return;
-    }
-    throw new Error(`상태 이력 저장 실패: ${formatSupabaseError(error)}`);
-  }
-}
-
 export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
   ensureSupabaseConfigured();
   const queryMeta = {
@@ -988,10 +997,20 @@ export async function fetchLeadById(
 }
 
 export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead> {
+  console.log("[createLead] start", lead);
   ensureSupabaseConfigured();
   const leadsTable = "leads";
-  const managerUserId = await resolveManagerUserId(lead, scope);
-  const leadForInsert = { ...lead, managerUserId };
+
+  console.log("[createLead] before prepareLeadForSupabaseWrite");
+  let leadForInsert: Lead;
+  try {
+    leadForInsert = await prepareLeadForSupabaseWrite(lead, scope);
+  } catch (prepareErr) {
+    console.error("[createLead] prepare failed", prepareErr);
+    throw new Error("고객 저장 전 담당자 정보 준비 중 오류가 발생했습니다.");
+  }
+  console.log("[createLead] after prepareLeadForSupabaseWrite", leadForInsert);
+
   const payload = toLeadInsertRow(leadForInsert);
   console.log("[Supabase] createLead target table", leadsTable);
   devLog("[Supabase] leads insert payload:", payload);
@@ -1024,6 +1043,8 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
   }
 
   const insertedRow = data as LeadRow;
+  console.log("[createLead] after leads insert success", insertedRow);
+
   const createdLead: Lead = {
     ...leadForInsert,
     id: insertedRow.id,
@@ -1033,41 +1054,28 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
     lastHandledAt: insertedRow.created_at,
   };
 
-  // NOTE: 운영 DB에 consultations/contracts/export_progress 테이블이 없을 수 있어
-  // createLead 경로에서는 leads insert 성공 시 즉시 성공 반환한다.
-  await logActivity(actorUserKey(createdLead), "lead_created", createdLead.id);
-  await logStatusHistory({
-    leadId: createdLead.id,
-    changedBy: actorUserKey(createdLead),
-    statusType: "counseling_status",
-    fromValue: null,
-    toValue: createdLead.counselingStatus,
-  });
-  if (createdLead.exportProgress?.stage) {
-    await logStatusHistory({
-      leadId: createdLead.id,
-      changedBy: actorUserKey(createdLead),
-      statusType: "export_stage",
-      fromValue: null,
-      toValue: createdLead.exportProgress.stage,
-    });
-  }
+  console.log("[createLead] returning createdLead", createdLead);
+
+  // logActivity / logStatusHistory 미호출 — crm_activity_logs·lead_status_history 요청 없음(leads insert만).
   return createdLead;
 }
 
 export async function updateLead(lead: Lead, scope?: ViewerScope) {
   ensureSupabaseConfigured();
-  if (scope?.role === "staff" && lead.managerUserId && lead.managerUserId !== scope.userId) {
-    throw new Error("본인 담당 고객만 수정할 수 있습니다.");
+  if (scope?.role === "staff") {
+    const { data: ownerRow, error: ownerErr } = await supabase
+      .from("leads")
+      .select("manager_user_id")
+      .eq("id", lead.id)
+      .maybeSingle();
+    if (ownerErr) throw new Error(`담당 권한 확인 실패: ${formatSupabaseError(ownerErr)}`);
+    const dbManager = (ownerRow as { manager_user_id: string | null } | null)?.manager_user_id;
+    if (dbManager != null && dbManager !== scope.userId) {
+      throw new Error("본인 담당 고객만 수정할 수 있습니다.");
+    }
   }
-  const managerUserId = await resolveManagerUserId(lead, scope);
-  const leadForUpdate = normalizeLeadForPersistence({ ...lead, managerUserId });
-  const { data: prevData, error: prevError } = await supabase
-    .from("leads")
-    .select("status")
-    .eq("id", leadForUpdate.id)
-    .maybeSingle();
-  if (prevError) throw new Error(`수정 전 상태 조회 실패: ${formatSupabaseError(prevError)}`);
+  const leadLocked = await prepareLeadForSupabaseWrite(lead, scope);
+  const leadForUpdate = normalizeLeadForPersistence(leadLocked);
 
   const payload = toLeadUpdateRow(leadForUpdate);
   devLog("[Supabase] leads update payload (계약 탭 필드는 포함되지 않음):", payload);
@@ -1085,18 +1093,8 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
     throw new Error(`고객 수정 실패: ${formatSupabaseError(error)}`);
   }
 
-  // 운영 DB에서 relation 테이블이 없을 수 있어, updateLead는 leads 단일 테이블만 갱신한다.
-
-  if ((prevData?.status ?? "") !== leadForUpdate.counselingStatus) {
-    await logActivity(actorUserKey(leadForUpdate), "status_changed", leadForUpdate.id);
-    await logStatusHistory({
-      leadId: leadForUpdate.id,
-      changedBy: actorUserKey(leadForUpdate),
-      statusType: "counseling_status",
-      fromValue: (prevData?.status as string | null) ?? null,
-      toValue: leadForUpdate.counselingStatus,
-    });
-  }
+  // logActivity / logStatusHistory 미호출 — crm_activity_logs·lead_status_history 요청 없음(leads update만).
+  // 운영 DB에서 relation 테이블이 없을 수 있어 updateLead는 leads 단일 테이블만 갱신한다.
 }
 
 export async function deleteLead(leadId: string, scope?: ViewerScope) {

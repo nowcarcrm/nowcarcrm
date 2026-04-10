@@ -492,11 +492,19 @@ function LeadsCategoryView({
     devLog("[handleUpdateLead] 저장 직전 전체 payload", next);
     try {
       if (!profile) throw new Error("로그인이 필요합니다.");
-      await updateLead(next, {
+      const payload =
+        profile.role === "staff"
+          ? {
+              ...next,
+              managerUserId: profile.userId,
+              base: { ...next.base, ownerStaff: profile.name },
+            }
+          : next;
+      await updateLead(payload, {
         role: profile.role,
         userId: profile.userId,
       });
-      commitLeads((leads ?? []).map((l) => (l.id === next.id ? next : l)));
+      commitLeads((leads ?? []).map((l) => (l.id === payload.id ? payload : l)));
       toast.success("저장 완료되었습니다.");
       if (next.counselingStatus === "부재") {
         const p = pathname ?? "";
@@ -533,33 +541,23 @@ function LeadsCategoryView({
   }
 
   async function handleCreateLead(next: Lead): Promise<Lead> {
+    if (!profile) throw new Error("로그인이 필요합니다.");
+    const normalized =
+      profile.role === "staff"
+        ? {
+            ...next,
+            managerUserId: profile.userId,
+            base: { ...next.base, ownerStaff: profile.name },
+          }
+        : next;
+    console.log("[LeadsCategoryPage] quick create payload(full)", normalized);
+
+    let created: Lead;
     try {
-      if (!profile) throw new Error("로그인이 필요합니다.");
-      const normalized =
-        profile.role === "staff"
-          ? { ...next, base: { ...next.base, ownerStaff: profile.name } }
-          : next;
-      console.log("[LeadsCategoryPage] quick create payload(full)", normalized);
-      const created = await createLead(normalized, {
+      created = await createLead(normalized, {
         role: profile.role,
         userId: profile.userId,
       });
-      commitLeads([created, ...(leads ?? [])]);
-      setCreateOpen(false);
-      toast.success("고객이 등록되었습니다.");
-      // 등록 성공 이후 목록 재조회가 실패해도 생성 성공 상태는 유지한다.
-      void (async () => {
-        try {
-          const refreshed = await loadLeadsFromStorage({
-            role: profile.role,
-            userId: profile.userId,
-          });
-          commitLeads(refreshed);
-        } catch (refreshErr) {
-          console.error("[LeadsCategoryPage] post-create refresh failed (non-blocking)", refreshErr);
-        }
-      })();
-      return created;
     } catch (err) {
       const message =
         err instanceof Error ? err.message : "고객 저장 중 오류가 발생했습니다.";
@@ -570,6 +568,24 @@ function LeadsCategoryView({
       toast.error(message);
       throw err;
     }
+
+    console.log("[quick-create] success after leads insert");
+    commitLeads([created, ...(leads ?? [])]);
+    setCreateOpen(false);
+    toast.success("고객이 등록되었습니다.");
+    // 등록 성공 이후 목록 재조회가 실패해도 생성 성공 상태는 유지한다.
+    void (async () => {
+      try {
+        const refreshed = await loadLeadsFromStorage({
+          role: profile.role,
+          userId: profile.userId,
+        });
+        commitLeads(refreshed);
+      } catch (refreshErr) {
+        console.error("[LeadsCategoryPage] post-create refresh failed (non-blocking)", refreshErr);
+      }
+    })();
+    return created;
   }
 
   return (
@@ -1199,6 +1215,8 @@ function LeadsCategoryView({
           defaultOwner={profile?.name}
           categoryKey={categoryKey}
           categoryLabel={categoryLabel}
+          canAssignOwner={profile?.role === "admin" || profile?.role === "manager"}
+          lockedOwnerDisplayName={profile?.name ?? ""}
         />
       ) : null}
 
