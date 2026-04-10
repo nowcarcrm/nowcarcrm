@@ -17,6 +17,7 @@ import {
   listTodayAttendance,
   listAttendance,
   markAttendanceStatus,
+  normalizeAttendanceRow,
   type AttendanceRow,
   type ActivitySummary,
   type HolidayRow,
@@ -30,7 +31,6 @@ import { useAuth } from "@/app/_components/auth/AuthProvider";
 import toast from "react-hot-toast";
 import {
   AnimatedStatNumber,
-  AttendancePanelSkeleton,
   HoverCard,
   ShimmerBlock,
   TapButton,
@@ -109,28 +109,39 @@ export default function AttendancePage() {
 
   async function refresh() {
     if (!currentUserId) return;
-    const [t, list, h, act, monthList, todayList, holidayFlag] = await Promise.all([
-      getTodayAttendance(currentUserId),
-      canViewAll ? listAttendance(300) : Promise.resolve([]),
-      listHolidays(),
-      getActivitySummaryByUserDate(currentUserId, todayDate),
-      canViewAll ? listAttendanceByMonth(month) : Promise.resolve([]),
-      canViewAll ? listTodayAttendance() : Promise.resolve([]),
-      isHoliday(todayDate),
-    ]);
-    setToday(t);
-    setRows(list);
-    setHolidays(h);
-    setTodayActivity(act);
-    setMonthRows(monthList);
-    setTodayRows(todayList);
-    setIsHolidayToday(holidayFlag);
 
-    const wk = new Date().getDay();
-    setIsWeekend(wk === 0 || wk === 6);
+    setPageFetching(true);
+    try {
+      const t = await getTodayAttendance(currentUserId, todayDate);
+      setToday(t);
 
-    const m = canViewAll ? await getActivitySummaryMapByDate(todayDate) : new Map();
-    setActivityMap(m);
+      const [list, h, act, monthList, todayList, holidayFlag] = await Promise.all([
+        canViewAll ? listAttendance(300) : Promise.resolve([]),
+        listHolidays(),
+        getActivitySummaryByUserDate(currentUserId, todayDate),
+        canViewAll ? listAttendanceByMonth(month) : Promise.resolve([]),
+        canViewAll ? listTodayAttendance() : Promise.resolve([]),
+        isHoliday(todayDate),
+      ]);
+
+      setRows(list);
+      setHolidays(h);
+      setTodayActivity(act);
+      setMonthRows(monthList);
+      setTodayRows(todayList);
+      setIsHolidayToday(holidayFlag);
+
+      const wk = new Date().getDay();
+      setIsWeekend(wk === 0 || wk === 6);
+
+      const m = canViewAll ? await getActivitySummaryMapByDate(todayDate) : new Map();
+      setActivityMap(m);
+    } catch (e) {
+      console.error("[refresh error]", e);
+    } finally {
+      setPageFetching(false);
+      console.log("[refresh] finally (pageFetching cleared)");
+    }
   }
 
   useEffect(() => {
@@ -163,26 +174,19 @@ export default function AttendancePage() {
       return;
     }
     window.localStorage.setItem(CURRENT_USER_KEY, currentUserId);
-    let cancelled = false;
-    setPageFetching(true);
-    void refresh().finally(() => {
-      if (!cancelled) setPageFetching(false);
-    });
-    return () => {
-      cancelled = true;
-    };
+    void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUserId, month, canViewAll]);
 
-  const statusLabel = useMemo(() => {
-    if (!today) {
-      if (isWeekend || isHolidayToday) return "휴무";
-      return "미출근";
-    }
-    return today.status;
-  }, [today, isHolidayToday, isWeekend]);
+  const todayNorm = useMemo(() => normalizeAttendanceRow(today), [today]);
 
-  const todayDone = !!today?.check_out;
+  const statusLabel = todayNorm?.normalized_check_in
+    ? (today?.status ?? "출근")
+    : isWeekend || isHolidayToday
+      ? "휴무"
+      : "미출근";
+
+  const todayDone = !!todayNorm?.normalized_check_out;
 
   const lateList = useMemo(
     () => todayRows.filter((r) => r.checkin_status === "지각"),
@@ -192,15 +196,21 @@ export default function AttendancePage() {
     () => todayRows.filter((r) => r.checkout_status === "조기 퇴근"),
     [todayRows]
   );
-  const noRecordList = useMemo(
-    () =>
-      isWeekend || isHolidayToday
-        ? []
-        : userOptions
-            .filter((u) => !todayRows.some((r) => r.user_id === u.id))
-            .map((u) => u.name),
-    [todayRows, isWeekend, isHolidayToday, userOptions]
-  );
+  const noRecordList = useMemo(() => {
+    if (isWeekend || isHolidayToday) return [];
+    return userOptions
+      .filter((u) => {
+        if (todayRows.some((r) => r.user_id === u.id)) return false;
+        const inFullListToday = rows.some((r) => {
+          if (r.user_id !== u.id) return false;
+          const n = normalizeAttendanceRow(r);
+          return n?.normalized_date === todayDate;
+        });
+        if (inFullListToday) return false;
+        return true;
+      })
+      .map((u) => u.name);
+  }, [todayRows, isWeekend, isHolidayToday, userOptions, rows, todayDate]);
 
   const monthStats = useMemo(() => {
     const map = new Map<
@@ -242,9 +252,13 @@ export default function AttendancePage() {
     }
     setLoading(true);
     try {
+      const preToday = await getTodayAttendance(currentUserId, todayDate);
+      setToday(preToday);
+
       const pos = await readGps();
       setCurrentPositionLabel(`${pos.latitude.toFixed(5)}, ${pos.longitude.toFixed(5)}`);
-      await checkIn(currentUserId, pos, { memo: memo || undefined });
+      const saved = await checkIn(currentUserId, pos, { memo: memo || undefined });
+      setToday(saved);
       await refresh();
       toast.success("출근 처리되었습니다.");
       const act = await getActivitySummaryByUserDate(currentUserId, todayDate);
@@ -259,6 +273,14 @@ export default function AttendancePage() {
           : e && typeof e === "object" && "message" in e
             ? String((e as { message: unknown }).message)
             : "출근 처리 중 오류가 발생했습니다.";
+
+      if (msg.includes("이미 출근 기록")) {
+        const t = await getTodayAttendance(currentUserId, todayDate);
+        console.log("[onCheckIn catch] synced today:", t);
+        setToday(t);
+        await refresh();
+      }
+
       toast.error(msg);
     } finally {
       setLoading(false);
@@ -305,6 +327,9 @@ export default function AttendancePage() {
     }
   }
 
+  console.log("[render] today state:", today);
+  console.log("[render] normalized today:", normalizeAttendanceRow(today));
+
   return (
     <div className="crm-card">
       <div className="space-y-6 p-5 sm:p-7 lg:p-8">
@@ -334,46 +359,63 @@ export default function AttendancePage() {
         </div>
       </div>
 
+      <pre className="mt-4 rounded-xl border border-red-300 bg-red-50 p-3 text-xs text-red-900 whitespace-pre-wrap dark:border-red-800 dark:bg-red-950/40 dark:text-red-100">
+        {JSON.stringify(
+          {
+            pageFetching,
+            loading,
+            currentUserId,
+            today,
+            todayNorm,
+            statusLabel,
+            normalized_check_in: todayNorm?.normalized_check_in ?? null,
+            normalized_check_out: todayNorm?.normalized_check_out ?? null,
+            rowsLength: rows.length,
+            todayRowsLength: todayRows.length,
+          },
+          null,
+          2
+        )}
+      </pre>
+
       <div className="grid gap-4 lg:grid-cols-3">
         <HoverCard className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30 lg:col-span-2">
           <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 내 근태 상태</div>
-          {pageFetching ? (
-            <div className="relative mt-3 min-h-[200px]">
-              <AttendancePanelSkeleton />
-            </div>
-          ) : (
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
-              <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 상태</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{statusLabel}</div>
-              </HoverCard>
-              <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">출근</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{dt(today?.check_in)}</div>
-              </HoverCard>
-              <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">퇴근</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{dt(today?.check_out)}</div>
-              </HoverCard>
-              <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">근무일 여부</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                  {isWeekend || isHolidayToday ? "휴무일" : "근무일"}
-                </div>
-              </HoverCard>
-              <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 활동 수</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                  <AnimatedStatNumber value={todayActivity?.total ?? 0} />
-                  {(todayActivity?.total ?? 0) === 0 ? " (경고)" : ""}
-                </div>
-              </HoverCard>
-              <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs text-zinc-500 dark:text-zinc-400">마지막 GPS</div>
-                <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{currentPositionLabel}</div>
-              </HoverCard>
-            </div>
-          )}
+          <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 상태</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{statusLabel}</div>
+            </HoverCard>
+            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">출근</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                {dt(todayNorm?.normalized_check_in ?? null)}
+              </div>
+            </HoverCard>
+            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">퇴근</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                {dt(todayNorm?.normalized_check_out ?? null)}
+              </div>
+            </HoverCard>
+            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">근무일 여부</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                {isWeekend || isHolidayToday ? "휴무일" : "근무일"}
+              </div>
+            </HoverCard>
+            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 활동 수</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                <AnimatedStatNumber value={todayActivity?.total ?? 0} />
+                {(todayActivity?.total ?? 0) === 0 ? " (경고)" : ""}
+              </div>
+            </HoverCard>
+            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-xs text-zinc-500 dark:text-zinc-400">마지막 GPS</div>
+              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{currentPositionLabel}</div>
+            </HoverCard>
+          </div>
 
           <div className="mt-4">
             <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">메모</label>
@@ -420,7 +462,7 @@ export default function AttendancePage() {
               disabled={
                 loading ||
                 pageFetching ||
-                (!today?.check_in && !today?.check_in_at) ||
+                !todayNorm?.normalized_check_in ||
                 todayDone
               }
               className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
@@ -518,14 +560,22 @@ export default function AttendancePage() {
                   </td>
                 </tr>
               ) : (
-                rows.map((r) => (
+                rows.map((r) => {
+                  const rn = normalizeAttendanceRow(r)!;
+                  return (
                   <tr key={r.id} className="border-b border-zinc-200 last:border-0 dark:border-zinc-800">
                     <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
                       {userNameMap.get(r.user_id) ?? r.user_id}
                     </td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{r.date}</td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{dt(r.check_in)}</td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{dt(r.check_out)}</td>
+                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                      {rn.normalized_date ?? "-"}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                      {dt(rn.normalized_check_in)}
+                    </td>
+                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                      {dt(rn.normalized_check_out)}
+                    </td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{r.checkin_status ?? "-"}</td>
                     <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{r.checkout_status ?? "-"}</td>
                     <td className="px-4 py-3">{r.is_holiday || r.is_weekend ? "Y" : "-"}</td>
@@ -554,7 +604,8 @@ export default function AttendancePage() {
                       )}
                     </td>
                   </tr>
-                ))
+                  );
+                })
               )}
             </tbody>
           </table>
