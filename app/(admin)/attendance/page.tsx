@@ -179,11 +179,16 @@ export default function AttendancePage() {
 
   const todayNorm = useMemo(() => normalizeAttendanceRow(today), [today]);
 
-  const statusLabel = todayNorm?.normalized_check_in
-    ? (today?.status ?? "출근")
-    : ((isWeekend || isHolidayToday) ? "휴무" : "미출근");
+  const isCheckedIn = !!todayNorm?.normalized_check_in;
+  const isCheckedOut = !!todayNorm?.normalized_check_out;
 
-  const todayDone = !!todayNorm?.normalized_check_out;
+  const statusType: "ABSENT" | "LATE" | "WORKING" | "DONE" = isCheckedOut
+    ? "DONE"
+    : !isCheckedIn
+      ? "ABSENT"
+      : today?.status === "지각"
+        ? "LATE"
+        : "WORKING";
 
   const lateList = useMemo(
     () => todayRows.filter((r) => r.checkin_status === "지각"),
@@ -256,9 +261,13 @@ export default function AttendancePage() {
       setToday(saved);
       await refresh();
       toast.success("출근 처리되었습니다.");
-      const act = await getActivitySummaryByUserDate(currentUserId, todayDate);
-      if (!act || act.total === 0) {
-        toast("오늘 CRM 활동이 없습니다. 기록을 확인해 주세요.", { icon: "⚠️" });
+      try {
+        const act = await getActivitySummaryByUserDate(currentUserId, todayDate);
+        if (!act.activityLogsUnavailable && act.total === 0) {
+          toast("오늘 CRM 활동이 없습니다. 기록을 확인해 주세요.", { icon: "⚠️" });
+        }
+      } catch (e) {
+        console.warn("[attendance] activity summary skipped:", e);
       }
     } catch (e) {
       console.error(e);
@@ -289,9 +298,13 @@ export default function AttendancePage() {
       await checkOut(currentUserId, pos, memo || undefined);
       await refresh();
       toast.success("퇴근 처리되었습니다.");
-      const actOut = await getActivitySummaryByUserDate(currentUserId, todayDate);
-      if (!actOut || actOut.total === 0) {
-        toast("오늘 CRM 활동 수가 0건입니다. 근태 검증 대상입니다.", { icon: "⚠️" });
+      try {
+        const actOut = await getActivitySummaryByUserDate(currentUserId, todayDate);
+        if (!actOut.activityLogsUnavailable && actOut.total === 0) {
+          toast("오늘 CRM 활동 수가 0건입니다. 근태 검증 대상입니다.", { icon: "⚠️" });
+        }
+      } catch (e) {
+        console.warn("[attendance] activity summary skipped:", e);
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "퇴근 처리 중 오류가 발생했습니다.");
@@ -321,20 +334,44 @@ export default function AttendancePage() {
     }
   }
 
+  const statusUi = {
+    ABSENT: {
+      badge: "미출근",
+      badgeClass:
+        "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
+      title: "미출근",
+      titleClass: "text-zinc-500 dark:text-zinc-400",
+    },
+    LATE: {
+      badge: "지각",
+      badgeClass: "bg-red-100 text-red-600 dark:bg-red-950/70 dark:text-red-400",
+      title: "지각 출근",
+      titleClass: "text-red-600 dark:text-red-400",
+    },
+    WORKING: {
+      badge: "출근",
+      badgeClass:
+        "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-400",
+      title: "출근 완료",
+      titleClass: "text-emerald-600 dark:text-emerald-400",
+    },
+    DONE: {
+      badge: "완료",
+      badgeClass: "bg-blue-100 text-blue-700 dark:bg-blue-950/70 dark:text-blue-400",
+      title: "근무 완료",
+      titleClass: "text-blue-600 dark:text-blue-400",
+    },
+  }[statusType];
+
+  const checkInDisabled =
+    loading || pageFetching || !currentUserId.trim() || statusType !== "ABSENT";
+  const checkOutDisabled =
+    loading || pageFetching || !isCheckedIn || isCheckedOut;
+  const secondaryActionsDisabled = loading || pageFetching || isCheckedOut;
+
   return (
     <div className="crm-card">
       <div className="space-y-6 p-5 sm:p-7 lg:p-8">
-      <div
-        style={{
-          background: "yellow",
-          color: "red",
-          fontSize: "28px",
-          fontWeight: 800,
-          padding: "12px",
-        }}
-      >
-        ATTENDANCE BUILD CHECK 0410
-      </div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">근태 관리</h1>
@@ -362,52 +399,97 @@ export default function AttendancePage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        <HoverCard className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30 lg:col-span-2">
-          <div
-            style={{
-              background: "yellow",
-              color: "red",
-              fontSize: "28px",
-              fontWeight: 800,
-              padding: "12px",
-            }}
-          >
-            ATTENDANCE BUILD CHECK 0410
-          </div>
+        <div className="space-y-4 lg:col-span-2">
           <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 내 근태 상태</div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-3">
-            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 상태</div>
-              <div style={{ fontSize: "24px", color: "blue", fontWeight: 800 }}>강제표시-지각테스트</div>
-            </HoverCard>
-            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">출근</div>
-              <div style={{ fontSize: "20px", color: "green", fontWeight: 800 }}>강제표시-출근시간테스트</div>
-            </HoverCard>
-            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">퇴근</div>
-              <div style={{ fontSize: "20px", color: "purple", fontWeight: 800 }}>강제표시-퇴근시간테스트</div>
-            </HoverCard>
-            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">근무일 여부</div>
-              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                {isWeekend || isHolidayToday ? "휴무일" : "근무일"}
+
+          <div className="flex min-h-[272px] flex-col rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:min-h-[248px]">
+            <div className="mb-3">
+              <span
+                className={`inline-flex items-center rounded-lg px-3 py-1.5 text-sm font-bold ${statusUi.badgeClass}`}
+              >
+                {statusUi.badge}
+              </span>
+            </div>
+            <div className={`text-3xl font-bold leading-tight tracking-tight ${statusUi.titleClass}`}>
+              {statusUi.title}
+            </div>
+            <div className="mt-5 space-y-2 border-t border-zinc-100 pt-4 dark:border-zinc-800">
+              <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-4">
+                <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                  출근
+                </span>
+                <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                  {dt(todayNorm?.normalized_check_in ?? null)}
+                </span>
               </div>
-            </HoverCard>
-            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 활동 수</div>
-              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                {todayActivity?.total ?? 0}
-                {(todayActivity?.total ?? 0) === 0 ? " (경고)" : ""}
+              <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-4">
+                <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
+                  퇴근
+                </span>
+                <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
+                  {dt(todayNorm?.normalized_check_out ?? null)}
+                </span>
               </div>
-            </HoverCard>
-            <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-xs text-zinc-500 dark:text-zinc-400">마지막 GPS</div>
-              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{currentPositionLabel}</div>
-            </HoverCard>
+            </div>
+            <div className="mt-auto flex flex-wrap gap-2 border-t border-zinc-100 pt-5 dark:border-zinc-800">
+              <TapButton
+                onClick={() => void onCheckIn()}
+                disabled={checkInDisabled}
+                className={`rounded-xl px-5 py-2.5 text-sm font-semibold disabled:opacity-50 ${
+                  statusType === "ABSENT"
+                    ? "bg-indigo-600 text-white hover:bg-indigo-500"
+                    : "border border-zinc-200 bg-zinc-100 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
+                }`}
+              >
+                출근
+              </TapButton>
+              <TapButton
+                onClick={() => void onCheckOut()}
+                disabled={checkOutDisabled}
+                className="rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
+              >
+                퇴근
+              </TapButton>
+            </div>
           </div>
 
-          <div className="mt-4">
+          <div className="mt-1 grid gap-2 sm:grid-cols-3 sm:gap-3">
+            <div className="rounded-lg border border-zinc-200/90 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
+                근무일 여부
+              </div>
+              <div className="mt-1 text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                {isWeekend || isHolidayToday ? "휴무일" : "근무일"}
+              </div>
+            </div>
+            <div className="rounded-lg border border-zinc-200/90 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
+                오늘 활동 수
+              </div>
+              <div className="mt-1 text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                {todayActivity?.activityLogsUnavailable ? (
+                  <span className="font-medium text-zinc-400 dark:text-zinc-500">집계 불가</span>
+                ) : (
+                  <>
+                    {todayActivity?.total ?? 0}
+                    {(todayActivity?.total ?? 0) === 0 ? (
+                      <span className="ml-1 text-amber-600 dark:text-amber-400">· 경고</span>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg border border-zinc-200/90 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:min-w-0">
+              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
+                마지막 GPS
+              </div>
+              <div className="mt-1 break-all text-xs font-semibold text-zinc-900 dark:text-zinc-50">
+                {currentPositionLabel}
+              </div>
+            </div>
+          </div>
+
+          <div>
             <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">메모</label>
             <input
               value={memo}
@@ -441,40 +523,21 @@ export default function AttendancePage() {
 
           <div className="mt-4 flex flex-wrap gap-2">
             <TapButton
-              onClick={() => void onCheckIn()}
-              disabled={loading || pageFetching}
-              className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
-            >
-              출근
-            </TapButton>
-            <TapButton
-              onClick={() => void onCheckOut()}
-              disabled={
-                loading ||
-                pageFetching ||
-                !todayNorm?.normalized_check_in ||
-                todayDone
-              }
-              className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
-            >
-              퇴근
-            </TapButton>
-            <TapButton
               onClick={() => void onMark("외근")}
-              disabled={loading || pageFetching}
+              disabled={secondaryActionsDisabled}
               className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900/60"
             >
               외근
             </TapButton>
             <TapButton
               onClick={() => void onMark("휴가")}
-              disabled={loading || pageFetching}
+              disabled={secondaryActionsDisabled}
               className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900/60"
             >
               휴가
             </TapButton>
           </div>
-        </HoverCard>
+        </div>
 
         <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
           <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">자동 판단 기준</div>

@@ -47,7 +47,30 @@ export type ActivitySummary = {
   statusChanged: number;
   contractProgress: number;
   total: number;
+  /** crm_activity_logs 미존재·캐시 오류 등으로 집계를 못 했을 때; total=0이어도 ‘활동 없음’으로 해석하지 말 것 */
+  activityLogsUnavailable?: true;
 };
+
+const EMPTY_ACTIVITY_SUMMARY: ActivitySummary = {
+  consultations: 0,
+  leadCreated: 0,
+  statusChanged: 0,
+  contractProgress: 0,
+  total: 0,
+};
+
+/** crm_activity_logs 미생성·스키마 캐시 미반영 등으로 조회 불가일 때 throw 대신 빈 요약 사용 */
+function isCrmActivityLogsUnavailable(error: unknown): boolean {
+  const e = error as { code?: string; message?: string };
+  const m = (e.message ?? "").toLowerCase();
+  if (e.code === "PGRST205") return true;
+  if (!m.includes("crm_activity_logs")) return false;
+  return (
+    m.includes("schema cache") ||
+    m.includes("could not find the table") ||
+    (m.includes("relation") && m.includes("does not exist"))
+  );
+}
 
 /** 로컬 달력 기준 YYYY-MM-DD (UTC toISOString().slice(0,10) 사용 금지) */
 export function getLocalDateKey(d: Date = new Date()): string {
@@ -698,7 +721,13 @@ export async function getActivitySummaryByUserDate(
     .select("activity_type")
     .eq("user_id", userId)
     .eq("date", date);
-  if (error) throw error;
+  if (error) {
+    if (isCrmActivityLogsUnavailable(error)) {
+      console.warn("[attendance] crm_activity_logs unavailable, zero summary:", error);
+      return { ...EMPTY_ACTIVITY_SUMMARY, activityLogsUnavailable: true };
+    }
+    throw error;
+  }
   const rows = (data ?? []) as Array<{ activity_type: string }>;
   const consultations = rows.filter((r) => r.activity_type === "consultation_created").length;
   const leadCreated = rows.filter((r) => r.activity_type === "lead_created").length;
@@ -718,7 +747,13 @@ export async function getActivitySummaryMapByDate(date: string) {
     .from("crm_activity_logs")
     .select("user_id, activity_type")
     .eq("date", date);
-  if (error) throw error;
+  if (error) {
+    if (isCrmActivityLogsUnavailable(error)) {
+      console.warn("[attendance] crm_activity_logs unavailable, empty map:", error);
+      return new Map<string, ActivitySummary>();
+    }
+    throw error;
+  }
   const rows = (data ?? []) as Array<{ user_id: string; activity_type: string }>;
   const map = new Map<string, ActivitySummary>();
   for (const r of rows) {
