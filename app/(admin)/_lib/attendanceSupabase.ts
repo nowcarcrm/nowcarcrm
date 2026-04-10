@@ -83,6 +83,45 @@ function isMeaningfulTimestampValue(v: unknown): boolean {
   return true;
 }
 
+/** UI·표시용: work_date/date, check_in·check_in_at, check_out·check_out_at 혼합 스키마 정규화 */
+export type NormalizedAttendanceRow = AttendanceRow & {
+  normalized_date: string | null;
+  normalized_check_in: string | null;
+  normalized_check_out: string | null;
+};
+
+export function normalizeAttendanceRow(
+  row: AttendanceRow | null | undefined
+): NormalizedAttendanceRow | null {
+  if (!row) return null;
+  const dateRaw = row.work_date ?? row.date ?? null;
+  const normalized_date =
+    dateRaw != null && String(dateRaw).trim() !== ""
+      ? String(dateRaw).trim()
+      : null;
+
+  let normalized_check_in: string | null = null;
+  if (isMeaningfulTimestampValue(row.check_in)) {
+    normalized_check_in = String(row.check_in).trim();
+  } else if (isMeaningfulTimestampValue(row.check_in_at)) {
+    normalized_check_in = String(row.check_in_at).trim();
+  }
+
+  let normalized_check_out: string | null = null;
+  if (isMeaningfulTimestampValue(row.check_out)) {
+    normalized_check_out = String(row.check_out).trim();
+  } else if (isMeaningfulTimestampValue(row.check_out_at)) {
+    normalized_check_out = String(row.check_out_at).trim();
+  }
+
+  return {
+    ...row,
+    normalized_date,
+    normalized_check_in,
+    normalized_check_out,
+  };
+}
+
 /**
  * 실제 출근시각만 본다: 1) check_in 의미 있음 → 그 값, 2) 아니면 check_in_at 의미 있음 → 그 값, 3) 둘 다 없으면 null.
  * (row 존재 여부와 무관 — 빈 껍데 row는 null)
@@ -562,10 +601,10 @@ export async function markAttendanceStatus(
 }
 
 export async function listAttendance(limit = 200): Promise<AttendanceRow[]> {
+  /** date만 정렬하면 date가 null인 work_date 행이 limit 밖으로 밀릴 수 있어 created_at 기준으로 통일 */
   const { data, error } = await supabase
     .from("attendance")
     .select("*")
-    .order("date", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(limit);
   if (error) throw error;
@@ -586,28 +625,60 @@ export async function listAttendanceByMonth(
   const from = `${month}-01`;
   const last = lastDayOfCalendarMonth(month);
   const to = `${month}-${String(last).padStart(2, "0")}`;
-  const { data, error } = await supabase
+
+  const byDate = await supabase
     .from("attendance")
     .select("*")
     .gte("date", from)
-    .lte("date", to)
-    .order("date", { ascending: true });
-  if (error) throw error;
-  return (data as AttendanceRow[]) ?? [];
+    .lte("date", to);
+  if (byDate.error && !isUndefinedColumnError(byDate.error)) throw byDate.error;
+
+  const byWork = await supabase
+    .from("attendance")
+    .select("*")
+    .gte("work_date", from)
+    .lte("work_date", to);
+  if (byWork.error && !isUndefinedColumnError(byWork.error)) throw byWork.error;
+
+  const map = new Map<string, AttendanceRow>();
+  if (!byDate.error) {
+    for (const r of (byDate.data as AttendanceRow[]) ?? []) {
+      map.set(r.id, r);
+    }
+  }
+  if (!byWork.error) {
+    for (const r of (byWork.data as AttendanceRow[]) ?? []) {
+      map.set(r.id, r);
+    }
+  }
+
+  const merged = Array.from(map.values());
+  merged.sort((a, b) => {
+    const na = normalizeAttendanceRow(a)?.normalized_date ?? "";
+    const nb = normalizeAttendanceRow(b)?.normalized_date ?? "";
+    if (na !== nb) return na.localeCompare(nb);
+    return (a.created_at ?? "").localeCompare(b.created_at ?? "");
+  });
+  return merged;
 }
 
 export async function listTodayAttendance(): Promise<AttendanceRow[]> {
   const today = getLocalDateKey();
+  const map = new Map<string, AttendanceRow>();
+
   const byWork = await supabase.from("attendance").select("*").eq("work_date", today);
-  if (!byWork.error && (byWork.data?.length ?? 0) > 0) {
-    return (byWork.data as AttendanceRow[]) ?? [];
+  if (byWork.error && !isUndefinedColumnError(byWork.error)) throw byWork.error;
+  if (!byWork.error) {
+    for (const r of (byWork.data as AttendanceRow[]) ?? []) map.set(r.id, r);
   }
-  if (byWork.error && !isUndefinedColumnError(byWork.error)) {
-    throw byWork.error;
-  }
+
   const byDate = await supabase.from("attendance").select("*").eq("date", today);
-  if (byDate.error) throw byDate.error;
-  return (byDate.data as AttendanceRow[]) ?? [];
+  if (byDate.error && !isUndefinedColumnError(byDate.error)) throw byDate.error;
+  if (!byDate.error) {
+    for (const r of (byDate.data as AttendanceRow[]) ?? []) map.set(r.id, r);
+  }
+
+  return Array.from(map.values());
 }
 
 export async function approveHolidayWork(attendanceId: string, approved: boolean) {
