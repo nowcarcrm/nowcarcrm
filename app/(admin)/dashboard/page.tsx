@@ -35,7 +35,7 @@ export default function DashboardPage() {
   useEffect(() => {
     if (authLoading) return;
     if (!profile) {
-      setLeads([]);
+      queueMicrotask(() => setLeads([]));
       return;
     }
     let mounted = true;

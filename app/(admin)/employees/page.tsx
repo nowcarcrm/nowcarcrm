@@ -86,6 +86,11 @@ export default function EmployeesPage() {
     void loadUsers();
   }, [loadUsers]);
 
+  useEffect(() => {
+    if (!isAdmin) return;
+    console.log("[employees] pendingUsers (server filtered role=staff,status=pending)", pendingUsers);
+  }, [pendingUsers, isAdmin]);
+
   async function setApproval(userId: string, status: Approval) {
     setApprovalBusyId(userId);
     try {
@@ -210,9 +215,6 @@ export default function EmployeesPage() {
     );
   }
 
-  useEffect(() => {
-    console.log("[employees] pendingUsers (server filtered role=staff,status=pending)", pendingUsers);
-  }, [pendingUsers]);
   const approvedCount = users.filter((u) => effectiveStatus(u.approval_status) === "approved").length;
   const rejectedCount = users.filter((u) => effectiveStatus(u.approval_status) === "rejected").length;
   const filteredUsers =

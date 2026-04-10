@@ -26,18 +26,22 @@ function AuthCallbackContent() {
       searchParams.get("error");
 
     if (err) {
-      setStatus("error");
-      try {
-        setMessage(authErrorMessageKo(decodeURIComponent(err)));
-      } catch {
-        setMessage(authErrorMessageKo(err));
-      }
+      queueMicrotask(() => {
+        setStatus("error");
+        try {
+          setMessage(authErrorMessageKo(decodeURIComponent(err)));
+        } catch {
+          setMessage(authErrorMessageKo(err));
+        }
+      });
       return;
     }
 
     if (!code) {
-      setStatus("error");
-      setMessage("인증 코드가 없습니다. 비밀번호 재설정 메일의 링크를 다시 사용해 주세요.");
+      queueMicrotask(() => {
+        setStatus("error");
+        setMessage("인증 코드가 없습니다. 비밀번호 재설정 메일의 링크를 다시 사용해 주세요.");
+      });
       return;
     }
 
