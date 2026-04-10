@@ -17,9 +17,8 @@ function effectiveApproval(
 async function requireApprovedAdmin(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, role, is_active, approval_status")
+    .select("id, role, approval_status")
     .eq("id", authUserId)
-    .eq("is_active", true)
     .maybeSingle();
   if (e1) return { admin: null as null, error: e1.message };
 
@@ -27,9 +26,8 @@ async function requireApprovedAdmin(authUserId: string) {
   if (!row) {
     const { data: legacy, error: e2 } = await supabaseAdmin
       .from("users")
-      .select("id, role, is_active, approval_status")
+      .select("id, role, approval_status")
       .eq("auth_user_id", authUserId)
-      .eq("is_active", true)
       .maybeSingle();
     if (e2) return { admin: null as null, error: e2.message };
     row = legacy;
@@ -64,9 +62,8 @@ export async function GET(req: Request) {
 
     const { data, error: qErr } = await supabaseAdmin
       .from("users")
-      .select("id, email, name, role, approval_status, created_at, is_active")
+      .select("id, email, name, role, approval_status, created_at")
       .eq("approval_status", "pending")
-      .eq("is_active", true)
       .order("created_at", { ascending: false });
 
     if (qErr) {

@@ -23,18 +23,16 @@ function effectiveApproval(status: string | null | undefined): "pending" | "appr
 async function getRequesterRow(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, role, is_active, approval_status")
+    .select("id, role, approval_status")
     .eq("id", authUserId)
-    .eq("is_active", true)
     .maybeSingle();
   if (e1) return { row: null, error: e1 };
   if (byId) return { row: byId, error: null };
 
   const { data: legacy, error: e2 } = await supabaseAdmin
     .from("users")
-    .select("id, role, is_active, approval_status")
+    .select("id, role, approval_status")
     .eq("auth_user_id", authUserId)
-    .eq("is_active", true)
     .maybeSingle();
   return { row: legacy, error: e2 };
 }
@@ -53,7 +51,7 @@ export async function POST(req: Request) {
     }
 
     const { row: requester, error: requesterErr } = await getRequesterRow(authData.user.id);
-    if (requesterErr || !requester || !requester.is_active) {
+    if (requesterErr || !requester) {
       return NextResponse.json({ error: "직원 계정 확인에 실패했습니다." }, { status: 403 });
     }
     if (effectiveApproval(requester.approval_status) !== "approved") {
@@ -101,7 +99,6 @@ export async function POST(req: Request) {
       id: authId,
       name,
       role,
-      is_active: true,
       email,
       approval_status: "approved" as const,
     };
@@ -120,7 +117,6 @@ export async function POST(req: Request) {
           email,
           name,
           role,
-          is_active: true,
           approval_status: "approved",
         })
         .select("id, email, name, role")

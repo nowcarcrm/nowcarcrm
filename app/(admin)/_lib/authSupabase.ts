@@ -6,13 +6,13 @@ import {
   createActiveUserFromAuth,
   effectiveApprovalStatus,
   getActiveUserByEmail,
-  getUserByAuthIdAny,
-  getUserByEmailAny,
   getUserProfileByAuthId,
   updateUserAuthLink,
   type UserRole,
   type UserRow,
 } from "./usersSupabase";
+
+const AUTH_DEBUG_VERSION = "auth-diagnose-2026-04-10-v1";
 
 export type AuthProfile = {
   authUserId: string;
@@ -83,6 +83,7 @@ export async function signInWithEmail(email: string, password: string) {
     email: email.trim().toLowerCase(),
     password,
   });
+  console.log("[login] signInWithPassword raw result", { data, error });
   if (error) {
     const e = error as { message?: string; status?: number; code?: string; name?: string };
     console.error("[login] signInWithPassword raw error", {
@@ -147,7 +148,13 @@ export async function signOutAuth() {
 
 export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
   console.log("[auth] resolveAuthProfile start:", user.id, user.email);
-  const linked = await getUserProfileByAuthId(user.id);
+  let linked: UserRow | null = null;
+  try {
+    linked = await getUserProfileByAuthId(user.id);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`[RESOLVE_PROFILE] ${msg}`);
+  }
   console.log("[auth] profile lookup by auth id:", user.id, "→", linked ? "found" : "not found", linked);
 
   if (linked) {
@@ -160,19 +167,13 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
     throw new Error("CRM 프로필 없음: 로그인 계정 이메일을 확인할 수 없어 CRM 프로필과 연결할 수 없습니다.");
   }
 
-  const linkedAny = await getUserByAuthIdAny(user.id);
-  if (linkedAny && !linkedAny.is_active) {
-    await supabase.auth.signOut();
-    throw new Error("사용 중지 계정입니다. 관리자에게 문의하세요.");
+  let byEmail: UserRow | null = null;
+  try {
+    byEmail = await getActiveUserByEmail(email);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    throw new Error(`[RESOLVE_PROFILE_EMAIL] ${msg}`);
   }
-
-  const byEmailAny = await getUserByEmailAny(email);
-  if (byEmailAny && !byEmailAny.is_active) {
-    await supabase.auth.signOut();
-    throw new Error("사용 중지 계정입니다. 관리자에게 문의하세요.");
-  }
-
-  const byEmail = await getActiveUserByEmail(email);
   console.log("[auth] profile lookup by email:", email, "→", byEmail ? "found" : "not found", byEmail);
 
   if (byEmail) {
@@ -211,7 +212,7 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
  * signIn 직후 레이스와 일부 환경에서의 "Auth session missing"을 줄입니다.
  */
 export async function getCurrentAuthProfile() {
-  console.log("[auth] getCurrentAuthProfile start");
+  console.log("[auth] getCurrentAuthProfile start", { AUTH_DEBUG_VERSION });
   if (shouldSkipCrmProfileResolution()) {
     return null;
   }
@@ -220,6 +221,9 @@ export async function getCurrentAuthProfile() {
     data: { session },
     error: sessionError,
   } = await supabase.auth.getSession();
+  if (sessionError) {
+    throw new Error(`[GET_SESSION] ${sessionError.message ?? "세션 조회 실패"}`);
+  }
   console.log("[auth] getSession:", {
     hasSession: !!session,
     userId: session?.user?.id,
@@ -238,7 +242,7 @@ export async function getCurrentAuthProfile() {
       if (isSessionMissingAuthError(userError)) {
         return null;
       }
-      throw userError;
+      throw new Error(`[GET_USER] ${userError.message ?? "사용자 조회 실패"}`);
     }
     user = fetched;
   }

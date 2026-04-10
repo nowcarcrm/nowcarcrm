@@ -13,7 +13,6 @@ export type UserRow = {
   id: string;
   name: string;
   role: UserRole;
-  is_active: boolean;
   created_at: string;
   /** 마이그레이션 전 행은 UI에서 approved 로 간주 */
   approval_status?: UserApprovalStatus | null;
@@ -38,24 +37,36 @@ export function roleLabelKo(role: UserRole): string {
 
 /** 세션 auth.users.id 로 CRM 프로필 조회 (신규: users.id = auth id / 레거시: auth_user_id) */
 export async function getUserProfileByAuthId(authUserId: string): Promise<UserRow | null> {
+  console.log("[users] query by id condition:", {
+    table: "users",
+    where: { id: authUserId },
+  });
   const { data: byPk, error: errPk } = await supabase
     .from("users")
     .select("*")
     .eq("id", authUserId)
-    .eq("is_active", true)
     .maybeSingle();
   console.log("[auth] profile query users.id = auth.uid:", { authUserId, data: byPk, error: errPk });
-  if (errPk) throw errPk;
+  if (errPk) {
+    console.error("[users] query by id raw error:", errPk);
+    throw new Error(`[PROFILE_BY_ID] ${errPk.message ?? "users 조회 실패"}`);
+  }
   if (byPk) return byPk as UserRow;
 
+  console.log("[users] query by legacy auth_user_id condition:", {
+    table: "users",
+    where: { auth_user_id: authUserId },
+  });
   const { data: legacy, error: errLegacy } = await supabase
     .from("users")
     .select("*")
     .eq("auth_user_id", authUserId)
-    .eq("is_active", true)
     .maybeSingle();
   console.log("[auth] profile query users.auth_user_id:", { authUserId, data: legacy, error: errLegacy });
-  if (errLegacy) throw errLegacy;
+  if (errLegacy) {
+    console.error("[users] query by auth_user_id raw error:", errLegacy);
+    throw new Error(`[PROFILE_BY_AUTH_USER_ID] ${errLegacy.message ?? "users 조회 실패"}`);
+  }
   return (legacy as UserRow | null) ?? null;
 }
 
@@ -70,7 +81,6 @@ export async function ensureDefaultUsers() {
     name,
     email: `${name.replace(/\s+/g, "").toLowerCase()}@company.local`,
     role: idx === 0 ? "admin" : idx === 1 ? "manager" : "staff",
-    is_active: true,
     approval_status: "approved" as const,
   }));
 
@@ -83,7 +93,6 @@ export async function listActiveUsers(): Promise<UserRow[]> {
     const { data, error } = await supabase
       .from("users")
       .select("*")
-      .eq("is_active", true)
       .or("approval_status.eq.approved,approval_status.is.null")
       .order("name", { ascending: true });
     console.log("users fetch result:", data, error);
@@ -105,13 +114,19 @@ export async function getActiveUserByAuthId(authUserId: string) {
 }
 
 export async function getActiveUserByEmail(email: string) {
+  console.log("[users] query by email condition:", {
+    table: "users",
+    where: { email },
+  });
   const { data, error } = await supabase
     .from("users")
     .select("*")
     .eq("email", email)
-    .eq("is_active", true)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    console.error("[users] query by email raw error:", error);
+    throw new Error(`[PROFILE_BY_EMAIL] ${error.message ?? "users 조회 실패"}`);
+  }
   return (data as UserRow | null) ?? null;
 }
 
@@ -171,7 +186,6 @@ export async function createPendingStaffProfileFromAuth(input: {
     email: input.email,
     name: uniqueName,
     role: "staff" as UserRole,
-    is_active: true,
     approval_status: "pending" as const,
   };
   const { data, error } = await supabase.from("users").insert(payload).select("*").single();
@@ -190,7 +204,6 @@ export async function createActiveUserFromAuth(input: {
     email: input.email,
     name: input.name,
     role: "staff" as UserRole,
-    is_active: true,
     approval_status: "approved" as const,
   };
   const { data, error } = await supabase.from("users").insert(payload).select("*").single();

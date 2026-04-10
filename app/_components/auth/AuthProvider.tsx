@@ -25,6 +25,20 @@ type AuthContextValue = {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+function normalizeAuthError(err: unknown, stage: string): string {
+  if (err instanceof Error) {
+    const msg = err.message?.trim() || "알 수 없는 오류";
+    if (msg.startsWith("[")) return msg;
+    return `[${stage}] ${msg}`;
+  }
+  if (typeof err === "string" && err.trim()) {
+    const t = err.trim();
+    if (t.startsWith("[")) return t;
+    return `[${stage}] ${t}`;
+  }
+  return `[${stage}] 인증 정보를 확인하는 중 오류가 발생했습니다.`;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [profile, setProfile] = useState<AuthProfile | null>(null);
@@ -42,8 +56,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       console.log("[auth-provider] refreshProfile result", { hasProfile: !!p, profileUserId: p?.userId });
       return { profile: p, error: null };
     } catch (err) {
-      const msg =
-        err instanceof Error ? err.message : "인증 정보를 확인하는 중 오류가 발생했습니다.";
+      const msg = normalizeAuthError(err, "AUTH_PROVIDER_REFRESH");
       setProfile(null);
       setAuthError(msg);
       console.error("[auth-provider] refreshProfile error", msg, err);
@@ -90,10 +103,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             setProfile(p);
             setAuthError(null);
           } catch (err) {
-            const msg =
-              err instanceof Error ? err.message : "인증 정보를 확인하는 중 오류가 발생했습니다.";
+            const msg = normalizeAuthError(err, "AUTH_STATE_RESOLVE");
             setProfile(null);
             setAuthError(msg);
+            console.error("[auth-provider] resolveAuthProfile failed after auth change", {
+              event,
+              sessionUserId: session.user.id,
+              error: msg,
+              raw: err,
+            });
           }
         })();
         return;

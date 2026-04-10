@@ -2,6 +2,7 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const expectedProjectRef = process.env.NEXT_PUBLIC_SUPABASE_PROJECT_REF ?? "";
 
 function isPlaceholder(value: string | undefined) {
   if (!value) return true;
@@ -17,6 +18,18 @@ export function getSupabaseConfigStatus() {
     missing,
     placeholder,
     url: supabaseUrl ?? "",
+  };
+}
+
+export function getSupabaseAuthTargetInfo() {
+  const projectRef = projectRefFromUrl(supabaseUrl);
+  return {
+    url: supabaseUrl ?? "",
+    projectRef,
+    expectedProjectRef,
+    projectRefMatch: expectedProjectRef ? expectedProjectRef === projectRef : null,
+    anonKeyPreview: maskKey(supabaseAnonKey),
+    authTokenEndpoint: supabaseUrl ? `${supabaseUrl}/auth/v1/token?grant_type=password` : "",
   };
 }
 
@@ -44,13 +57,7 @@ if (!getSupabaseConfigStatus().ok) {
 }
 
 if (typeof window !== "undefined") {
-  const ref = projectRefFromUrl(supabaseUrl);
-  console.log("[supabase-client] auth target", {
-    url: supabaseUrl,
-    projectRef: ref,
-    anonKeyPreview: maskKey(supabaseAnonKey),
-    authTokenEndpoint: supabaseUrl ? `${supabaseUrl}/auth/v1/token?grant_type=password` : "",
-  });
+  console.log("[supabase-client] auth target", getSupabaseAuthTargetInfo());
 }
 
 /**

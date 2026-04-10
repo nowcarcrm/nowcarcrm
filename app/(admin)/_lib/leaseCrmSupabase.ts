@@ -1329,14 +1329,13 @@ function isNoticesUnavailableError(error: unknown): boolean {
   );
 }
 
-/** 활성 공지만, 최신순 (테이블·RLS 미적용 시 빈 배열) */
+/** 공지 최신순 조회 (is_active 컬럼 필터는 앱 단에서 처리) */
 export async function listNotices(limit = 5): Promise<Notice[]> {
   ensureSupabaseConfigured();
   const lim = Math.min(Math.max(limit, 1), 20);
   const { data, error } = await supabase
     .from("notices")
     .select("id, title, content, created_by, created_at, is_active")
-    .eq("is_active", true)
     .order("created_at", { ascending: false })
     .limit(lim);
   if (error) {
@@ -1346,7 +1345,7 @@ export async function listNotices(limit = 5): Promise<Notice[]> {
     }
     throw new Error(`공지 조회 실패: ${formatSupabaseError(error)}`);
   }
-  return ((data ?? []) as NoticeRow[]).map(mapNoticeRow);
+  return ((data ?? []) as NoticeRow[]).map(mapNoticeRow).filter((n) => n.isActive);
 }
 
 export async function createNotice(input: {
