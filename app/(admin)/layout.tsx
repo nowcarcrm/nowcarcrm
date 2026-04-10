@@ -28,10 +28,10 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   return (
     <AdminShell
       currentUser={{
-        name: profile.name,
+        name: profile.name?.trim() || profile.email?.split("@")[0] || "사용자",
         role: profile.role,
         roleLabel: roleLabelKo(profile.role),
-        email: profile.email,
+        email: profile.email || "",
       }}
       onLogout={() => void logout()}
     >

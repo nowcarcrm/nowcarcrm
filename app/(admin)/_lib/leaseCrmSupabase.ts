@@ -863,6 +863,12 @@ async function logStatusHistory(params: {
 
 export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
   ensureSupabaseConfigured();
+  const queryMeta = {
+    table: "leads",
+    order: "created_at desc",
+    scopeRole: scope?.role ?? "all",
+    scopeUserId: scope?.userId ?? null,
+  };
   let query = supabase
     .from("leads")
     .select("*")
@@ -871,55 +877,29 @@ export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
     query = query.eq("manager_user_id", scope.userId);
   }
   const { data: leadsData, error: leadsError } = await query;
-  console.log("leads fetch:", leadsData, leadsError);
+  console.log("[fetchLeads] query result", {
+    ...queryMeta,
+    rowCount: leadsData?.length ?? 0,
+    hasError: !!leadsError,
+  });
 
   if (leadsError) {
-    console.error("[Supabase] leads fetch error:", leadsError);
+    console.error("[fetchLeads] leads query failed(raw)", {
+      ...queryMeta,
+      code: leadsError.code,
+      message: leadsError.message,
+      details: leadsError.details,
+      hint: leadsError.hint,
+      raw: leadsError,
+    });
     throw new Error(`고객 조회 실패: ${formatSupabaseError(leadsError)}`);
   }
 
   const leadRows = (leadsData ?? []) as LeadRow[];
   if (leadRows.length === 0) return [];
-
-  const leadIds = leadRows.map((l) => l.id);
-
-  const [
-    { data: consultationsData, error: consultationsError },
-    { data: contractsData, error: contractsError },
-    { data: exportData, error: exportError },
-  ] =
-    await Promise.all([
-      supabase.from("consultations").select("*").in("lead_id", leadIds),
-      supabase.from("contracts").select("*").in("lead_id", leadIds),
-      supabase.from("export_progress").select("*").in("lead_id", leadIds),
-    ]);
-
-  if (consultationsError) throw consultationsError;
-  if (contractsError) throw contractsError;
-  if (exportError) throw exportError;
-
-  const consultations = (consultationsData ?? []) as ConsultationRow[];
-  const contracts = (contractsData ?? []) as ContractRow[];
-  const exportRows = (exportData ?? []) as ExportProgressRow[];
-
-  return leadRows.map((row) => {
-    const latestContract =
-      contracts
-        .filter((c) => c.lead_id === row.id)
-        .sort((a, b) =>
-          (a.contract_date ?? "") < (b.contract_date ?? "") ? 1 : -1
-        )[0] ?? null;
-    const latestExport =
-      exportRows
-        .filter((e) => e.lead_id === row.id)
-        .sort((a, b) =>
-          (a.expected_delivery_date ?? a.delivered_at ?? "") <
-          (b.expected_delivery_date ?? b.delivered_at ?? "")
-            ? 1
-            : -1
-        )[0] ?? null;
-    return mapRowToLead(row, consultations, latestContract, latestExport);
-  });
+  // 운영 환경에서 relation 테이블(consultations/contracts/export_progress)이 없을 수 있어
+  // 목록 조회는 leads 단일 테이블만 사용한다.
+  return leadRows.map((row) => mapRowToLead(row, [], null, null));
 }
 
 /** DB 컬럼은 `name`, `phone` (고객명 / 연락처). 표시·API용 별칭은 hit 객체 필드명으로 매핑합니다. */
@@ -1003,54 +983,44 @@ export async function fetchLeadById(
   }
   const row = rowData as LeadRow | null;
   if (!row) return null;
-
-  const [
-    { data: consultationsData, error: consultationsError },
-    { data: contractsData, error: contractsError },
-    { data: exportData, error: exportError },
-  ] = await Promise.all([
-    supabase.from("consultations").select("*").eq("lead_id", leadId),
-    supabase.from("contracts").select("*").eq("lead_id", leadId),
-    supabase.from("export_progress").select("*").eq("lead_id", leadId),
-  ]);
-
-  if (consultationsError) throw consultationsError;
-  if (contractsError) throw contractsError;
-  if (exportError) throw exportError;
-
-  const consultations = (consultationsData ?? []) as ConsultationRow[];
-  const contracts = (contractsData ?? []) as ContractRow[];
-  const exportRows = (exportData ?? []) as ExportProgressRow[];
-
-  const latestContract =
-    contracts.sort((a, b) =>
-      (a.contract_date ?? "") < (b.contract_date ?? "") ? 1 : -1
-    )[0] ?? null;
-  const latestExport =
-    exportRows.sort((a, b) =>
-      (a.expected_delivery_date ?? a.delivered_at ?? "") <
-      (b.expected_delivery_date ?? b.delivered_at ?? "")
-        ? 1
-        : -1
-    )[0] ?? null;
-
-  return mapRowToLead(row, consultations, latestContract, latestExport);
+  // 상세 조회도 임시로 leads 단일 테이블만 사용한다.
+  return mapRowToLead(row, [], null, null);
 }
 
 export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead> {
   ensureSupabaseConfigured();
+  const leadsTable = "leads";
   const managerUserId = await resolveManagerUserId(lead, scope);
   const leadForInsert = { ...lead, managerUserId };
   const payload = toLeadInsertRow(leadForInsert);
+  console.log("[Supabase] createLead target table", leadsTable);
   devLog("[Supabase] leads insert payload:", payload);
+  console.log("[Supabase] leads insert payload(full)", payload);
   const { data, error } = await supabase
-    .from("leads")
+    .from(leadsTable)
     .insert(payload)
     .select("*")
     .single();
   if (error) {
-    console.error("[Supabase] leads insert error:", error, "payload:", payload);
-    throw new Error(`고객 저장 실패: ${formatSupabaseError(error)}`);
+    const e = error as { code?: string; message?: string; details?: string; hint?: string };
+    console.error("[Supabase] leads insert error(full)", {
+      code: e.code ?? null,
+      message: e.message ?? null,
+      details: e.details ?? null,
+      hint: e.hint ?? null,
+      payload,
+      raw: error,
+    });
+    throw new Error(
+      [
+        "고객 저장 실패",
+        `error.code: ${e.code ?? "-"}`,
+        `error.message: ${e.message ?? "-"}`,
+        `error.details: ${e.details ?? "-"}`,
+        `error.hint: ${e.hint ?? "-"}`,
+        `insert payload: ${JSON.stringify(payload)}`,
+      ].join("\n")
+    );
   }
 
   const insertedRow = data as LeadRow;
@@ -1063,7 +1033,8 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
     lastHandledAt: insertedRow.created_at,
   };
 
-  await replaceLeadRelations(normalizeLeadForPersistence(createdLead));
+  // NOTE: 운영 DB에 consultations/contracts/export_progress 테이블이 없을 수 있어
+  // createLead 경로에서는 leads insert 성공 시 즉시 성공 반환한다.
   await logActivity(actorUserKey(createdLead), "lead_created", createdLead.id);
   await logStatusHistory({
     leadId: createdLead.id,
@@ -1091,49 +1062,15 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
   }
   const managerUserId = await resolveManagerUserId(lead, scope);
   const leadForUpdate = normalizeLeadForPersistence({ ...lead, managerUserId });
-  const [
-    { data: prevData, error: prevError },
-    { count: prevConsultationCount, error: prevConsultationError },
-    { data: prevContractData, error: prevContractError },
-    { data: prevExportData, error: prevExportError },
-  ] = await Promise.all([
-    supabase
+  const { data: prevData, error: prevError } = await supabase
     .from("leads")
     .select("status")
     .eq("id", leadForUpdate.id)
-    .maybeSingle(),
-    supabase
-      .from("consultations")
-      .select("*", { count: "exact", head: true })
-      .eq("lead_id", leadForUpdate.id),
-    supabase
-      .from("contracts")
-      .select("id")
-      .eq("lead_id", leadForUpdate.id)
-      .limit(1)
-      .maybeSingle(),
-    supabase
-      .from("export_progress")
-      .select("id, stage")
-      .eq("lead_id", leadForUpdate.id)
-      .limit(1)
-      .maybeSingle(),
-  ]);
+    .maybeSingle();
   if (prevError) throw new Error(`수정 전 상태 조회 실패: ${formatSupabaseError(prevError)}`);
-  if (prevConsultationError)
-    throw new Error(`수정 전 상담기록 조회 실패: ${formatSupabaseError(prevConsultationError)}`);
-  if (prevContractError)
-    throw new Error(`수정 전 계약 조회 실패: ${formatSupabaseError(prevContractError)}`);
-  if (prevExportError)
-    throw new Error(`수정 전 출고 조회 실패: ${formatSupabaseError(prevExportError)}`);
 
   const payload = toLeadUpdateRow(leadForUpdate);
   devLog("[Supabase] leads update payload (계약 탭 필드는 포함되지 않음):", payload);
-  if (leadForUpdate.contract) {
-    devLog(
-      "[Supabase] 동일 요청에서 이어서 contracts 테이블은 delete 후 INSERT 됩니다. 계약 컬럼 매핑은 toContractRow 로그를 참고하세요."
-    );
-  }
   let updateQuery = supabase.from("leads").update(payload).eq("id", leadForUpdate.id);
   if (scope?.role === "staff") {
     updateQuery = updateQuery.eq("manager_user_id", scope.userId);
@@ -1148,15 +1085,7 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
     throw new Error(`고객 수정 실패: ${formatSupabaseError(error)}`);
   }
 
-  devLog("[Supabase] updateLead replaceLeadRelations", {
-    leadId: leadForUpdate.id,
-    counselingStatus: leadForUpdate.counselingStatus,
-    counselingRecordCount: leadForUpdate.counselingRecords.length,
-    hasContract: leadForUpdate.contract != null,
-    hasExport: leadForUpdate.exportProgress != null,
-  });
-
-  await replaceLeadRelations(leadForUpdate);
+  // 운영 DB에서 relation 테이블이 없을 수 있어, updateLead는 leads 단일 테이블만 갱신한다.
 
   if ((prevData?.status ?? "") !== leadForUpdate.counselingStatus) {
     await logActivity(actorUserKey(leadForUpdate), "status_changed", leadForUpdate.id);
@@ -1166,24 +1095,6 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
       statusType: "counseling_status",
       fromValue: (prevData?.status as string | null) ?? null,
       toValue: leadForUpdate.counselingStatus,
-    });
-  }
-  const hadContract = !!prevContractData?.id;
-  if (leadForUpdate.contract && !hadContract) {
-    await logActivity(actorUserKey(leadForUpdate), "contract_progress", leadForUpdate.id);
-  }
-  if (leadForUpdate.counselingRecords.length > (prevConsultationCount ?? 0)) {
-    await logActivity(actorUserKey(leadForUpdate), "consultation_created", leadForUpdate.id);
-  }
-  const prevExportStage = (prevExportData as { stage?: string } | null)?.stage ?? null;
-  const nextExportStage = leadForUpdate.exportProgress?.stage ?? null;
-  if (nextExportStage && prevExportStage !== nextExportStage) {
-    await logStatusHistory({
-      leadId: leadForUpdate.id,
-      changedBy: actorUserKey(leadForUpdate),
-      statusType: "export_stage",
-      fromValue: prevExportStage,
-      toValue: nextExportStage,
     });
   }
 }

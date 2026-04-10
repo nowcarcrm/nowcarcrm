@@ -131,6 +131,7 @@ export default function LeadCreateModal({
                 lastHandledAt: nowIso,
                 ...defaultLeadOperationalFields(),
               };
+              console.log("[LeadCreateModal] submit lead payload(full)", lead);
               void (async () => {
                 try {
                   setError(null);

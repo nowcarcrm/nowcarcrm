@@ -3,7 +3,6 @@
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "./supabaseClient";
 import {
-  createActiveUserFromAuth,
   effectiveApprovalStatus,
   getActiveUserByEmail,
   getUserProfileByAuthId,
@@ -38,11 +37,12 @@ function normalizeName(user: User) {
 }
 
 function toAuthProfile(user: User, row: UserRow): AuthProfile {
+  const fallbackName = normalizeName(user);
   return {
     authUserId: user.id,
     userId: row.id,
     email: user.email ?? row.email ?? "",
-    name: row.name,
+    name: row.name?.trim() || row.email?.split("@")[0] || fallbackName,
     role: row.role,
   };
 }
@@ -65,14 +65,10 @@ async function assertUserApproved(row: UserRow) {
 
   await supabase.auth.signOut();
   if (status === "rejected") {
-    throw new Error(
-      "가입 승인이 거절되었습니다. (approval_status: rejected) 관리자에게 문의하세요."
-    );
+    throw new Error("승인 거절된 계정입니다. 관리자에게 문의하세요.");
   }
   if (status === "pending") {
-    throw new Error(
-      "관리자 승인 대기 중입니다. (approval_status: pending) 승인 후 다시 로그인해 주세요."
-    );
+    throw new Error("관리자 승인 대기중입니다.");
   }
   throw new Error(`계정을 사용할 수 없습니다. (승인 상태: ${String(raw ?? "알 수 없음")})`);
 }
@@ -158,6 +154,10 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
   console.log("[auth] profile lookup by auth id:", user.id, "→", linked ? "found" : "not found", linked);
 
   if (linked) {
+    if (linked.role !== "admin" && linked.role !== "staff") {
+      await supabase.auth.signOut();
+      throw new Error("허용되지 않은 계정 권한입니다. 관리자에게 문의하세요.");
+    }
     await assertUserApproved(linked);
     return toAuthProfile(user, linked);
   }
@@ -178,33 +178,15 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
 
   if (byEmail) {
     const updated = (await updateUserAuthLink(byEmail.id, user.id)) as UserRow;
+    if (updated.role !== "admin" && updated.role !== "staff") {
+      await supabase.auth.signOut();
+      throw new Error("허용되지 않은 계정 권한입니다. 관리자에게 문의하세요.");
+    }
     await assertUserApproved(updated);
     return toAuthProfile(user, updated);
   }
-
-  try {
-    const created = await createActiveUserFromAuth({
-      authUserId: user.id,
-      email,
-      name: normalizeName(user),
-    });
-    console.log("[auth] created public.users row for auth user:", user.id);
-    await assertUserApproved(created);
-    return toAuthProfile(user, created);
-  } catch (createErr) {
-    const again = await getUserProfileByAuthId(user.id);
-    if (again) {
-      console.log("[auth] profile appeared after create race, using row:", again.id);
-      await assertUserApproved(again);
-      return toAuthProfile(user, again);
-    }
-    await supabase.auth.signOut();
-    const hint =
-      createErr instanceof Error ? createErr.message : "users 행 생성에 실패했습니다.";
-    throw new Error(
-      `CRM 프로필 없음: public.users 행이 없고 자동 생성도 되지 않았습니다. ${hint} 관리자에게 계정을 요청하거나 RLS·INSERT 정책을 확인하세요.`
-    );
-  }
+  await supabase.auth.signOut();
+  throw new Error("직원 계정 정보가 없습니다. 관리자에게 문의하세요.");
 }
 
 /**

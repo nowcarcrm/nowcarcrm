@@ -1,61 +1,92 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
-import { supabase } from "../_lib/supabaseClient";
+import { getSupabaseAuthTargetInfo, supabase } from "../_lib/supabaseClient";
 
-type Role = "admin" | "manager" | "staff";
+type Role = "admin" | "staff";
+type Approval = "pending" | "approved" | "rejected";
 
-type PendingUserRow = {
+type UserRow = {
   id: string;
   email: string | null;
-  name: string;
-  role: string;
-  approval_status: string;
+  name: string | null;
+  role: Role | string | null;
+  approval_status: Approval | string | null;
   created_at: string;
 };
 
 export default function EmployeesPage() {
+  const router = useRouter();
   const { profile } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
   const [role, setRole] = useState<Role>("staff");
-  const [loading, setLoading] = useState(false);
+  const [createApproval, setCreateApproval] = useState<Approval>("approved");
+  const [loadingCreate, setLoadingCreate] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [pendingUsers, setPendingUsers] = useState<PendingUserRow[]>([]);
-  const [pendingLoading, setPendingLoading] = useState(false);
+  const [users, setUsers] = useState<UserRow[]>([]);
+  const [pendingUsers, setPendingUsers] = useState<UserRow[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
   const [approvalBusyId, setApprovalBusyId] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<"all" | Approval>("all");
+  const [createOpen, setCreateOpen] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteLink, setInviteLink] = useState<string | null>(null);
   const isAdmin = profile?.role === "admin";
+  const authTarget = getSupabaseAuthTargetInfo();
 
-  const loadPendingUsers = useCallback(async () => {
+  function effectiveStatus(s: string | null | undefined): Approval {
+    if (s === "pending" || s === "approved" || s === "rejected") return s;
+    return "pending";
+  }
+
+  const loadUsers = useCallback(async () => {
     if (!isAdmin) return;
-    setPendingLoading(true);
+    setLoadingUsers(true);
     try {
       const {
         data: { session },
       } = await supabase.auth.getSession();
       const token = session?.access_token;
-      if (!token) return;
-      const res = await fetch("/api/admin/user-approval", {
+      if (!token) throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
+      console.log("[employees] loadUsers start", { authTarget });
+      const resPending = await fetch("/api/admin/user-approval?status=pending&role=staff", {
         headers: { Authorization: `Bearer ${token}` },
       });
-      const data = (await res.json()) as { users?: PendingUserRow[]; error?: string };
-      if (!res.ok) throw new Error(data.error ?? "목록을 불러오지 못했습니다.");
-      setPendingUsers(data.users ?? []);
+      const pendingData = (await resPending.json()) as { users?: UserRow[]; error?: string };
+      if (!resPending.ok) throw new Error(pendingData.error ?? "승인 대기 목록을 불러오지 못했습니다.");
+      console.log("[employees] raw pending users response", pendingData.users ?? []);
+      setPendingUsers(pendingData.users ?? []);
+
+      const resAll = await fetch("/api/admin/user-approval?status=all", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const allData = (await resAll.json()) as { users?: UserRow[]; error?: string };
+      if (!resAll.ok) throw new Error(allData.error ?? "전체 직원 목록을 불러오지 못했습니다.");
+      console.log("[employees] raw all users response", allData.users ?? []);
+      setUsers(allData.users ?? []);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "승인 대기 목록 로드 실패");
+      toast.error(e instanceof Error ? e.message : "직원 목록 로드 실패");
     } finally {
-      setPendingLoading(false);
+      setLoadingUsers(false);
     }
   }, [isAdmin]);
 
   useEffect(() => {
-    void loadPendingUsers();
-  }, [loadPendingUsers]);
+    if (profile && profile.role !== "admin") {
+      router.replace("/dashboard");
+    }
+  }, [profile, router]);
 
-  async function setApproval(userId: string, action: "approve" | "reject") {
+  useEffect(() => {
+    void loadUsers();
+  }, [loadUsers]);
+
+  async function setApproval(userId: string, status: Approval) {
     setApprovalBusyId(userId);
     try {
       const {
@@ -70,13 +101,15 @@ export default function EmployeesPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ userId, action }),
+        body: JSON.stringify({ userId, status }),
       });
       const data = (await res.json()) as { error?: string; user?: { name?: string } };
       if (!res.ok) throw new Error(data.error ?? "처리에 실패했습니다.");
 
-      toast.success(action === "approve" ? "승인했습니다." : "거절 처리했습니다.");
-      await loadPendingUsers();
+      if (status === "approved") toast.success("직원 승인이 완료되었습니다.");
+      else if (status === "rejected") toast.success("직원 계정이 거절 처리되었습니다.");
+      else toast.success("직원 상태를 승인 대기로 변경했습니다.");
+      await loadUsers();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "처리 중 오류");
     } finally {
@@ -85,14 +118,14 @@ export default function EmployeesPage() {
   }
 
   const disabled = useMemo(
-    () => loading || !email.trim() || !password.trim() || !name.trim(),
-    [loading, email, password, name]
+    () => loadingCreate || !email.trim() || !password.trim() || !name.trim(),
+    [loadingCreate, email, password, name]
   );
 
   async function createEmployee(e: React.FormEvent) {
     e.preventDefault();
     if (!isAdmin) return;
-    setLoading(true);
+    setLoadingCreate(true);
     setMessage(null);
     try {
       const {
@@ -112,6 +145,7 @@ export default function EmployeesPage() {
           password: password.trim(),
           name: name.trim(),
           role,
+          approval_status: createApproval,
         }),
       });
       const data = (await res.json()) as { error?: string; user?: { name: string; email: string } };
@@ -122,153 +156,319 @@ export default function EmployeesPage() {
       setPassword("");
       setName("");
       setRole("staff");
+      setCreateApproval("approved");
+      await loadUsers();
     } catch (err) {
       setMessage(err instanceof Error ? err.message : "직원 계정 생성 중 오류가 발생했습니다.");
     } finally {
-      setLoading(false);
+      setLoadingCreate(false);
+    }
+  }
+
+  async function createInviteLink() {
+    if (!isAdmin) return;
+    const targetEmail = email.trim().toLowerCase();
+    if (!targetEmail) {
+      setMessage("초대 링크를 만들 이메일을 입력해 주세요.");
+      return;
+    }
+    setInviteBusy(true);
+    setInviteLink(null);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("관리자 인증 세션이 만료되었습니다. 다시 로그인하세요.");
+
+      const res = await fetch("/api/admin/employees/invite", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email: targetEmail }),
+      });
+      const data = (await res.json()) as { error?: string; actionLink?: string | null };
+      if (!res.ok) throw new Error(data.error ?? "초대 링크 생성 실패");
+      setInviteLink(data.actionLink ?? null);
+      toast.success("비밀번호 설정(초대) 링크를 생성했습니다.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "초대 링크 생성 중 오류가 발생했습니다.";
+      setMessage(msg);
+      toast.error(msg);
+    } finally {
+      setInviteBusy(false);
     }
   }
 
   if (!isAdmin) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        관리자만 직원 계정을 생성할 수 있습니다.
+        권한이 없습니다.
       </div>
     );
   }
 
+  useEffect(() => {
+    console.log("[employees] pendingUsers (server filtered role=staff,status=pending)", pendingUsers);
+  }, [pendingUsers]);
+  const approvedCount = users.filter((u) => effectiveStatus(u.approval_status) === "approved").length;
+  const rejectedCount = users.filter((u) => effectiveStatus(u.approval_status) === "rejected").length;
+  const filteredUsers =
+    statusFilter === "all"
+      ? users
+      : users.filter((u) => effectiveStatus(u.approval_status) === statusFilter);
+
   return (
-    <div className="crm-card">
-      <div className="space-y-6 p-5 sm:p-7 lg:p-8">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">직원 관리</h1>
+        <h1 className="text-xl font-semibold text-zinc-900 dark:text-zinc-50">직원 관리</h1>
         <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-          직원은 회원가입 페이지에서 가입할 수 있으며, 관리자 승인 후 CRM을 사용합니다. 필요 시 아래에서
-          관리자가 Auth 계정을 직접 만들 수도 있습니다.
+          직원은 회원가입 페이지에서 직접 가입합니다. 가입된 계정은 승인 대기 상태로 등록되며,
+          관리자가 이 페이지에서 승인한 뒤 CRM을 사용할 수 있습니다.
         </p>
       </div>
 
-      <div className="rounded-2xl border border-amber-200/80 bg-amber-50/80 p-4 dark:border-amber-900/50 dark:bg-amber-950/20">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+      <div className="grid gap-3 sm:grid-cols-3">
+        <SummaryCard label="승인 대기" value={pendingUsers.length} tone="amber" />
+        <SummaryCard label="승인 완료" value={approvedCount} tone="emerald" />
+        <SummaryCard label="거절" value={rejectedCount} tone="rose" />
+      </div>
+
+      <section className="crm-card p-5 sm:p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
             승인 대기 직원 ({pendingUsers.length})
           </h2>
           <button
             type="button"
-            onClick={() => void loadPendingUsers()}
-            disabled={pendingLoading}
+            onClick={() => void loadUsers()}
+            disabled={loadingUsers}
             className="text-xs font-medium text-indigo-600 hover:underline disabled:opacity-50 dark:text-indigo-400"
           >
-            {pendingLoading ? "불러오는 중…" : "새로고침"}
+            {loadingUsers ? "불러오는 중…" : "새로고침"}
           </button>
         </div>
         {pendingUsers.length === 0 ? (
-          <p className="mt-2 text-xs text-zinc-600 dark:text-zinc-400">
-            승인 대기 중인 직원이 없습니다.
+          <p className="mt-4 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-4 text-sm text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900/30 dark:text-zinc-300">
+            현재 승인 대기 중인 직원이 없습니다.
           </p>
         ) : (
-          <ul className="mt-3 space-y-2">
-            {pendingUsers.map((u) => (
-              <li
-                key={u.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900/40"
-              >
-                <div>
-                  <div className="font-medium text-zinc-900 dark:text-zinc-50">{u.name}</div>
-                  <div className="text-xs text-zinc-500">
-                    {u.email ?? "—"} · {u.role} · {new Date(u.created_at).toLocaleString("ko-KR")}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    disabled={approvalBusyId === u.id}
-                    onClick={() => void setApproval(u.id, "approve")}
-                    className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    승인
-                  </button>
-                  <button
-                    type="button"
-                    disabled={approvalBusyId === u.id}
-                    onClick={() => void setApproval(u.id, "reject")}
-                    className="rounded-lg border border-zinc-300 bg-white px-3 py-1 text-xs font-semibold text-zinc-800 hover:bg-zinc-50 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100 dark:hover:bg-zinc-700"
-                  >
-                    거절
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      <form
-        onSubmit={createEmployee}
-        className="max-w-xl space-y-4 rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800"
-      >
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-            이름
-          </label>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50"
-            placeholder="예: 김직원"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-            이메일(아이디)
-          </label>
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50"
-            placeholder="name@company.com"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-            초기 비밀번호
-          </label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-            역할
-          </label>
-          <select
-            value={role}
-            onChange={(e) => setRole(e.target.value as Role)}
-            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50"
-          >
-            <option value="staff">staff</option>
-            <option value="manager">manager</option>
-            <option value="admin">admin</option>
-          </select>
-        </div>
-        <button
-          type="submit"
-          disabled={disabled}
-          className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
-        >
-          {loading ? "생성 중..." : "직원 계정 생성"}
-        </button>
-        {message ? (
-          <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-200">
-            {message}
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                  <th className="px-3 py-2">이름</th>
+                  <th className="px-3 py-2">이메일</th>
+                  <th className="px-3 py-2">역할</th>
+                  <th className="px-3 py-2">가입일</th>
+                  <th className="px-3 py-2 text-right">액션</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pendingUsers.map((u) => (
+                  <tr key={u.id} className="border-b border-zinc-100 dark:border-zinc-800">
+                    <td className="px-3 py-2">{u.name || "-"}</td>
+                    <td className="px-3 py-2">{u.email || "-"}</td>
+                    <td className="px-3 py-2">{u.role || "staff"}</td>
+                    <td className="px-3 py-2">{new Date(u.created_at).toLocaleString("ko-KR")}</td>
+                    <td className="px-3 py-2 text-right">
+                      <div className="inline-flex gap-2">
+                        <button
+                          type="button"
+                          disabled={approvalBusyId === u.id}
+                          onClick={() => void setApproval(u.id, "approved")}
+                          className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
+                        >
+                          승인
+                        </button>
+                        <button
+                          type="button"
+                          disabled={approvalBusyId === u.id}
+                          onClick={() => void setApproval(u.id, "rejected")}
+                          className="rounded-lg border border-zinc-300 bg-white px-3 py-1 text-xs font-semibold text-zinc-800 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
+                        >
+                          거절
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
+        )}
+      </section>
+
+      <section className="crm-card p-5 sm:p-6">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">전체 직원 목록</h2>
+          <div className="flex gap-2">
+            {(["all", "pending", "approved", "rejected"] as const).map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setStatusFilter(f)}
+                className={`rounded-lg px-3 py-1 text-xs font-semibold ${
+                  statusFilter === f
+                    ? "bg-indigo-600 text-white"
+                    : "border border-zinc-300 text-zinc-700 dark:border-zinc-600 dark:text-zinc-200"
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+        </div>
+        {filteredUsers.length === 0 ? (
+          <p className="mt-4 text-sm text-zinc-500 dark:text-zinc-400">표시할 직원이 없습니다.</p>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="border-b border-zinc-200 text-left text-xs text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
+                  <th className="px-3 py-2">이름</th>
+                  <th className="px-3 py-2">이메일</th>
+                  <th className="px-3 py-2">role</th>
+                  <th className="px-3 py-2">approval_status</th>
+                  <th className="px-3 py-2">가입일</th>
+                  <th className="px-3 py-2 text-right">상태 변경</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredUsers.map((u) => {
+                  const cur = effectiveStatus(u.approval_status);
+                  return (
+                    <tr key={u.id} className="border-b border-zinc-100 dark:border-zinc-800">
+                      <td className="px-3 py-2">{u.name || "-"}</td>
+                      <td className="px-3 py-2">{u.email || "-"}</td>
+                      <td className="px-3 py-2">{u.role || "staff"}</td>
+                      <td className="px-3 py-2">{cur}</td>
+                      <td className="px-3 py-2">{new Date(u.created_at).toLocaleString("ko-KR")}</td>
+                      <td className="px-3 py-2 text-right">
+                        <div className="inline-flex flex-wrap justify-end gap-1">
+                          {cur !== "pending" ? (
+                            <button
+                              type="button"
+                              disabled={approvalBusyId === u.id}
+                              onClick={() => void setApproval(u.id, "pending")}
+                              className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-600"
+                            >
+                              pending
+                            </button>
+                          ) : null}
+                          {cur !== "approved" ? (
+                            <button
+                              type="button"
+                              disabled={approvalBusyId === u.id}
+                              onClick={() => void setApproval(u.id, "approved")}
+                              className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white"
+                            >
+                              approved
+                            </button>
+                          ) : null}
+                          {cur !== "rejected" ? (
+                            <button
+                              type="button"
+                              disabled={approvalBusyId === u.id}
+                              onClick={() => void setApproval(u.id, "rejected")}
+                              className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 dark:border-rose-500/40 dark:text-rose-300"
+                            >
+                              rejected
+                            </button>
+                          ) : null}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="crm-card p-5 sm:p-6">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
+            관리자 직접 계정 생성(선택)
+          </h2>
+          <button
+            type="button"
+            onClick={() => setCreateOpen((p) => !p)}
+            className="rounded border border-zinc-300 px-3 py-1 text-xs dark:border-zinc-600"
+          >
+            {createOpen ? "접기" : "펼치기"}
+          </button>
+        </div>
+        {createOpen ? (
+          <form onSubmit={createEmployee} className="mt-4 max-w-2xl space-y-4">
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">이름</label>
+              <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50" placeholder="예: 김직원" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">이메일(아이디)</label>
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50" placeholder="name@company.com" />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">초기 비밀번호</label>
+              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50" />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">역할</label>
+                <select value={role} onChange={(e) => setRole(e.target.value as Role)} className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50">
+                  <option value="staff">staff</option>
+                  <option value="admin">admin</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">초기 승인 상태</label>
+                <select value={createApproval} onChange={(e) => setCreateApproval(e.target.value as Approval)} className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50">
+                  <option value="approved">approved</option>
+                  <option value="pending">pending</option>
+                  <option value="rejected">rejected</option>
+                </select>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button type="submit" disabled={disabled} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                {loadingCreate ? "생성 중..." : "직원 계정 생성"}
+              </button>
+              <button type="button" onClick={() => void createInviteLink()} disabled={inviteBusy || !email.trim()} className="rounded-xl border border-indigo-300 px-4 py-2 text-sm font-semibold text-indigo-700 disabled:opacity-50 dark:border-indigo-500/40 dark:text-indigo-300">
+                {inviteBusy ? "생성 중..." : "비밀번호 설정 링크 생성"}
+              </button>
+            </div>
+            {inviteLink ? (
+              <div className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-xs text-indigo-800 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
+                초대 링크: <span className="break-all">{inviteLink}</span>
+              </div>
+            ) : null}
+            {message ? (
+              <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm text-zinc-700 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-200">
+                {message}
+              </div>
+            ) : null}
+          </form>
         ) : null}
-      </form>
-      </div>
+      </section>
+    </div>
+  );
+}
+
+function SummaryCard({ label, value, tone }: { label: string; value: number; tone: "amber" | "emerald" | "rose" }) {
+  const toneClass =
+    tone === "amber"
+      ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-100"
+      : tone === "emerald"
+        ? "border-emerald-200 bg-emerald-50 text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-100"
+        : "border-rose-200 bg-rose-50 text-rose-900 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-100";
+  return (
+    <div className={`rounded-xl border p-4 ${toneClass}`}>
+      <div className="text-xs font-semibold">{label}</div>
+      <div className="mt-2 text-2xl font-bold tabular-nums">{value}</div>
     </div>
   );
 }

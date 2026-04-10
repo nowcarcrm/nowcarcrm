@@ -62,7 +62,7 @@ function dt(iso: string | null | undefined) {
 
 export default function AttendancePage() {
   const { profile } = useAuth();
-  const canViewAll = profile?.role === "admin" || profile?.role === "manager";
+  const canViewAll = profile?.role === "admin";
   const [currentUserId, setCurrentUserId] = useState<string>("");
   const [userOptions, setUserOptions] = useState<UserRow[]>([]);
   const [today, setToday] = useState<AttendanceRow | null>(null);

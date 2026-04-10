@@ -18,8 +18,17 @@ export async function loadLeadsFromStorage(scope?: LeadViewerScope): Promise<Lea
   try {
     const leads = await fetchLeads(scope);
     return leads;
-  } catch {
-    return [];
+  } catch (error) {
+    const details =
+      error instanceof Error
+        ? { message: error.message, name: error.name }
+        : { message: String(error) };
+    console.error("[leaseCrmStorage] loadLeadsFromStorage failed", {
+      scope,
+      details,
+      raw: error,
+    });
+    throw error;
   }
 }
 

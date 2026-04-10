@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const expectedProjectRef = process.env.NEXT_PUBLIC_SUPABASE_PROJECT_REF ?? "";
+let didLogSupabaseUrl = false;
 
 function isPlaceholder(value: string | undefined) {
   if (!value) return true;
@@ -56,7 +57,9 @@ if (!getSupabaseConfigStatus().ok) {
   );
 }
 
-if (typeof window !== "undefined") {
+if (typeof window !== "undefined" && !didLogSupabaseUrl) {
+  didLogSupabaseUrl = true;
+  console.log("[Supabase URL]", supabaseUrl ?? "");
   console.log("[supabase-client] auth target", getSupabaseAuthTargetInfo());
 }
 

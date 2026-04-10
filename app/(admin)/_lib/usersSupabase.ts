@@ -1,7 +1,7 @@
 import { EMPLOYEES } from "./leaseCrmSeed";
 import { supabase } from "./supabaseClient";
 
-export type UserRole = "admin" | "manager" | "staff";
+export type UserRole = "admin" | "staff";
 
 export type UserApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -22,16 +22,15 @@ export type UserRow = {
   email?: string | null;
 };
 
-/** 컬럼 없음·null 은 기존 직원으로 간주해 승인된 것으로 처리 */
+/** 컬럼 없음·null 은 pending 으로 간주 */
 export function effectiveApprovalStatus(row: Pick<UserRow, "approval_status">): UserApprovalStatus {
   const s = row.approval_status;
   if (s === "pending" || s === "rejected" || s === "approved") return s;
-  return "approved";
+  return "pending";
 }
 
 export function roleLabelKo(role: UserRole): string {
   if (role === "admin") return "관리자";
-  if (role === "manager") return "매니저";
   return "직원";
 }
 
@@ -80,7 +79,7 @@ export async function ensureDefaultUsers() {
   const payload = EMPLOYEES.map((name, idx) => ({
     name,
     email: `${name.replace(/\s+/g, "").toLowerCase()}@company.local`,
-    role: idx === 0 ? "admin" : idx === 1 ? "manager" : "staff",
+    role: idx === 0 ? "admin" : "staff",
     approval_status: "approved" as const,
   }));
 
@@ -178,19 +177,47 @@ export async function createPendingStaffProfileFromAuth(input: {
   email: string;
   name: string;
 }) {
-  const base = input.name.trim() || input.email.split("@")[0] || "staff";
-  const uniqueName = `${base} · ${input.authUserId.replace(/-/g, "").slice(0, 8)}`;
+  const baseName = input.name.trim() || input.email.split("@")[0] || "staff";
   const payload = {
     id: input.authUserId,
     auth_user_id: input.authUserId,
     email: input.email,
-    name: uniqueName,
+    name: baseName,
     role: "staff" as UserRole,
     approval_status: "pending" as const,
   };
-  const { data, error } = await supabase.from("users").insert(payload).select("*").single();
-  if (error) throw error;
-  return data as UserRow;
+  console.log("[signup][PUBLIC_USERS_INSERT] start", {
+    authUserId: input.authUserId,
+    email: input.email,
+    name: input.name,
+    payload,
+  });
+  const { data, error } = await supabase
+    .from("users")
+    .upsert(payload, { onConflict: "id" })
+    .select("*")
+    .maybeSingle();
+  if (error) {
+    const e = error as { message?: string; code?: string; details?: string; hint?: string };
+    console.error("[signup][PUBLIC_USERS_INSERT] failed", {
+      authUserId: input.authUserId,
+      email: input.email,
+      name: input.name,
+      message: e.message ?? null,
+      code: e.code ?? null,
+      details: e.details ?? null,
+      hint: e.hint ?? null,
+      raw: error,
+    });
+    throw error;
+  }
+  console.log("[signup][PUBLIC_USERS_INSERT] success", {
+    authUserId: input.authUserId,
+    email: input.email,
+    name: input.name,
+    data,
+  });
+  return (data as UserRow | null) ?? null;
 }
 
 export async function createActiveUserFromAuth(input: {
@@ -206,7 +233,7 @@ export async function createActiveUserFromAuth(input: {
     role: "staff" as UserRole,
     approval_status: "approved" as const,
   };
-  const { data, error } = await supabase.from("users").insert(payload).select("*").single();
+  const { data, error } = await supabase.from("users").insert(payload).select("*").maybeSingle();
   if (error) throw error;
-  return data as UserRow;
+  return (data as UserRow | null) ?? null;
 }

@@ -1,5 +1,5 @@
 /**
- * Supabase Auth 등 영문 오류를 로그인·회원가입 UI용 한국어로 바꿉니다.
+ * 인증 관련 영문 오류를 로그인·회원가입 UI용 한국어로 바꿉니다.
  */
 export function authErrorMessageKo(raw: string | null | undefined): string {
   if (raw == null) return "";
@@ -24,32 +24,32 @@ export function authErrorMessageKo(raw: string | null | undefined): string {
     return "비밀번호는 6자 이상이어야 합니다.";
   }
   if (lower === "pending" || lower.includes("approval_status: pending")) {
-    return "관리자 승인 후 이용 가능합니다.";
+    return "관리자 승인 대기중입니다.";
   }
   if (lower.includes("승인 대기")) {
-    return "관리자 승인 후 이용 가능합니다.";
+    return "관리자 승인 대기중입니다.";
   }
   if (lower.includes("rejected")) {
-    return "가입 승인이 거절된 계정입니다. 관리자에게 문의하세요.";
+    return "승인 거절된 계정입니다. 관리자에게 문의하세요.";
   }
   if (lower.includes("사용 중지 계정") || lower.includes("is_active")) {
     return "사용 중지 계정입니다. 관리자에게 문의하세요.";
   }
   if (lower.includes("crm 프로필 없음") || lower.includes("public.users")) {
-    return "CRM 프로필이 아직 준비되지 않았습니다. 관리자에게 계정 등록을 요청해 주세요.";
+    return "직원 계정 정보가 없습니다. 관리자에게 문의하세요.";
   }
   if (lower.includes("세션 생성 실패")) {
-    return "세션 생성에 실패했습니다. 이메일 인증 상태와 Supabase 설정을 확인해 주세요.";
+    return "세션 생성에 실패했습니다. 잠시 후 다시 시도해 주세요.";
   }
   if (
     lower.includes("supabase env is missing") ||
     lower.includes("service role") ||
     lower.includes("project")
   ) {
-    return "서버 설정 오류가 감지되었습니다. 관리자에게 환경변수 설정을 확인해 달라고 요청해 주세요.";
+    return "서버 설정 오류가 감지되었습니다. 관리자에게 문의해 주세요.";
   }
   if (lower.includes("too many requests") || lower.includes("rate limit")) {
-    return "요청이 너무 많습니다. 잠시 후 다시 시도해 주세요.";
+    return "같은 이메일로 요청이 너무 자주 발생했습니다. 잠시 후 다시 시도해 주세요.";
   }
   if (
     lower.includes("otp expired") ||

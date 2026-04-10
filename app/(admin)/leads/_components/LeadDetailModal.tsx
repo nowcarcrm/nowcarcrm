@@ -535,7 +535,7 @@ export default function LeadDetailModal({
     devLog("[계약 저장] 최종 Lead payload (모달 → onUpdate / handleUpdateLead)", payload);
     devLog("[계약 저장] 계약 탭 contract 필드만", payload.contract);
     devLog(
-      "[계약 저장] DB contracts INSERT는 Supabase replaceLeadRelations → toContractRow(lead) 로 생성됩니다."
+      "[계약 저장] 현재 운영 모드는 leads 단일 테이블 업데이트만 수행합니다. relation 테이블 저장은 비활성화되어 있습니다."
     );
     setSaving(true);
     try {

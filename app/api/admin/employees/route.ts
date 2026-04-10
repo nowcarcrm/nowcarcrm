@@ -5,7 +5,8 @@ type CreateEmployeeBody = {
   email: string;
   password: string;
   name: string;
-  role: "admin" | "manager" | "staff";
+  role: "admin" | "staff";
+  approval_status?: "pending" | "approved" | "rejected";
 };
 
 function getBearerToken(req: Request) {
@@ -16,7 +17,7 @@ function getBearerToken(req: Request) {
 
 function effectiveApproval(status: string | null | undefined): "pending" | "approved" | "rejected" {
   if (status === "pending" || status === "rejected" || status === "approved") return status;
-  return "approved";
+  return "pending";
 }
 
 /** 신규 스키마(users.id = auth id) + 레거시(auth_user_id) 모두 지원 */
@@ -72,6 +73,12 @@ export async function POST(req: Request) {
     const password = body.password?.trim();
     const name = body.name?.trim();
     const role = body.role;
+    const approval_status =
+      body.approval_status === "pending" ||
+      body.approval_status === "approved" ||
+      body.approval_status === "rejected"
+        ? body.approval_status
+        : "approved";
 
     if (!email || !password || !name || !role) {
       return NextResponse.json(
@@ -100,7 +107,7 @@ export async function POST(req: Request) {
       name,
       role,
       email,
-      approval_status: "approved" as const,
+      approval_status,
     };
 
     let { data: userRow, error: insertErr } = await supabaseAdmin
@@ -117,7 +124,7 @@ export async function POST(req: Request) {
           email,
           name,
           role,
-          approval_status: "approved",
+          approval_status,
         })
         .select("id, email, name, role")
         .single();

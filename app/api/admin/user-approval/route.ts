@@ -11,7 +11,7 @@ function effectiveApproval(
   status: string | null | undefined
 ): "pending" | "approved" | "rejected" {
   if (status === "pending" || status === "rejected" || status === "approved") return status;
-  return "approved";
+  return "pending";
 }
 
 async function requireApprovedAdmin(authUserId: string) {
@@ -60,17 +60,61 @@ export async function GET(req: Request) {
       return NextResponse.json({ error: error ?? "권한이 없습니다." }, { status: 403 });
     }
 
-    const { data, error: qErr } = await supabaseAdmin
+    const { searchParams } = new URL(req.url);
+    const statusFilter = searchParams.get("status");
+    const roleFilter = searchParams.get("role");
+    const allowed =
+      statusFilter === "pending" || statusFilter === "approved" || statusFilter === "rejected"
+        ? statusFilter
+        : "all";
+    const allowedRole = roleFilter === "admin" || roleFilter === "staff" ? roleFilter : "all";
+
+    const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+    let projectRef = "";
+    try {
+      projectRef = url ? new URL(url).host.split(".")[0] ?? "" : "";
+    } catch {
+      projectRef = "";
+    }
+    console.log("[user-approval][GET] env target", { url, projectRef, allowed, allowedRole });
+
+    let query = supabaseAdmin
       .from("users")
       .select("id, email, name, role, approval_status, created_at")
-      .eq("approval_status", "pending")
       .order("created_at", { ascending: false });
+    if (allowed !== "all") {
+      query = query.eq("approval_status", allowed);
+    }
+    if (allowedRole !== "all") {
+      query = query.eq("role", allowedRole);
+    }
+
+    const { data, error: qErr } = await query;
 
     if (qErr) {
       return NextResponse.json({ error: qErr.message }, { status: 400 });
     }
 
-    return NextResponse.json({ users: data ?? [] });
+    const users = (data ?? []) as Array<{
+      id: string;
+      email: string | null;
+      name: string | null;
+      role: string | null;
+      approval_status: string | null;
+      created_at: string;
+    }>;
+    const counts = { pending: 0, approved: 0, rejected: 0 };
+    for (const u of users) {
+      const s = effectiveApproval(u.approval_status);
+      counts[s] += 1;
+    }
+    console.log("[user-approval][GET] raw users response", {
+      count: users.length,
+      sample: users.slice(0, 5),
+      allowed,
+      allowedRole,
+    });
+    return NextResponse.json({ users, counts, filter: allowed });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "서버 오류" },
@@ -96,23 +140,29 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: error ?? "권한이 없습니다." }, { status: 403 });
     }
 
-    const body = (await req.json()) as { userId?: string; action?: string };
+    const body = (await req.json()) as { userId?: string; action?: string; status?: string };
     const userId = body.userId?.trim();
     const action = body.action;
-    if (!userId || (action !== "approve" && action !== "reject")) {
+    const nextStatus =
+      body.status === "pending" || body.status === "approved" || body.status === "rejected"
+        ? body.status
+        : action === "approve"
+          ? "approved"
+          : action === "reject"
+            ? "rejected"
+            : null;
+
+    if (!userId || !nextStatus) {
       return NextResponse.json(
-        { error: "userId와 action(approve|reject)이 필요합니다." },
+        { error: "userId와 status(pending|approved|rejected) 또는 action이 필요합니다." },
         { status: 400 }
       );
     }
-
-    const nextStatus = action === "approve" ? "approved" : "rejected";
 
     const { data: updated, error: uErr } = await supabaseAdmin
       .from("users")
       .update({ approval_status: nextStatus })
       .eq("id", userId)
-      .eq("approval_status", "pending")
       .select("id, email, name, approval_status")
       .maybeSingle();
 
@@ -121,7 +171,7 @@ export async function PATCH(req: Request) {
     }
     if (!updated) {
       return NextResponse.json(
-        { error: "승인 대기 상태인 직원만 처리할 수 없거나 이미 처리되었습니다." },
+        { error: "대상 직원을 찾을 수 없습니다." },
         { status: 400 }
       );
     }

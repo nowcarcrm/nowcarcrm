@@ -26,6 +26,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<Record<string, unknown> | null>(null);
+  const showDebugPanel = process.env.NODE_ENV !== "production";
   const target = getSupabaseAuthTargetInfo();
 
   const clearFormError = useCallback(() => setError(null), []);
@@ -121,7 +122,7 @@ export default function LoginPage() {
             원인(raw): {authError}
           </div>
         ) : null}
-        {debugInfo ? (
+        {showDebugPanel && debugInfo ? (
           <div className="mt-3 rounded-xl border border-amber-300/70 bg-amber-50/80 p-3 text-left text-[12px] leading-relaxed text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
             <div className="font-semibold">로그인 실패 디버그 정보(임시)</div>
             <pre className="mt-2 whitespace-pre-wrap break-all text-[11px]">

@@ -30,6 +30,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 export default function DashboardPage() {
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (authLoading) return;
@@ -45,12 +46,20 @@ export default function DashboardPage() {
           role: profile.role,
           userId: profile.userId,
         });
+        console.log("[DashboardPage] leads loaded", { count: loaded.length });
         if (!mounted) return;
+        setLoadError(null);
         window.setTimeout(() => setLeads(loaded), 0);
       } catch (e) {
         if (!mounted) return;
-        console.error("[DashboardPage] leads load failed", e);
-        toast.error("고객 데이터를 불러오지 못했습니다.");
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error("[DashboardPage] leads load failed(raw)", {
+          message: msg,
+          raw: e,
+          profile,
+        });
+        setLoadError(msg);
+        toast.error("고객 데이터를 불러오지 못했습니다. 콘솔 로그를 확인해 주세요.");
         window.setTimeout(() => setLeads([]), 0);
       }
     })();
@@ -95,6 +104,20 @@ export default function DashboardPage() {
           </span>
         </div>
       </div>
+
+      {loadError ? (
+        <section className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-sm text-rose-800 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-200">
+          고객 데이터 조회에 실패했습니다. 원인: {loadError}
+        </section>
+      ) : null}
+      {!loadError && leads && leads.length === 0 ? (
+        <section className="rounded-xl border border-slate-200 bg-white p-6 text-center dark:border-zinc-700 dark:bg-zinc-900/30">
+          <div className="text-sm font-medium text-slate-700 dark:text-zinc-200">데이터가 없습니다.</div>
+          <div className="mt-1 text-xs text-slate-500 dark:text-zinc-400">
+            고객이 아직 등록되지 않았거나 조회 조건에 맞는 항목이 없습니다.
+          </div>
+        </section>
+      ) : null}
 
       <section>
         <div className="mb-3 flex items-baseline justify-between gap-2">
