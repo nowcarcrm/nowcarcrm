@@ -140,7 +140,6 @@ export default function AttendancePage() {
       console.error("[refresh error]", e);
     } finally {
       setPageFetching(false);
-      console.log("[refresh] finally (pageFetching cleared)");
     }
   }
 
@@ -182,9 +181,7 @@ export default function AttendancePage() {
 
   const statusLabel = todayNorm?.normalized_check_in
     ? (today?.status ?? "출근")
-    : isWeekend || isHolidayToday
-      ? "휴무"
-      : "미출근";
+    : ((isWeekend || isHolidayToday) ? "휴무" : "미출근");
 
   const todayDone = !!todayNorm?.normalized_check_out;
 
@@ -244,8 +241,6 @@ export default function AttendancePage() {
   }, [monthRows, userOptions]);
 
   async function onCheckIn() {
-    alert("REAL CHECKIN ENTRY");
-    console.log("🔥 REAL CHECKIN ENTRY");
     if (!currentUserId.trim()) {
       toast.error("출근할 직원을 선택해 주세요.");
       return;
@@ -276,7 +271,6 @@ export default function AttendancePage() {
 
       if (msg.includes("이미 출근 기록")) {
         const t = await getTodayAttendance(currentUserId, todayDate);
-        console.log("[onCheckIn catch] synced today:", t);
         setToday(t);
         await refresh();
       }
@@ -327,12 +321,20 @@ export default function AttendancePage() {
     }
   }
 
-  console.log("[render] today state:", today);
-  console.log("[render] normalized today:", normalizeAttendanceRow(today));
-
   return (
     <div className="crm-card">
       <div className="space-y-6 p-5 sm:p-7 lg:p-8">
+      <div
+        style={{
+          background: "yellow",
+          color: "red",
+          fontSize: "28px",
+          fontWeight: 800,
+          padding: "12px",
+        }}
+      >
+        ATTENDANCE BUILD CHECK 0410
+      </div>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">근태 관리</h1>
@@ -359,44 +361,32 @@ export default function AttendancePage() {
         </div>
       </div>
 
-      <pre className="mt-4 rounded-xl border border-red-300 bg-red-50 p-3 text-xs text-red-900 whitespace-pre-wrap dark:border-red-800 dark:bg-red-950/40 dark:text-red-100">
-        {JSON.stringify(
-          {
-            pageFetching,
-            loading,
-            currentUserId,
-            today,
-            todayNorm,
-            statusLabel,
-            normalized_check_in: todayNorm?.normalized_check_in ?? null,
-            normalized_check_out: todayNorm?.normalized_check_out ?? null,
-            rowsLength: rows.length,
-            todayRowsLength: todayRows.length,
-          },
-          null,
-          2
-        )}
-      </pre>
-
       <div className="grid gap-4 lg:grid-cols-3">
         <HoverCard className="rounded-2xl border border-zinc-200 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900/30 lg:col-span-2">
+          <div
+            style={{
+              background: "yellow",
+              color: "red",
+              fontSize: "28px",
+              fontWeight: 800,
+              padding: "12px",
+            }}
+          >
+            ATTENDANCE BUILD CHECK 0410
+          </div>
           <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 내 근태 상태</div>
           <div className="mt-3 grid gap-3 sm:grid-cols-3">
             <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 상태</div>
-              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">{statusLabel}</div>
+              <div style={{ fontSize: "24px", color: "blue", fontWeight: 800 }}>강제표시-지각테스트</div>
             </HoverCard>
             <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="text-xs text-zinc-500 dark:text-zinc-400">출근</div>
-              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                {dt(todayNorm?.normalized_check_in ?? null)}
-              </div>
+              <div style={{ fontSize: "20px", color: "green", fontWeight: 800 }}>강제표시-출근시간테스트</div>
             </HoverCard>
             <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="text-xs text-zinc-500 dark:text-zinc-400">퇴근</div>
-              <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                {dt(todayNorm?.normalized_check_out ?? null)}
-              </div>
+              <div style={{ fontSize: "20px", color: "purple", fontWeight: 800 }}>강제표시-퇴근시간테스트</div>
             </HoverCard>
             <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="text-xs text-zinc-500 dark:text-zinc-400">근무일 여부</div>
@@ -407,7 +397,7 @@ export default function AttendancePage() {
             <HoverCard className="rounded-xl border border-zinc-200 bg-white px-3 py-2 dark:border-zinc-800 dark:bg-zinc-950">
               <div className="text-xs text-zinc-500 dark:text-zinc-400">오늘 활동 수</div>
               <div className="mt-1 text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                <AnimatedStatNumber value={todayActivity?.total ?? 0} />
+                {todayActivity?.total ?? 0}
                 {(todayActivity?.total ?? 0) === 0 ? " (경고)" : ""}
               </div>
             </HoverCard>
@@ -553,7 +543,58 @@ export default function AttendancePage() {
               </tr>
             </thead>
             <tbody>
-              {rows.length === 0 ? (
+              {rows.length === 0 && todayNorm ? (
+                <tr
+                  key={todayNorm.id}
+                  className="border-b border-zinc-200 last:border-0 dark:border-zinc-800"
+                >
+                  <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
+                    {userNameMap.get(todayNorm.user_id) ?? todayNorm.user_id}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                    {todayNorm.normalized_date ?? "-"}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                    {dt(todayNorm.normalized_check_in)}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                    {dt(todayNorm.normalized_check_out)}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                    {todayNorm.checkin_status ?? "-"}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
+                    {todayNorm.checkout_status ?? "-"}
+                  </td>
+                  <td className="px-4 py-3">{todayNorm.is_holiday || todayNorm.is_weekend ? "Y" : "-"}</td>
+                  <td className="px-4 py-3">{todayNorm.status === "휴무일 근무" ? "Y" : "-"}</td>
+                  <td className="px-4 py-3">{todayNorm.latitude && todayNorm.longitude ? "Y" : "-"}</td>
+                  <td className="px-4 py-3">{todayNorm.status === "외근" ? "Y" : "-"}</td>
+                  <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
+                    {activityMap.get(todayNorm.user_id)?.total ?? 0}
+                  </td>
+                  <td className="px-4 py-3 text-zinc-600 dark:text-zinc-300">{todayNorm.memo || "-"}</td>
+                  <td className="px-4 py-3">
+                    {todayNorm.status === "휴무일 근무" ? (
+                      <TapButton
+                        type="button"
+                        onClick={async () => {
+                          await approveHolidayWork(todayNorm.id, !todayNorm.holiday_work_approved);
+                          await refresh();
+                          toast.success(
+                            todayNorm.holiday_work_approved ? "승인을 취소했습니다." : "휴무일 근무를 승인했습니다."
+                          );
+                        }}
+                        className="rounded-lg border border-zinc-200 px-2 py-1 text-xs font-semibold dark:border-zinc-700"
+                      >
+                        {todayNorm.holiday_work_approved ? "승인취소" : "승인"}
+                      </TapButton>
+                    ) : (
+                      "-"
+                    )}
+                  </td>
+                </tr>
+              ) : rows.length === 0 ? (
                 <tr>
                   <td colSpan={13} className="px-4 py-10 text-center text-sm text-zinc-500">
                     근태 데이터가 없습니다.
