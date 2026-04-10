@@ -38,6 +38,15 @@ import {
 
 const CURRENT_USER_KEY = "crm.current_user_id.v2";
 
+const ACTIVITY_SUMMARY_FALLBACK: ActivitySummary = {
+  consultations: 0,
+  leadCreated: 0,
+  statusChanged: 0,
+  contractProgress: 0,
+  total: 0,
+  activityLogsUnavailable: true,
+};
+
 function pickInitialAttendanceUserId(scoped: UserRow[], profileUserId: string): string {
   if (scoped.length === 0) return "";
   try {
@@ -115,10 +124,9 @@ export default function AttendancePage() {
       const t = await getTodayAttendance(currentUserId, todayDate);
       setToday(t);
 
-      const [list, h, act, monthList, todayList, holidayFlag] = await Promise.all([
+      const [list, h, monthList, todayList, holidayFlag] = await Promise.all([
         canViewAll ? listAttendance(300) : Promise.resolve([]),
         listHolidays(),
-        getActivitySummaryByUserDate(currentUserId, todayDate),
         canViewAll ? listAttendanceByMonth(month) : Promise.resolve([]),
         canViewAll ? listTodayAttendance() : Promise.resolve([]),
         isHoliday(todayDate),
@@ -126,7 +134,6 @@ export default function AttendancePage() {
 
       setRows(list);
       setHolidays(h);
-      setTodayActivity(act);
       setMonthRows(monthList);
       setTodayRows(todayList);
       setIsHolidayToday(holidayFlag);
@@ -134,7 +141,22 @@ export default function AttendancePage() {
       const wk = new Date().getDay();
       setIsWeekend(wk === 0 || wk === 6);
 
-      const m = canViewAll ? await getActivitySummaryMapByDate(todayDate) : new Map();
+      let act: ActivitySummary = { ...ACTIVITY_SUMMARY_FALLBACK };
+      try {
+        act = await getActivitySummaryByUserDate(currentUserId, todayDate);
+      } catch (e) {
+        console.warn("[refresh] activity summary skipped:", e);
+      }
+      setTodayActivity(act);
+
+      let m = new Map<string, ActivitySummary>();
+      if (canViewAll) {
+        try {
+          m = await getActivitySummaryMapByDate(todayDate);
+        } catch (e) {
+          console.warn("[refresh] activity map skipped:", e);
+        }
+      }
       setActivityMap(m);
     } catch (e) {
       console.error("[refresh error]", e);
