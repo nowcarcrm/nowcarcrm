@@ -1,4 +1,3 @@
-import { devLog } from "@/app/_lib/devLog";
 import { supabase } from "./supabaseClient";
 import { DEFAULT_HOLIDAYS } from "./holidayConfig";
 
@@ -152,34 +151,13 @@ export function normalizeAttendanceRow(
 function getExistingCheckInTimestamp(
   todayRow: AttendanceRow | null | undefined
 ): string | null {
-  console.log("[getExistingCheckInTimestamp] input row:", todayRow);
-  console.log("[getExistingCheckInTimestamp] raw check_in:", todayRow?.check_in);
-  console.log("[getExistingCheckInTimestamp] raw check_in_at:", todayRow?.check_in_at);
-  console.log(
-    "[getExistingCheckInTimestamp] meaningful check_in:",
-    isMeaningfulTimestampValue(todayRow?.check_in)
-  );
-  console.log(
-    "[getExistingCheckInTimestamp] meaningful check_in_at:",
-    isMeaningfulTimestampValue(todayRow?.check_in_at)
-  );
-
   if (!todayRow) return null;
   if (isMeaningfulTimestampValue(todayRow.check_in)) {
-    console.log(
-      "[getExistingCheckInTimestamp] resolved from check_in:",
-      String(todayRow.check_in).trim()
-    );
     return String(todayRow.check_in).trim();
   }
   if (isMeaningfulTimestampValue(todayRow.check_in_at)) {
-    console.log(
-      "[getExistingCheckInTimestamp] resolved from check_in_at:",
-      String(todayRow.check_in_at).trim()
-    );
     return String(todayRow.check_in_at).trim();
   }
-  console.log("[getExistingCheckInTimestamp] resolved: null");
   return null;
 }
 
@@ -366,7 +344,6 @@ export async function getTodayAttendance(
   dateKeyParam?: string
 ): Promise<AttendanceRow | null> {
   const today = dateKeyParam ?? getLocalDateKey();
-  devLog("today dateKey:", today);
 
   {
     const r = await supabase
@@ -375,12 +352,6 @@ export async function getTodayAttendance(
       .eq("user_id", userId)
       .eq("work_date", today)
       .maybeSingle();
-    console.log("[getTodayAttendance] query by work_date:", {
-      userId,
-      today,
-      data: r.data,
-      error: r.error,
-    });
     if (r.error) {
       if (!isUndefinedColumnError(r.error)) throw r.error;
     } else if (r.data) {
@@ -395,12 +366,6 @@ export async function getTodayAttendance(
       .eq("user_id", userId)
       .eq("date", today)
       .maybeSingle();
-    console.log("[getTodayAttendance] query by date:", {
-      userId,
-      today,
-      data: r.data,
-      error: r.error,
-    });
     if (r.error) {
       if (isUndefinedColumnError(r.error)) return null;
       throw r.error;
@@ -426,8 +391,6 @@ export async function checkIn(
   position: { latitude: number; longitude: number },
   opts?: { memo?: string; externalReason?: string; asExternal?: boolean }
 ) {
-  alert("attendanceSupabase checkIn CALLED");
-  console.log("🔥 attendanceSupabase checkIn CALLED");
   if (!position) {
     throw new Error("GPS 위치 정보가 없어 출근 처리할 수 없습니다.");
   }
@@ -439,15 +402,7 @@ export async function checkIn(
   const today = getLocalDateKey(now);
   const todayRow = await getTodayAttendance(userId, today);
 
-  console.log("todayRow RAW:", todayRow);
-  console.log("todayRow.check_in RAW:", todayRow?.check_in);
-  console.log("todayRow.check_in_at RAW:", todayRow?.check_in_at);
-  console.log("typeof check_in:", typeof todayRow?.check_in);
-  console.log("typeof check_in_at:", typeof todayRow?.check_in_at);
-  console.log("JSON todayRow:", JSON.stringify(todayRow, null, 2));
-
   const existingCheckIn = getExistingCheckInTimestamp(todayRow);
-  console.log("resolved existingCheckIn:", existingCheckIn);
 
   if (existingCheckIn !== null) {
     throw new Error("오늘 이미 출근 기록이 있습니다.");
@@ -478,14 +433,9 @@ export async function checkIn(
     checkin_status: checkinStatus,
   };
 
-  devLog("[checkIn] today:", today, "todayRow id:", todayRow?.id ?? null, "payload keys:", Object.keys(payload));
-
   const todayRowId = todayRow?.id != null ? String(todayRow.id) : "";
   if (todayRowId.length > 0) {
-    console.log("checkIn payload:", payload);
     const { data, error } = await updateAttendanceByIdStrippingUnknown(todayRowId, payload);
-    console.log("checkIn data:", data);
-    console.log("checkIn error:", error);
     if (error) {
       const e = error as { code?: string; message?: string; details?: string; hint?: string };
       console.error("[attendance] checkIn update failed:", {
@@ -510,10 +460,7 @@ export async function checkIn(
     return data;
   }
 
-  console.log("checkIn payload:", payload);
   const { data, error } = await upsertNewDayAttendanceStrippingUnknown(userId, today, payload);
-  console.log("checkIn data:", data);
-  console.log("checkIn error:", error);
   if (error) {
     const e = error as { code?: string; message?: string; details?: string; hint?: string };
     console.error("[attendance] checkIn upsert failed:", {
