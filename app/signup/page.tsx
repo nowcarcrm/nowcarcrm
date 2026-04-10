@@ -7,6 +7,7 @@ import toast from "react-hot-toast";
 import { getSupabaseAuthTargetInfo, supabase } from "@/app/(admin)/_lib/supabaseClient";
 import {
   createPendingStaffProfileFromAuth,
+  effectiveApprovalStatus,
   getUserProfileByAuthId,
   type UserRow,
 } from "@/app/(admin)/_lib/usersSupabase";
@@ -95,30 +96,81 @@ export default function SignupPage() {
         throw new Error("회원가입은 완료되었지만 사용자 식별값이 없습니다. 다시 시도해 주세요.");
       }
 
+      const accessToken = data.session?.access_token ?? null;
       let insertResult: unknown = null;
-      try {
-        console.log("[signup][PUBLIC_USERS_INSERT] before call", {
-          userId: user.id,
-          email: user.email,
-          name: trimmedName,
-        });
-        insertResult = await createPendingStaffProfileFromAuth({
-          authUserId: user.id,
-          email: user.email,
-          name: trimmedName,
-        });
-        console.log("[signup][PUBLIC_USERS_INSERT] after call", {
-          userId: user.id,
-          email: user.email,
-          name: trimmedName,
-          insertResult,
-        });
-      } catch (insertErr) {
-        await supabase.auth.signOut().catch(() => {});
-        const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
-        throw new Error(
-          `CRM 프로필 생성 실패: ${msg}. 관리자에게 users INSERT/RLS 정책을 확인해 달라고 요청하세요.`
-        );
+      let profileFromServer = false;
+
+      if (accessToken) {
+        try {
+          const res = await fetch("/api/auth/ensure-signup-profile", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${accessToken}`,
+            },
+            body: JSON.stringify({
+              authUserId: user.id,
+              email: user.email,
+              name: trimmedName,
+            }),
+          });
+          const json = (await res.json()) as { ok?: boolean; row?: unknown; error?: string };
+          if (res.ok && json.ok !== false) {
+            profileFromServer = true;
+            insertResult = json.row ?? json;
+            console.log("[signup][ENSURE_PROFILE_API] success", {
+              userId: user.id,
+              insertResult,
+            });
+          } else {
+            console.error("[signup][ENSURE_PROFILE_API] failed raw", {
+              status: res.status,
+              body: json,
+            });
+          }
+        } catch (apiErr) {
+          console.error("[signup][ENSURE_PROFILE_API] exception raw", apiErr);
+        }
+      }
+
+      if (!profileFromServer) {
+        try {
+          console.log("[signup][PUBLIC_USERS_INSERT] before call", {
+            userId: user.id,
+            email: user.email,
+            name: trimmedName,
+          });
+          insertResult = await createPendingStaffProfileFromAuth({
+            authUserId: user.id,
+            email: user.email,
+            name: trimmedName,
+          });
+          console.log("[signup][PUBLIC_USERS_INSERT] after call", {
+            userId: user.id,
+            email: user.email,
+            name: trimmedName,
+            insertResult,
+          });
+        } catch (insertErr) {
+          const rawLog =
+            insertErr && typeof insertErr === "object" && insertErr !== null
+              ? {
+                  ...(insertErr as object),
+                  message:
+                    insertErr instanceof Error
+                      ? insertErr.message
+                      : "message" in insertErr
+                        ? String((insertErr as { message: unknown }).message)
+                        : undefined,
+                }
+              : insertErr;
+          console.error("[signup][PUBLIC_USERS_INSERT] failed raw", { raw: rawLog, insertErr });
+          await supabase.auth.signOut().catch(() => {});
+          const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
+          throw new Error(
+            `CRM 프로필 생성 실패: ${msg}. 관리자에게 users INSERT/RLS 정책을 확인해 달라고 요청하세요.`
+          );
+        }
       }
 
       let verified: UserRow | null = null;
@@ -131,9 +183,11 @@ export default function SignupPage() {
       }
       const usersExists = !!verified;
       const role = verified?.role ?? null;
-      const approvalStatus = verified?.approval_status ?? null;
+      const approvalEffective = effectiveApprovalStatus({
+        approval_status: verified?.approval_status ?? null,
+      });
       const isRoleValid = role === "staff";
-      const isApprovalValid = approvalStatus === "pending";
+      const isApprovalValid = approvalEffective === "pending";
       const verifyOk = usersExists && isRoleValid && isApprovalValid;
 
       console.log("[signup][PUBLIC_USERS_VERIFY] result", {
@@ -142,7 +196,8 @@ export default function SignupPage() {
         usersRowExists: usersExists,
         usersInsertResult: insertResult,
         role,
-        approval_status: approvalStatus,
+        approval_status: verified?.approval_status ?? null,
+        approval_effective: approvalEffective,
         row: verified,
         verifyOk,
         failureReason: !usersExists
@@ -150,7 +205,7 @@ export default function SignupPage() {
           : !isRoleValid
             ? `invalid role: ${String(role)}`
             : !isApprovalValid
-              ? `invalid approval_status: ${String(approvalStatus)}`
+              ? `invalid approval (effective): ${String(approvalEffective)}`
               : null,
       });
 

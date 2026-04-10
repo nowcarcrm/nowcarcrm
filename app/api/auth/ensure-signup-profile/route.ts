@@ -49,6 +49,7 @@ export async function POST(req: Request) {
         details: error.details,
         hint: error.hint,
         payload,
+        raw: error,
       });
       return NextResponse.json({ error: error.message }, { status: 400 });
     }

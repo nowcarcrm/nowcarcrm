@@ -15,9 +15,13 @@ export type AttendanceStatus =
 export type AttendanceRow = {
   id: string;
   user_id: string;
-  date: string; // yyyy-mm-dd
+  /** 레거시/혼합 스키마: 일부 DB는 work_date 만 사용 */
+  date?: string | null;
+  work_date?: string | null;
   check_in: string | null;
+  check_in_at?: string | null;
   check_out: string | null;
+  check_out_at?: string | null;
   status: AttendanceStatus;
   latitude: number | null;
   longitude: number | null;
@@ -70,10 +74,153 @@ function getLocalDateTimeISO(d: Date = new Date()): string {
   return `${y}-${mo}-${day}T${h}:${mi}:${s}.${ms}${sign}${oh}:${om}`;
 }
 
-function rowHasCheckIn(row: AttendanceRow | null | undefined): boolean {
-  const v = row?.check_in;
+function isMeaningfulTimestampValue(v: unknown): boolean {
   if (v == null) return false;
-  return String(v).trim().length > 0;
+  const s = String(v).trim();
+  if (s.length === 0) return false;
+  const low = s.toLowerCase();
+  if (low === "null" || low === "undefined") return false;
+  return true;
+}
+
+/**
+ * 실제 출근시각만 본다: 1) check_in 의미 있음 → 그 값, 2) 아니면 check_in_at 의미 있음 → 그 값, 3) 둘 다 없으면 null.
+ * (row 존재 여부와 무관 — 빈 껍데 row는 null)
+ */
+function getExistingCheckInTimestamp(
+  todayRow: AttendanceRow | null | undefined
+): string | null {
+  console.log("[getExistingCheckInTimestamp] input row:", todayRow);
+  console.log("[getExistingCheckInTimestamp] raw check_in:", todayRow?.check_in);
+  console.log("[getExistingCheckInTimestamp] raw check_in_at:", todayRow?.check_in_at);
+  console.log(
+    "[getExistingCheckInTimestamp] meaningful check_in:",
+    isMeaningfulTimestampValue(todayRow?.check_in)
+  );
+  console.log(
+    "[getExistingCheckInTimestamp] meaningful check_in_at:",
+    isMeaningfulTimestampValue(todayRow?.check_in_at)
+  );
+
+  if (!todayRow) return null;
+  if (isMeaningfulTimestampValue(todayRow.check_in)) {
+    console.log(
+      "[getExistingCheckInTimestamp] resolved from check_in:",
+      String(todayRow.check_in).trim()
+    );
+    return String(todayRow.check_in).trim();
+  }
+  if (isMeaningfulTimestampValue(todayRow.check_in_at)) {
+    console.log(
+      "[getExistingCheckInTimestamp] resolved from check_in_at:",
+      String(todayRow.check_in_at).trim()
+    );
+    return String(todayRow.check_in_at).trim();
+  }
+  console.log("[getExistingCheckInTimestamp] resolved: null");
+  return null;
+}
+
+/** 퇴근 등: 의미 있는 출근 시각이 있는지 (check_in → check_in_at) */
+function rowHasCheckIn(row: AttendanceRow | null | undefined): boolean {
+  return getExistingCheckInTimestamp(row) != null;
+}
+
+function isUndefinedColumnError(error: unknown): boolean {
+  const e = error as { code?: string; message?: string };
+  if (e.code === "42703") return true;
+  const m = (e.message ?? "").toLowerCase();
+  return m.includes("does not exist") && m.includes("column");
+}
+
+function extractUnknownColumnFromPostgrest(error: unknown): string | null {
+  const msg = (error as { message?: string }).message ?? "";
+  const m = msg.match(/Could not find the '([a-zA-Z0-9_]+)' column/i);
+  return m?.[1] ?? null;
+}
+
+function isOnConflictTargetMismatch(error: unknown): boolean {
+  const m = ((error as { message?: string }).message ?? "").toLowerCase();
+  return (
+    m.includes("no unique or exclusion constraint matching") ||
+    m.includes("there is no unique or exclusion constraint matching")
+  );
+}
+
+async function updateAttendanceByIdStrippingUnknown(
+  rowId: string,
+  patch: Record<string, unknown>
+): Promise<{ data: AttendanceRow | null; error: unknown }> {
+  let body: Record<string, unknown> = { ...patch };
+  for (let attempt = 0; attempt < 20; attempt++) {
+    const { data, error } = await supabase
+      .from("attendance")
+      .update(body)
+      .eq("id", rowId)
+      .select("*")
+      .maybeSingle();
+    if (!error) {
+      return { data: (data as AttendanceRow | null) ?? null, error: null };
+    }
+    const col = extractUnknownColumnFromPostgrest(error);
+    if (!col || !(col in body)) {
+      return { data: null, error };
+    }
+    const next = { ...body };
+    delete next[col];
+    body = next;
+  }
+  return { data: null, error: new Error("attendance update: 반복 실패(알 수 없는 컬럼)") };
+}
+
+async function upsertNewDayAttendanceStrippingUnknown(
+  userId: string,
+  today: string,
+  patch: Record<string, unknown>
+): Promise<{ data: AttendanceRow | null; error: unknown }> {
+  const strategies: Array<{ onConflict: string; base: Record<string, unknown> }> = [
+    {
+      onConflict: "user_id,work_date",
+      base: { user_id: userId, work_date: today, date: today },
+    },
+    {
+      onConflict: "user_id,date",
+      base: { user_id: userId, date: today, work_date: today },
+    },
+  ];
+
+  for (const { onConflict, base } of strategies) {
+    const required = new Set(onConflict.split(",").map((s) => s.trim()));
+    let body: Record<string, unknown> = { ...base, ...patch };
+
+    for (let attempt = 0; attempt < 24; attempt++) {
+      const { data, error } = await supabase
+        .from("attendance")
+        .upsert(body, { onConflict })
+        .select("*")
+        .maybeSingle();
+
+      if (!error) {
+        return { data: (data as AttendanceRow | null) ?? null, error: null };
+      }
+
+      if (isOnConflictTargetMismatch(error)) {
+        break;
+      }
+
+      const col = extractUnknownColumnFromPostgrest(error);
+      if (col && col in body && !required.has(col)) {
+        const next = { ...body };
+        delete next[col];
+        body = next;
+        continue;
+      }
+
+      break;
+    }
+  }
+
+  return { data: null, error: new Error("attendance upsert: 스키마/유니크 제약에 맞는 저장에 실패했습니다.") };
 }
 
 function isWeekend(dateIso: string) {
@@ -158,14 +305,46 @@ export async function getTodayAttendance(
 ): Promise<AttendanceRow | null> {
   const today = dateKeyParam ?? getLocalDateKey();
   devLog("today dateKey:", today);
-  const { data, error } = await supabase
-    .from("attendance")
-    .select("*")
-    .eq("user_id", userId)
-    .eq("date", today)
-    .maybeSingle();
-  if (error) throw error;
-  return (data as AttendanceRow | null) ?? null;
+
+  {
+    const r = await supabase
+      .from("attendance")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("work_date", today)
+      .maybeSingle();
+    console.log("[getTodayAttendance] query by work_date:", {
+      userId,
+      today,
+      data: r.data,
+      error: r.error,
+    });
+    if (r.error) {
+      if (!isUndefinedColumnError(r.error)) throw r.error;
+    } else if (r.data) {
+      return r.data as AttendanceRow;
+    }
+  }
+
+  {
+    const r = await supabase
+      .from("attendance")
+      .select("*")
+      .eq("user_id", userId)
+      .eq("date", today)
+      .maybeSingle();
+    console.log("[getTodayAttendance] query by date:", {
+      userId,
+      today,
+      data: r.data,
+      error: r.error,
+    });
+    if (r.error) {
+      if (isUndefinedColumnError(r.error)) return null;
+      throw r.error;
+    }
+    return (r.data as AttendanceRow | null) ?? null;
+  }
 }
 
 function formatPostgrestError(error: {
@@ -185,6 +364,8 @@ export async function checkIn(
   position: { latitude: number; longitude: number },
   opts?: { memo?: string; externalReason?: string; asExternal?: boolean }
 ) {
+  alert("attendanceSupabase checkIn CALLED");
+  console.log("🔥 attendanceSupabase checkIn CALLED");
   if (!position) {
     throw new Error("GPS 위치 정보가 없어 출근 처리할 수 없습니다.");
   }
@@ -194,8 +375,19 @@ export async function checkIn(
 
   const now = new Date();
   const today = getLocalDateKey(now);
-  const existing = await getTodayAttendance(userId, today);
-  if (rowHasCheckIn(existing)) {
+  const todayRow = await getTodayAttendance(userId, today);
+
+  console.log("todayRow RAW:", todayRow);
+  console.log("todayRow.check_in RAW:", todayRow?.check_in);
+  console.log("todayRow.check_in_at RAW:", todayRow?.check_in_at);
+  console.log("typeof check_in:", typeof todayRow?.check_in);
+  console.log("typeof check_in_at:", typeof todayRow?.check_in_at);
+  console.log("JSON todayRow:", JSON.stringify(todayRow, null, 2));
+
+  const existingCheckIn = getExistingCheckInTimestamp(todayRow);
+  console.log("resolved existingCheckIn:", existingCheckIn);
+
+  if (existingCheckIn !== null) {
     throw new Error("오늘 이미 출근 기록이 있습니다.");
   }
 
@@ -210,12 +402,10 @@ export async function checkIn(
       ? "휴무일 근무"
       : checkinStatus;
 
-  const user = { id: userId };
   const checkInStamp = getLocalDateTimeISO(now);
-  const payload = {
-    user_id: userId,
-    date: today,
+  const payload: Record<string, unknown> = {
     check_in: checkInStamp,
+    check_in_at: checkInStamp,
     status: baseStatus,
     latitude: position.latitude,
     longitude: position.longitude,
@@ -226,20 +416,65 @@ export async function checkIn(
     checkin_status: checkinStatus,
   };
 
-  devLog("user:", user);
-  devLog("payload:", payload);
+  devLog("[checkIn] today:", today, "todayRow id:", todayRow?.id ?? null, "payload keys:", Object.keys(payload));
 
-  const { data, error } = await supabase
-    .from("attendance")
-    .upsert(payload, { onConflict: "user_id,date" })
-    .select("*")
-    .single();
-
-  if (error) {
-    console.error("[attendance] checkIn upsert failed:", error);
-    throw new Error(formatPostgrestError(error));
+  const todayRowId = todayRow?.id != null ? String(todayRow.id) : "";
+  if (todayRowId.length > 0) {
+    console.log("checkIn payload:", payload);
+    const { data, error } = await updateAttendanceByIdStrippingUnknown(todayRowId, payload);
+    console.log("checkIn data:", data);
+    console.log("checkIn error:", error);
+    if (error) {
+      const e = error as { code?: string; message?: string; details?: string; hint?: string };
+      console.error("[attendance] checkIn update failed:", {
+        code: e.code ?? null,
+        message: e.message ?? null,
+        details: e.details ?? null,
+        hint: e.hint ?? null,
+        raw: error,
+      });
+      throw new Error(
+        formatPostgrestError({
+          message: typeof e.message === "string" ? e.message : "출근 처리에 실패했습니다.",
+          details: e.details,
+          hint: e.hint,
+          code: e.code,
+        })
+      );
+    }
+    if (!data) {
+      throw new Error("출근 처리 후 행을 확인하지 못했습니다.");
+    }
+    return data;
   }
-  return data as AttendanceRow;
+
+  console.log("checkIn payload:", payload);
+  const { data, error } = await upsertNewDayAttendanceStrippingUnknown(userId, today, payload);
+  console.log("checkIn data:", data);
+  console.log("checkIn error:", error);
+  if (error) {
+    const e = error as { code?: string; message?: string; details?: string; hint?: string };
+    console.error("[attendance] checkIn upsert failed:", {
+      code: e.code ?? null,
+      message: e.message ?? null,
+      details: e.details ?? null,
+      hint: e.hint ?? null,
+      raw: error,
+    });
+    throw new Error(
+      formatPostgrestError({
+        message:
+          typeof e.message === "string" ? e.message : String(error ?? "출근 처리에 실패했습니다."),
+        details: e.details,
+        hint: e.hint,
+        code: e.code,
+      })
+    );
+  }
+  if (!data) {
+    throw new Error("출근 처리 후 행을 확인하지 못했습니다.");
+  }
+  return data;
 }
 
 export async function checkOut(
@@ -273,21 +508,22 @@ export async function checkOut(
             : "정상 출근";
 
   const checkOutStamp = getLocalDateTimeISO(now);
-  const { data, error } = await supabase
-    .from("attendance")
-    .update({
-      check_out: checkOutStamp,
-      memo: memo ?? null,
-      latitude: position.latitude,
-      longitude: position.longitude,
-      status: nextStatus,
-      checkout_status: checkoutStatus,
-    })
-    .eq("user_id", userId)
-    .eq("date", today)
-    .select("*")
-    .maybeSingle();
+  const rowId = current.id != null ? String(current.id) : "";
+  if (!rowId) {
+    throw new Error("출근 행 식별자가 없어 퇴근 처리할 수 없습니다.");
+  }
 
+  const outPatch: Record<string, unknown> = {
+    check_out: checkOutStamp,
+    check_out_at: checkOutStamp,
+    memo: memo ?? null,
+    latitude: position.latitude,
+    longitude: position.longitude,
+    status: nextStatus,
+    checkout_status: checkoutStatus,
+  };
+
+  const { data, error } = await updateAttendanceByIdStrippingUnknown(rowId, outPatch);
   if (error) throw error;
   return (data as AttendanceRow | null) ?? null;
 }
@@ -362,12 +598,16 @@ export async function listAttendanceByMonth(
 
 export async function listTodayAttendance(): Promise<AttendanceRow[]> {
   const today = getLocalDateKey();
-  const { data, error } = await supabase
-    .from("attendance")
-    .select("*")
-    .eq("date", today);
-  if (error) throw error;
-  return (data as AttendanceRow[]) ?? [];
+  const byWork = await supabase.from("attendance").select("*").eq("work_date", today);
+  if (!byWork.error && (byWork.data?.length ?? 0) > 0) {
+    return (byWork.data as AttendanceRow[]) ?? [];
+  }
+  if (byWork.error && !isUndefinedColumnError(byWork.error)) {
+    throw byWork.error;
+  }
+  const byDate = await supabase.from("attendance").select("*").eq("date", today);
+  if (byDate.error) throw byDate.error;
+  return (byDate.data as AttendanceRow[]) ?? [];
 }
 
 export async function approveHolidayWork(attendanceId: string, approved: boolean) {

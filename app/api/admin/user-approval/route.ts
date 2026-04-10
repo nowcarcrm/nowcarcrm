@@ -82,11 +82,16 @@ export async function GET(req: Request) {
       .from("users")
       .select("id, email, name, role, approval_status, created_at")
       .order("created_at", { ascending: false });
-    if (allowed !== "all") {
-      query = query.eq("approval_status", allowed);
-    }
     if (allowedRole !== "all") {
       query = query.eq("role", allowedRole);
+    }
+    if (allowed !== "all") {
+      // 레거시 행(approval_status null)은 UI·effectiveApproval에서 pending 과 동일 — 승인대기 목록에 포함
+      if (allowed === "pending") {
+        query = query.or("approval_status.eq.pending,approval_status.is.null");
+      } else {
+        query = query.eq("approval_status", allowed);
+      }
     }
 
     const { data, error: qErr } = await query;

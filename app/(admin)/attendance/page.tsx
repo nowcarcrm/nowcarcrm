@@ -234,6 +234,8 @@ export default function AttendancePage() {
   }, [monthRows, userOptions]);
 
   async function onCheckIn() {
+    alert("REAL CHECKIN ENTRY");
+    console.log("🔥 REAL CHECKIN ENTRY");
     if (!currentUserId.trim()) {
       toast.error("출근할 직원을 선택해 주세요.");
       return;
@@ -250,6 +252,7 @@ export default function AttendancePage() {
         toast("오늘 CRM 활동이 없습니다. 기록을 확인해 주세요.", { icon: "⚠️" });
       }
     } catch (e) {
+      console.error(e);
       const msg =
         e instanceof Error
           ? e.message
@@ -407,14 +410,19 @@ export default function AttendancePage() {
           <div className="mt-4 flex flex-wrap gap-2">
             <TapButton
               onClick={() => void onCheckIn()}
-              disabled={loading || pageFetching || !!today?.check_in}
+              disabled={loading || pageFetching}
               className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-500 disabled:opacity-50"
             >
               출근
             </TapButton>
             <TapButton
               onClick={() => void onCheckOut()}
-              disabled={loading || pageFetching || !today?.check_in || todayDone}
+              disabled={
+                loading ||
+                pageFetching ||
+                (!today?.check_in && !today?.check_in_at) ||
+                todayDone
+              }
               className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
             >
               퇴근
