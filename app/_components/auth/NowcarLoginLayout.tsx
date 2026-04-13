@@ -12,8 +12,8 @@ const textContainer = {
   hidden: {},
   show: {
     transition: {
-      staggerChildren: 0.11,
-      delayChildren: 0.12,
+      staggerChildren: 0.08,
+      delayChildren: 0.08,
     },
   },
 };
@@ -25,7 +25,7 @@ const textItem = (reduce: boolean) => ({
   show: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.75, ease: [0.22, 1, 0.36, 1] as const },
+    transition: { duration: 0.58, ease: [0.22, 1, 0.36, 1] as const },
   },
 });
 
@@ -36,7 +36,7 @@ function LeftBrandCopyDesktop() {
 
   return (
     <motion.div
-      className="max-w-md space-y-6"
+      className="max-w-[520px] space-y-7 py-10"
       variants={textContainer}
       initial="hidden"
       animate="show"
@@ -48,16 +48,23 @@ function LeftBrandCopyDesktop() {
         NOWCAR
       </motion.p>
       <motion.h2
-        className="text-[1.75rem] font-semibold leading-[1.2] tracking-tight text-white sm:text-3xl"
+        className="text-[36px] font-bold leading-[1.24] tracking-tight text-white/95"
         variants={textItem(reduce)}
       >
-        Drive Your Business
+        지금 이 고객, 놓치고 계신 건 아닙니까?
       </motion.h2>
       <motion.p
-        className="max-w-sm text-[15px] font-medium leading-relaxed text-white/55"
+        className="max-w-[420px] whitespace-pre-line text-[18px] font-normal leading-[1.55] text-white/92"
         variants={textItem(reduce)}
       >
-        Premium Auto CRM Solution
+        고객 흐름을 한눈에,
+        계약 전환은 더 빠르게.
+      </motion.p>
+      <motion.p
+        className="max-w-[460px] text-[16px] font-normal leading-relaxed text-white/86"
+        variants={textItem(reduce)}
+      >
+        나우카 CRM으로 상담 → 계약 → 출고까지 한 번에 관리하세요.
       </motion.p>
     </motion.div>
   );
@@ -66,15 +73,19 @@ function LeftBrandCopyDesktop() {
 /** 모바일 상단: 정적 카피 (모션 최소화) */
 function LeftBrandCopyMobile() {
   return (
-    <div className="space-y-2">
+    <div className="space-y-3 py-2">
       <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-white/70">
         NOWCAR
       </p>
-      <p className="text-[16px] font-semibold tracking-tight text-white/95">
-        Drive Your Business
+      <p className="text-[26px] font-bold leading-[1.25] tracking-tight text-white/95">
+        지금 이 고객, 놓치고 계신 건 아닙니까?
       </p>
-      <p className="text-[12px] font-medium text-white/50">
-        Premium Auto CRM Solution
+      <p className="whitespace-pre-line text-[14px] font-normal leading-relaxed text-white/90">
+        고객 흐름을 한눈에,
+        계약 전환은 더 빠르게.
+      </p>
+      <p className="text-[13px] font-normal leading-relaxed text-white/82">
+        나우카 CRM으로 상담 → 계약 → 출고까지 한 번에 관리하세요.
       </p>
     </div>
   );
@@ -97,7 +108,7 @@ export function NowcarLoginShell({ children }: { children: ReactNode }) {
 
       {/* 데스크톱 좌측 */}
       <aside
-        className="relative hidden min-h-dvh w-[52%] max-w-[640px] shrink-0 flex-col justify-between overflow-hidden lg:flex lg:px-12 lg:py-16 xl:px-14 xl:py-20"
+        className="relative hidden min-h-dvh w-[52%] max-w-[640px] shrink-0 flex-col justify-between overflow-hidden lg:flex lg:px-14 lg:py-20 xl:px-16 xl:py-24"
         style={asideBgStyle}
         aria-label="NOWCAR"
       >

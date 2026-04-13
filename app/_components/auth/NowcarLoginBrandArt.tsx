@@ -47,7 +47,7 @@ export function NowcarLoginBrandArt() {
         className="absolute inset-y-0 -left-[8%] w-[118%]"
         style={{ willChange: reduce ? undefined : "transform" }}
         animate={reduce ? {} : { x: ["-1.5%", "2.5%", "-1.5%"] }}
-        transition={{ duration: 15, repeat: Infinity, ease: "easeInOut" }}
+        transition={{ duration: 18, repeat: Infinity, ease: "easeInOut" }}
       >
         <svg
           className="h-full w-full text-white/90"
@@ -56,26 +56,32 @@ export function NowcarLoginBrandArt() {
           fill="none"
           xmlns="http://www.w3.org/2000/svg"
         >
-          <path
+          <motion.path
             d="M-40 520 C 180 380, 320 620, 520 480 S 880 340, 1240 420"
             stroke="currentColor"
             strokeWidth="1.15"
             strokeLinecap="round"
             className="opacity-[0.09]"
+            animate={reduce ? undefined : { opacity: [0.05, 0.11, 0.05] }}
+            transition={{ duration: 14, repeat: Infinity, ease: "easeInOut" }}
           />
-          <path
+          <motion.path
             d="M-60 620 C 200 500, 400 720, 620 560 S 920 440, 1260 520"
             stroke="currentColor"
             strokeWidth="0.85"
             strokeLinecap="round"
             className="opacity-[0.065]"
+            animate={reduce ? undefined : { opacity: [0.04, 0.085, 0.04] }}
+            transition={{ duration: 17, repeat: Infinity, ease: "easeInOut", delay: 1.2 }}
           />
-          <path
+          <motion.path
             d="M-20 380 C 220 260, 380 480, 580 360 S 860 240, 1220 300"
             stroke="currentColor"
             strokeWidth="0.75"
             strokeLinecap="round"
             className="opacity-[0.05]"
+            animate={reduce ? undefined : { opacity: [0.03, 0.07, 0.03] }}
+            transition={{ duration: 20, repeat: Infinity, ease: "easeInOut", delay: 2.2 }}
           />
         </svg>
       </motion.div>
