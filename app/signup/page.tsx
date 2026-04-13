@@ -22,6 +22,7 @@ import {
   authLabelClass,
 } from "@/app/_components/auth/AuthMarketingLayout";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
+import { getPostLoginPath } from "@/app/_lib/authPostLogin";
 
 export default function SignupPage() {
   const SIGNUP_DEBUG_VERSION = "signup-diagnose-2026-04-10-v1";
@@ -36,7 +37,7 @@ export default function SignupPage() {
 
   useEffect(() => {
     if (!loading && profile) {
-      router.replace("/dashboard");
+      router.replace(getPostLoginPath(profile));
     }
   }, [loading, profile, router]);
 

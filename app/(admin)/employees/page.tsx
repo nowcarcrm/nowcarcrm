@@ -62,7 +62,7 @@ export default function EmployeesPage() {
       console.log("[employees] raw pending users response", pendingData.users ?? []);
       setPendingUsers(pendingData.users ?? []);
 
-      const resAll = await fetch("/api/admin/user-approval?status=all", {
+      const resAll = await fetch("/api/admin/user-approval?status=all&role=staff", {
         headers: { Authorization: `Bearer ${token}` },
       });
       const allData = (await resAll.json()) as { users?: UserRow[]; error?: string };

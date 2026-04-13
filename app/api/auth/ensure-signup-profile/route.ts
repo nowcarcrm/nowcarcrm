@@ -35,6 +35,7 @@ export async function POST(req: Request) {
       name: name || email.split("@")[0] || "staff",
       role: "staff",
       approval_status: "pending",
+      is_active: true,
     };
     console.log("[ensure-signup-profile] upsert start", { payload });
     const { data, error } = await supabaseAdmin

@@ -7,6 +7,7 @@ import {
   getActiveUserByEmail,
   getUserProfileByAuthId,
   updateUserAuthLink,
+  type UserApprovalStatus,
   type UserRole,
   type UserRow,
 } from "./usersSupabase";
@@ -19,6 +20,11 @@ export type AuthProfile = {
   email: string;
   name: string;
   role: UserRole;
+  /** users.is_active — false면 CRM 접근 불가 */
+  isActive: boolean;
+  approvalStatus: UserApprovalStatus;
+  /** approval_status === 'approved' (레거시 null은 effective에서 pending) */
+  approved: boolean;
 };
 
 /** 비밀번호 재설정·PKCE 콜백: CRM 프로필 해결 시 승인 검사/연결 실패로 signOut 되면 recovery 세션이 끊깁니다. */
@@ -36,14 +42,22 @@ function normalizeName(user: User) {
   return "staff";
 }
 
+function rowIsActive(row: UserRow): boolean {
+  return row.is_active !== false;
+}
+
 function toAuthProfile(user: User, row: UserRow): AuthProfile {
   const fallbackName = normalizeName(user);
+  const approvalStatus = effectiveApprovalStatus(row);
   return {
     authUserId: user.id,
     userId: row.id,
     email: user.email ?? row.email ?? "",
     name: row.name?.trim() || row.email?.split("@")[0] || fallbackName,
     role: row.role,
+    isActive: rowIsActive(row),
+    approvalStatus,
+    approved: approvalStatus === "approved",
   };
 }
 
@@ -57,20 +71,12 @@ function isSessionMissingAuthError(err: unknown): boolean {
   );
 }
 
-async function assertUserApproved(row: UserRow) {
-  const raw = row.approval_status;
+async function assertStaffAccountUsable(row: UserRow) {
   const status = effectiveApprovalStatus(row);
-  console.log("[auth] approval_status raw:", raw, "effective:", status, "user row id:", row.id);
-  if (status === "approved") return;
-
-  await supabase.auth.signOut();
   if (status === "rejected") {
+    await supabase.auth.signOut();
     throw new Error("승인 거절된 계정입니다. 관리자에게 문의하세요.");
   }
-  if (status === "pending") {
-    throw new Error("관리자 승인 대기중입니다.");
-  }
-  throw new Error(`계정을 사용할 수 없습니다. (승인 상태: ${String(raw ?? "알 수 없음")})`);
 }
 
 export async function signInWithEmail(email: string, password: string) {
@@ -154,11 +160,17 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
   console.log("[auth] profile lookup by auth id:", user.id, "→", linked ? "found" : "not found", linked);
 
   if (linked) {
+    if (!rowIsActive(linked)) {
+      await supabase.auth.signOut();
+      throw new Error("사용 중지된 계정입니다. 관리자에게 문의하세요.");
+    }
     if (linked.role !== "admin" && linked.role !== "staff") {
       await supabase.auth.signOut();
       throw new Error("허용되지 않은 계정 권한입니다. 관리자에게 문의하세요.");
     }
-    await assertUserApproved(linked);
+    if (linked.role === "staff") {
+      await assertStaffAccountUsable(linked);
+    }
     return toAuthProfile(user, linked);
   }
 
@@ -178,11 +190,17 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
 
   if (byEmail) {
     const updated = (await updateUserAuthLink(byEmail.id, user.id)) as UserRow;
+    if (!rowIsActive(updated)) {
+      await supabase.auth.signOut();
+      throw new Error("사용 중지된 계정입니다. 관리자에게 문의하세요.");
+    }
     if (updated.role !== "admin" && updated.role !== "staff") {
       await supabase.auth.signOut();
       throw new Error("허용되지 않은 계정 권한입니다. 관리자에게 문의하세요.");
     }
-    await assertUserApproved(updated);
+    if (updated.role === "staff") {
+      await assertStaffAccountUsable(updated);
+    }
     return toAuthProfile(user, updated);
   }
   await supabase.auth.signOut();

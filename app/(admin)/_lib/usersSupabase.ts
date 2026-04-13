@@ -14,8 +14,12 @@ export type UserRow = {
   name: string;
   role: UserRole;
   created_at: string;
+  /** false면 로그인·CRM 접근 차단 */
+  is_active?: boolean | null;
   /** 마이그레이션 전 행은 UI에서 approved 로 간주 */
   approval_status?: UserApprovalStatus | null;
+  approved_at?: string | null;
+  approved_by?: string | null;
   /** 레거시 스키마용(신규는 생략 가능) */
   auth_user_id?: string | null;
   /** 조회·직원 목록용(선택 컬럼) */
@@ -186,6 +190,7 @@ export async function createPendingStaffProfileFromAuth(input: {
     name: baseName,
     role: "staff" as UserRole,
     approval_status: "pending" as const,
+    is_active: true,
   };
   console.log("[signup][PUBLIC_USERS_INSERT] start", {
     authUserId: input.authUserId,

@@ -11,11 +11,19 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const { profile, loading, logout } = useAuth();
 
   useEffect(() => {
-    if (!loading && !profile) {
-      console.log("[admin-layout] profile missing, redirect /login");
+    if (loading) return;
+    if (!profile) {
       router.replace("/login");
+      return;
     }
-  }, [loading, profile, router]);
+    if (!profile.isActive) {
+      void logout();
+      return;
+    }
+    if (profile.role === "staff" && !profile.approved) {
+      router.replace("/pending-approval");
+    }
+  }, [loading, profile, router, logout]);
 
   if (loading || !profile) {
     return (

@@ -17,6 +17,7 @@ import {
   authLabelClass,
 } from "../_components/auth/AuthMarketingLayout";
 import { useAuth } from "../_components/auth/AuthProvider";
+import { getPostLoginPath } from "../_lib/authPostLogin";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -33,11 +34,8 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (profile) {
-      console.log("[login-page] profile ready, redirect /dashboard", {
-        userId: profile.userId,
-        role: profile.role,
-      });
-      router.replace("/dashboard");
+      const path = getPostLoginPath(profile);
+      router.replace(path);
     }
   }, [profile, router]);
 
@@ -54,11 +52,7 @@ export default function LoginPage() {
         password
       );
       applySignedInProfile(nextProfile);
-      console.log("[login-page] applySignedInProfile + redirect", {
-        userId: nextProfile.userId,
-        role: nextProfile.role,
-      });
-      router.replace("/dashboard");
+      router.replace(getPostLoginPath(nextProfile));
     } catch (err) {
       const raw = err instanceof Error ? err.message : "로그인에 실패했습니다.";
       const anyErr = err as {

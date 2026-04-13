@@ -164,11 +164,38 @@ export async function PATCH(req: Request) {
       );
     }
 
+    const { data: targetRow, error: tErr } = await supabaseAdmin
+      .from("users")
+      .select("id, role, approval_status")
+      .eq("id", userId)
+      .maybeSingle();
+    if (tErr) {
+      return NextResponse.json({ error: tErr.message }, { status: 400 });
+    }
+    if (!targetRow) {
+      return NextResponse.json({ error: "대상 직원을 찾을 수 없습니다." }, { status: 404 });
+    }
+    if (nextStatus === "approved" && targetRow.role !== "staff") {
+      return NextResponse.json(
+        { error: "직원(staff) 계정만 승인할 수 있습니다." },
+        { status: 400 }
+      );
+    }
+
+    const patch: Record<string, unknown> = { approval_status: nextStatus };
+    if (nextStatus === "approved") {
+      patch.approved_at = new Date().toISOString();
+      patch.approved_by = authData.user.id;
+    } else {
+      patch.approved_at = null;
+      patch.approved_by = null;
+    }
+
     const { data: updated, error: uErr } = await supabaseAdmin
       .from("users")
-      .update({ approval_status: nextStatus })
+      .update(patch)
       .eq("id", userId)
-      .select("id, email, name, approval_status")
+      .select("id, email, name, approval_status, approved_at, approved_by")
       .maybeSingle();
 
     if (uErr) {
