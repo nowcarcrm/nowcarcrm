@@ -145,8 +145,13 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: error ?? "권한이 없습니다." }, { status: 403 });
     }
 
-    const body = (await req.json()) as { userId?: string; action?: string; status?: string };
-    const userId = body.userId?.trim();
+    const body = (await req.json()) as { userId?: unknown; action?: string; status?: string };
+    const userId =
+      body.userId == null || body.userId === ""
+        ? ""
+        : typeof body.userId === "string"
+          ? body.userId
+          : String(body.userId);
     const action = body.action;
     const nextStatus =
       body.status === "pending" || body.status === "approved" || body.status === "rejected"
@@ -175,9 +180,9 @@ export async function PATCH(req: Request) {
     if (!targetRow) {
       return NextResponse.json({ error: "대상 직원을 찾을 수 없습니다." }, { status: 404 });
     }
-    if (nextStatus === "approved" && targetRow.role !== "staff") {
+    if (targetRow.role !== "staff") {
       return NextResponse.json(
-        { error: "직원(staff) 계정만 승인할 수 있습니다." },
+        { error: "직원(staff) 계정의 승인 상태만 이 API에서 변경할 수 있습니다." },
         { status: 400 }
       );
     }

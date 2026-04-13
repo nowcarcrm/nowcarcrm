@@ -9,7 +9,7 @@ export function authErrorMessageKo(raw: string | null | undefined): string {
   const lower = t.toLowerCase();
 
   if (lower.includes("invalid login credentials")) {
-    return "이메일 또는 비밀번호가 올바르지 않습니다.";
+    return "이메일 또는 비밀번호가 올바르지 않습니다. (비밀번호 재설정·회원가입·이메일 인증·프로젝트 URL/키도 확인하세요.)";
   }
   if (lower.includes("auth session missing") || lower.includes("session missing")) {
     return "세션 생성에 실패했거나 만료되었습니다. 다시 로그인해 주세요.";
@@ -64,4 +64,43 @@ export function authErrorMessageKo(raw: string | null | undefined): string {
   }
 
   return t;
+}
+
+type AuthDiagnosePayload = {
+  ok?: boolean;
+  error?: string;
+  existsInAuthUsers?: boolean;
+  user?: { emailConfirmed?: boolean } | null;
+};
+
+/**
+ * 로그인 실패(Invalid login credentials) 시 /api/auth/diagnose 결과를 붙여 원인 추적을 돕습니다.
+ */
+export function enhanceInvalidLoginWithDiagnose(
+  raw: string,
+  diagnose: unknown
+): string {
+  const base = authErrorMessageKo(raw);
+  const lower = String(raw).toLowerCase();
+  if (!lower.includes("invalid login credentials")) {
+    return base;
+  }
+
+  const d = diagnose as AuthDiagnosePayload | undefined;
+  if (!d || typeof d !== "object") {
+    return `${base} (진단 API 응답 없음 — 서비스 롤 키·네트워크 확인)`;
+  }
+  if (d.error && !d.ok) {
+    return `${base} (진단 실패: ${d.error})`;
+  }
+  if (d.ok === true && d.existsInAuthUsers === false) {
+    return `${base} [진단] Supabase Auth에 이 이메일 사용자가 없습니다. 회원가입 여부와 .env의 NEXT_PUBLIC_SUPABASE_URL·ANON 키가 가입 시와 동일한 프로젝트인지 확인하세요.`;
+  }
+  if (d.ok === true && d.user && d.user.emailConfirmed === false) {
+    return `${base} [진단] 이메일 미인증입니다. 가입 확인 메일의 링크를 누르거나, 대시보드 Authentication → Providers에서 이메일 확인을 끈 뒤 다시 시도하세요.`;
+  }
+  if (d.ok === true && d.existsInAuthUsers) {
+    return `${base} [진단] Auth 사용자는 있습니다. 비밀번호 오타·다른 프로젝트에 가입·비밀번호 재설정을 시도해 보세요.`;
+  }
+  return base;
 }

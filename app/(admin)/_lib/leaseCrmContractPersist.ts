@@ -269,7 +269,7 @@ export function buildContractExtraFromInfo(c: ContractInfo): ContractExtraV1 {
 
 /** 상담결과가 확정·출고일 때 계약 금액 스냅샷을 DB에 쓸 수 있음 */
 export function shouldPersistContractAmountSnapshot(status: CounselingStatus): boolean {
-  return status === "확정" || status === "출고";
+  return status === "확정" || status === "출고" || status === "인도완료";
 }
 
 /** 차량가·보증금·수수료 스냅샷이 모두 잠김(이후 자동 덮어쓰기 금지) */

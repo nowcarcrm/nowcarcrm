@@ -33,9 +33,26 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
     );
   }
 
+  if (!profile.isActive) {
+    return (
+      <div className="grid min-h-dvh place-items-center text-sm text-zinc-500">
+        계정이 비활성화되었습니다. 잠시 후 로그아웃됩니다.
+      </div>
+    );
+  }
+
+  if (profile.role === "staff" && !profile.approved) {
+    return (
+      <div className="grid min-h-dvh place-items-center text-sm text-zinc-500">
+        승인 대기 페이지로 이동합니다…
+      </div>
+    );
+  }
+
   return (
     <AdminShell
       currentUser={{
+        userId: profile.userId,
         name: profile.name?.trim() || profile.email?.split("@")[0] || "사용자",
         role: profile.role,
         roleLabel: roleLabelKo(profile.role),

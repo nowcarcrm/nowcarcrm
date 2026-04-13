@@ -4,7 +4,7 @@
   --background: #f4f7fc;
   --foreground: #0c1929;
   /* 나우카 CRM — 딥블루 B2B 톤 */
-  --crm-canvas: #e8eef7;
+  --crm-canvas: #f6f8fb;
   --crm-surface: #ffffff;
   --crm-border: rgba(30, 58, 95, 0.1);
   --crm-border-strong: rgba(30, 58, 95, 0.16);
@@ -18,6 +18,22 @@
   --crm-shadow-lg: 0 12px 40px rgba(30, 58, 95, 0.12), 0 2px 6px rgba(15, 23, 42, 0.05);
   --crm-radius: 0.75rem;
   --crm-radius-lg: 1rem;
+
+  /* NOWCAR 인증·로그인 — 전역 재사용 */
+  --nowcar-auth-navy-deep: #050d18;
+  --nowcar-auth-navy: #0a1628;
+  --nowcar-auth-navy-mid: #0f2847;
+  --nowcar-auth-navy-soft: #163a5e;
+  /* NOWCAR 브랜드 네이비 (로그인·CTA) */
+  --nowcar-brand-navy: #00338d;
+  --nowcar-brand-navy-hover: #00286f;
+  --nowcar-auth-accent: #00338d;
+  --nowcar-auth-accent-hover: #00286f;
+  --nowcar-auth-surface: #fafbfc;
+  --nowcar-auth-text: #1a2332;
+  --nowcar-auth-text-muted: #5c6570;
+  --nowcar-auth-border: #e2e6eb;
+  --nowcar-auth-card-shadow: 0 8px 32px rgba(0, 51, 141, 0.06), 0 1px 3px rgba(10, 22, 40, 0.04);
 }
 
 @theme inline {
@@ -113,5 +129,79 @@ body {
   /* ── 모달 패널 ── */
   .crm-modal-panel {
     @apply w-full rounded-2xl border border-slate-200/90 bg-white p-6 shadow-[var(--crm-shadow-lg)] dark:border-zinc-800 dark:bg-zinc-950;
+  }
+
+  /* ── NOWCAR 인증 UI (로그인·향후 공통 폼) ── */
+  .crm-auth-card {
+    @apply mx-auto w-full max-w-[400px] rounded-2xl border bg-white px-8 py-10 sm:px-10 sm:py-11;
+    border-color: var(--nowcar-auth-border);
+    box-shadow: var(--nowcar-auth-card-shadow);
+  }
+
+  .crm-auth-title {
+    @apply text-center text-2xl font-semibold tracking-tight text-[var(--nowcar-auth-text)];
+  }
+
+  .crm-auth-desc {
+    @apply mt-2 text-center text-[15px] leading-relaxed text-[var(--nowcar-auth-text-muted)];
+  }
+
+  .crm-auth-label {
+    @apply mb-2 block text-left text-[13px] font-semibold text-[var(--nowcar-auth-text)];
+  }
+
+  .crm-auth-field {
+    @apply h-12 min-h-[48px] w-full rounded-xl border bg-white px-4 text-[15px] font-medium text-[var(--nowcar-auth-text)] outline-none transition-[border-color,box-shadow] duration-200 sm:h-[52px] sm:min-h-[52px];
+    border-color: var(--nowcar-auth-border);
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  }
+  .crm-auth-field::placeholder {
+    color: #8b939e;
+  }
+  .crm-auth-field:focus {
+    border-color: var(--nowcar-brand-navy);
+    box-shadow:
+      0 0 0 3px rgba(0, 51, 141, 0.14),
+      0 1px 2px rgba(15, 23, 42, 0.04);
+  }
+  .crm-auth-field:disabled {
+    @apply cursor-not-allowed opacity-60;
+  }
+
+  .crm-auth-btn-primary {
+    @apply mt-8 flex min-h-[52px] h-[52px] w-full items-center justify-center gap-2 rounded-xl text-[15px] font-semibold text-white outline-none transition-[background,box-shadow,transform] duration-200;
+    background-color: var(--nowcar-brand-navy);
+    box-shadow: 0 2px 10px rgba(0, 51, 141, 0.22);
+  }
+  .crm-auth-btn-primary:hover:not(:disabled) {
+    background-color: var(--nowcar-brand-navy-hover);
+    box-shadow: 0 4px 16px rgba(0, 40, 111, 0.28);
+  }
+  .crm-auth-btn-primary:focus-visible {
+    box-shadow:
+      0 0 0 3px rgba(0, 51, 141, 0.3),
+      0 2px 10px rgba(0, 51, 141, 0.22);
+  }
+  .crm-auth-btn-primary:active:not(:disabled) {
+    transform: scale(0.992);
+  }
+  .crm-auth-btn-primary:disabled {
+    @apply cursor-not-allowed opacity-50 shadow-none;
+  }
+
+  .crm-auth-link {
+    @apply text-[13px] font-medium transition-colors;
+    color: var(--nowcar-brand-navy);
+  }
+  .crm-auth-link:hover {
+    color: var(--nowcar-brand-navy-hover);
+  }
+
+  .crm-auth-footnote {
+    @apply mt-8 text-center text-[13px] leading-relaxed text-[var(--nowcar-auth-text-muted)];
+  }
+
+  .crm-auth-error-soft {
+    @apply mt-4 rounded-xl border border-rose-200/70 bg-rose-50/80 px-4 py-3 text-[14px] leading-snug text-rose-900/90;
   }
 }

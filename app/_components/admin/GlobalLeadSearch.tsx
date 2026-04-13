@@ -1,13 +1,19 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import {
   fetchLeadById,
   searchLeads,
   type LeadSearchHit,
 } from "@/app/(admin)/_lib/leaseCrmSupabase";
-import { deleteLeadById, updateLead } from "@/app/(admin)/_lib/leaseCrmStorage";
+import {
+  applyStaffLeadClientLocks,
+  deleteLeadById,
+  updateLead,
+} from "@/app/(admin)/_lib/leaseCrmStorage";
+import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
 import type { Lead } from "@/app/(admin)/_lib/leaseCrmTypes";
 import LeadDetailModal from "@/app/(admin)/leads/_components/LeadDetailModal";
 import toast from "react-hot-toast";
@@ -61,6 +67,8 @@ export default function GlobalLeadSearch({
   onChange: (next: string) => void;
 }) {
   const { profile } = useAuth();
+  const pathname = usePathname();
+  const router = useRouter();
   const scope = useMemo(
     () => (profile ? { role: profile.role, userId: profile.userId } : null),
     [profile]
@@ -397,16 +405,27 @@ export default function GlobalLeadSearch({
           onClose={() => setModalLead(null)}
           onUpdate={async (next) => {
             if (!profile) return;
+            if (profile.role === "staff") {
+              const myName = profile.name?.trim() ?? "";
+              if (next.managerUserId != null && next.managerUserId !== profile.userId) {
+                toast.error("담당 직원은 본인만 지정할 수 있습니다.");
+                return;
+              }
+              if (myName && next.base.ownerStaff?.trim() !== myName) {
+                toast.error("담당 직원은 본인만 지정할 수 있습니다.");
+                return;
+              }
+            }
             const payload =
               profile.role === "staff"
-                ? {
-                    ...next,
-                    managerUserId: profile.userId,
-                    base: { ...next.base, ownerStaff: profile.name },
-                  }
+                ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
                 : next;
             await updateLead(payload, { role: profile.role, userId: profile.userId });
             setModalLead(payload);
+            const nextPath = pathnameAfterCounselingStatusChange(payload.counselingStatus);
+            if (pathname !== nextPath) {
+              router.push(nextPath);
+            }
           }}
           onDelete={(id) => {
             if (!profile) return;

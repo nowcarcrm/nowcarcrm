@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 288 76" fill="none" role="img" aria-labelledby="nowcarLogoTitle">
+  <title id="nowcarLogoTitle">NOWCAR</title>
+  <!-- Car silhouette  premium minimal line -->
+  <path
+    d="M4 22c36-10 72-12 120-8s88-4 124 4"
+    stroke="#00338D"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  />
+  <path
+    d="M138 18l36-6"
+    stroke="#00338D"
+    stroke-width="2"
+    stroke-linecap="round"
+  />
+  <!-- Wordmark: heavy NOW | light NOW / CAR -->
+  <text
+    x="4"
+    y="62"
+    fill="#00338D"
+    font-family="system-ui, -apple-system, 'Segoe UI', 'Malgun Gothic', sans-serif"
+    font-size="30"
+    font-weight="900"
+    letter-spacing="-0.04em"
+  >NOW</text>
+  <line x1="100" y1="38" x2="100" y2="64" stroke="#00338D" stroke-width="1.15" stroke-linecap="round" />
+  <text
+    x="112"
+    y="52"
+    fill="#00338D"
+    font-family="system-ui, -apple-system, 'Segoe UI', 'Malgun Gothic', sans-serif"
+    font-size="13"
+    font-weight="300"
+    letter-spacing="0.12em"
+  >NOW</text>
+  <text
+    x="112"
+    y="66"
+    fill="#00338D"
+    font-family="system-ui, -apple-system, 'Segoe UI', 'Malgun Gothic', sans-serif"
+    font-size="13"
+    font-weight="300"
+    letter-spacing="0.18em"
+  >CAR</text>
+</svg>

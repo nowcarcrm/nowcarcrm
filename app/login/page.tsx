@@ -3,21 +3,21 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { motion } from "framer-motion";
+import toast from "react-hot-toast";
 import { signInWithEmailAndResolveProfile } from "../(admin)/_lib/authSupabase";
 import { getSupabaseAuthTargetInfo } from "../(admin)/_lib/supabaseClient";
-import { authErrorMessageKo } from "../_lib/authErrorMessages";
-import {
-  AuthBrandHeader,
-  AuthErrorBanner,
-  AuthFooterNote,
-  AuthMarketingBackground,
-  AuthMarketingCard,
-  AuthPrimaryButton,
-  authFieldClass,
-  authLabelClass,
-} from "../_components/auth/AuthMarketingLayout";
+import { authErrorMessageKo, enhanceInvalidLoginWithDiagnose } from "../_lib/authErrorMessages";
+import { AuthFooterNote } from "../_components/auth/AuthMarketingLayout";
+import { NowcarLoginShell } from "../_components/auth/NowcarLoginLayout";
 import { useAuth } from "../_components/auth/AuthProvider";
 import { getPostLoginPath } from "../_lib/authPostLogin";
+
+const cardMotion = {
+  initial: { opacity: 0, y: 10 },
+  animate: { opacity: 1, y: 0 },
+  transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] as const },
+};
 
 export default function LoginPage() {
   const router = useRouter();
@@ -44,8 +44,6 @@ export default function LoginPage() {
     setLoading(true);
     clearFormError();
     setDebugInfo(null);
-    console.log("[login-page] submit start");
-    console.log("[login-page] supabase target url", target.url);
     try {
       const nextProfile = await signInWithEmailAndResolveProfile(
         email.trim().toLowerCase(),
@@ -85,8 +83,9 @@ export default function LoginPage() {
           diagErr instanceof Error ? diagErr.message : "diagnose 호출 실패";
       }
       setDebugInfo(debug);
-      console.error("[login-page] submit error", raw, err);
-      setError(authErrorMessageKo(raw));
+      const message = enhanceInvalidLoginWithDiagnose(raw, debug.authDiagnose);
+      setError(message);
+      toast.error(message, { duration: 4800 });
     } finally {
       setLoading(false);
     }
@@ -95,40 +94,53 @@ export default function LoginPage() {
   const displayAuthError = authError ? authErrorMessageKo(authError) : "";
 
   return (
-    <AuthMarketingBackground>
-      <AuthMarketingCard>
-        <AuthBrandHeader />
+    <NowcarLoginShell>
+      <motion.div
+        className="crm-auth-card w-full"
+        initial={cardMotion.initial}
+        animate={cardMotion.animate}
+        transition={cardMotion.transition}
+      >
+        <div className="mb-8 text-center">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--nowcar-auth-text-muted)]">
+            B2B Operations
+          </p>
+          <p className="mt-2 text-[1.65rem] font-bold tracking-tight text-[var(--nowcar-auth-navy-mid)] dark:text-slate-100">
+            NOWCAR CRM
+          </p>
+        </div>
 
-        <p className="text-[14px] leading-relaxed text-zinc-600 dark:text-zinc-400">
-          승인된 계정으로 로그인 후
-          <br />
-          고객, 계약, 근태 업무를 관리하세요.
-        </p>
-        <p className="mt-3 text-[13px] leading-relaxed text-zinc-500 dark:text-zinc-500">
-          신규 직원은 회원가입 후
-          <br />
-          관리자 승인을 받아주세요.
-        </p>
+        <h1 className="crm-auth-title">로그인</h1>
+        <p className="crm-auth-desc">계정으로 접속하세요</p>
 
-        <AuthErrorBanner message={error ?? displayAuthError} />
-        {!error && authError ? (
-          <div className="mt-2 rounded-lg border border-zinc-300/70 bg-zinc-50/90 px-3 py-2 text-[12px] text-zinc-700 dark:border-zinc-700 dark:bg-zinc-900/50 dark:text-zinc-300">
+        {error ? (
+          <div className="crm-auth-error-soft" role="alert">
+            {error}
+          </div>
+        ) : null}
+        {!error && displayAuthError ? (
+          <div className="crm-auth-error-soft" role="alert">
+            {displayAuthError}
+          </div>
+        ) : null}
+        {showDebugPanel && !error && authError ? (
+          <div className="mt-3 rounded-lg border border-[var(--nowcar-auth-border)] bg-[var(--nowcar-auth-surface)] px-3 py-2 text-left text-[11px] text-[var(--nowcar-auth-text-muted)]">
             원인(raw): {authError}
           </div>
         ) : null}
         {showDebugPanel && debugInfo ? (
-          <div className="mt-3 rounded-xl border border-amber-300/70 bg-amber-50/80 p-3 text-left text-[12px] leading-relaxed text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
-            <div className="font-semibold">로그인 실패 디버그 정보(임시)</div>
+          <div className="mt-4 rounded-xl border border-amber-200/80 bg-amber-50/90 p-3 text-left text-[12px] leading-relaxed text-amber-950">
+            <div className="font-semibold">로그인 실패 디버그 정보(개발)</div>
             <pre className="mt-2 whitespace-pre-wrap break-all text-[11px]">
               {JSON.stringify(debugInfo, null, 2)}
             </pre>
           </div>
         ) : null}
 
-        <form onSubmit={onSubmit} className="mt-5">
-          <div className="space-y-4">
+        <form onSubmit={onSubmit} className="mt-8">
+          <div className="space-y-5">
             <div>
-              <label htmlFor="login-email" className={authLabelClass}>
+              <label htmlFor="login-email" className="crm-auth-label">
                 이메일
               </label>
               <input
@@ -138,12 +150,13 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
                 placeholder="name@company.com"
-                className={authFieldClass}
+                className="crm-auth-field"
                 required
+                disabled={loading}
               />
             </div>
             <div>
-              <label htmlFor="login-password" className={authLabelClass}>
+              <label htmlFor="login-password" className="crm-auth-label">
                 비밀번호
               </label>
               <input
@@ -152,36 +165,43 @@ export default function LoginPage() {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
-                placeholder="비밀번호 입력"
-                className={authFieldClass}
+                placeholder="비밀번호"
+                className="crm-auth-field"
                 required
+                disabled={loading}
               />
             </div>
           </div>
 
-          <AuthPrimaryButton disabled={loading}>{loading ? "로그인 중…" : "로그인"}</AuthPrimaryButton>
+          <button type="submit" className="crm-auth-btn-primary" disabled={loading}>
+            {loading ? (
+              <>
+                <span
+                  className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
+                  aria-hidden
+                />
+                로그인 중…
+              </>
+            ) : (
+              "로그인"
+            )}
+          </button>
         </form>
 
-        <div className="mt-5 flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-[13px] font-medium">
-          <Link
-            href="/signup"
-            className="text-[#5B5FFF] transition-colors hover:text-[#7C3AED] dark:text-indigo-400 dark:hover:text-violet-300"
-          >
+        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 border-t border-[var(--nowcar-auth-border)] pt-7">
+          <Link href="/signup" className="crm-auth-link">
             회원가입
           </Link>
-          <span className="text-zinc-300 dark:text-zinc-600" aria-hidden>
-            |
+          <span className="text-[11px] text-[var(--nowcar-auth-text-muted)]/80" aria-hidden>
+            ·
           </span>
-          <Link
-            href="/forgot-password"
-            className="text-[#5B5FFF] transition-colors hover:text-[#7C3AED] dark:text-indigo-400 dark:hover:text-violet-300"
-          >
+          <Link href="/forgot-password" className="crm-auth-link">
             비밀번호 재설정
           </Link>
         </div>
 
-        <AuthFooterNote />
-      </AuthMarketingCard>
-    </AuthMarketingBackground>
+        <AuthFooterNote className="crm-auth-footnote !mt-6 border-t-0 pt-0 text-[12px]" />
+      </motion.div>
+    </NowcarLoginShell>
   );
 }

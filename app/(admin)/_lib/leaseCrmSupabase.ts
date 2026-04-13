@@ -48,6 +48,25 @@ export function formatSupabaseError(error: unknown) {
   return [e.message, e.details, e.hint, e.code].filter(Boolean).join(" | ");
 }
 
+/** PostgREST가 serial/bigint 등으로 id를 숫자로 줄 수 있어 CRM에서는 문자열 PK로 통일 */
+function coerceDbStringId(value: unknown): string {
+  if (value == null) return "";
+  return typeof value === "string" ? value : String(value);
+}
+
+function nullableDbStringId(value: unknown): string | null {
+  if (value == null) return null;
+  const s = typeof value === "string" ? value : String(value);
+  return s === "" ? null : s;
+}
+
+/** users.id / scope.userId — trim 금지, null·빈 문자열만 배제 */
+function nonEmptyUserId(uid: string | null | undefined): string | null {
+  if (uid == null) return null;
+  const s = typeof uid === "string" ? uid : String(uid);
+  return s === "" ? null : s;
+}
+
 /** PostgREST/DB에 counselor·method 등 확장 컬럼이 없을 때도 insert가 되도록 memo에 구조화 저장 */
 const CRM_CONSULTATION_MEMO_PREFIX = "CRM1:";
 
@@ -184,17 +203,25 @@ function serializeLeadExtraMemo(lead: Lead): string {
   return CRM_LEAD_EXTRA_PREFIX + JSON.stringify(payload);
 }
 
-function isUuidString(value: string | undefined | null): boolean {
-  if (!value) return false;
+function isUuidString(value: unknown): boolean {
+  if (value == null || value === "") return false;
+  const s = typeof value === "string" ? value : String(value);
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
-    value
+    s
   );
+}
+
+/** 상담기록 행 id — DB·클라이언트 키 일치용(문자열만 trim, lead PK에는 사용하지 않음) */
+function counselingRecordIdKey(id: unknown): string {
+  if (id == null || id === "") return "";
+  return typeof id === "string" ? id.trim() : String(id);
 }
 
 export function normalizeLeadForPersistence(lead: Lead): Lead {
   const fill = defaultLeadOperationalFields();
   return {
     ...lead,
+    id: coerceDbStringId(lead.id),
     leadPriority: lead.leadPriority ?? fill.leadPriority,
     failureReason: lead.failureReason ?? fill.failureReason,
     failureReasonNote: lead.failureReasonNote ?? fill.failureReasonNote,
@@ -283,7 +310,7 @@ function postgrestLikeFields(err: unknown): {
 }
 
 /**
- * 저장 직전: 직원(staff)은 항상 본인 userId + public.users 기준 표시명으로 덮어씀(프론트 조작 방지).
+ * 저장 직전: 직원(staff)은 담당 userId·표시명 고정 + 상담기록은 **DB에 없는 id만** 상담 담당자를 본인으로 설정(기존 이력 담당자는 DB 메모/컬럼 그대로 복원, 프론트 조작 방지).
  * 관리자·매니저는 기존 매핑 규칙 유지.
  *
  * throw 가능 지점(내부 호출):
@@ -295,10 +322,46 @@ async function prepareLeadForSupabaseWrite(lead: Lead, scope?: ViewerScope): Pro
     if (scope?.role === "staff") {
       const fromDb = await fetchUserDisplayNameById(scope.userId);
       const ownerStaff = fromDb || lead.base.ownerStaff;
+      const staffCounselorLabel = (ownerStaff ?? "").trim() || lead.base.ownerStaff?.trim() || "";
+      const managerFallback = (lead.base.ownerStaff ?? "").trim() || staffCounselorLabel;
+
+      let counselingRecords = lead.counselingRecords;
+      if (Array.isArray(counselingRecords)) {
+        const leadPk = coerceDbStringId(lead.id);
+        const missingLeadId = leadPk === "";
+        let persisted: Map<string, string> | null = null;
+        if (!missingLeadId) {
+          try {
+            persisted = await fetchPersistedCounselorByConsultationId(leadPk, managerFallback);
+          } catch (raw) {
+            console.warn(
+              "[prepareLeadForSupabaseWrite] staff: consultations 조회 실패 — 상담 담당자 필드는 클라 값 유지(담당 user·이름만 고정)",
+              formatSupabaseError(raw)
+            );
+            persisted = null;
+          }
+        }
+        const enforceCounselorRules = missingLeadId || persisted !== null;
+        if (enforceCounselorRules) {
+          const byId = persisted ?? new Map<string, string>();
+          counselingRecords = counselingRecords.map((r) => {
+            const id = counselingRecordIdKey(r?.id);
+            if (!id) {
+              return { ...r, counselor: staffCounselorLabel };
+            }
+            if (byId.has(id)) {
+              return { ...r, counselor: byId.get(id)! };
+            }
+            return { ...r, counselor: staffCounselorLabel };
+          });
+        }
+      }
+
       return {
         ...lead,
         managerUserId: scope.userId,
         base: { ...lead.base, ownerStaff },
+        counselingRecords,
       };
     }
     const managerUserId = await resolveManagerUserIdForAdmin(lead);
@@ -336,9 +399,33 @@ type LeadRow = {
 export type LeadSupabaseScope = {
   role: UserRole;
   userId: string;
+  /**
+   * 관리자 운영 전용 화면에서만 true. 담당(`manager_user_id`) 필터 없이 전체 고객 조회·수정·삭제.
+   * `role === "admin"` 일 때만 실제로 적용됩니다(다른 역할의 위조 방지).
+   */
+  operationalFullAccess?: boolean;
 };
 
 type ViewerScope = LeadSupabaseScope;
+
+/** 운영 화면 전체 접근: 관리자 + 명시 플래그만 인정 */
+export function hasOperationalFullAccess(scope?: ViewerScope): boolean {
+  return scope?.role === "admin" && scope.operationalFullAccess === true;
+}
+
+/** 전사 데이터·수수료·상담일 집계 등: 클라이언트 위조 방지 + 명시적 가드 */
+export function assertAdminOperationalScope(
+  scope: ViewerScope | undefined,
+  context: string
+): asserts scope is ViewerScope & { role: "admin"; operationalFullAccess: true } {
+  if (!hasOperationalFullAccess(scope)) {
+    throw new Error(`${context}: 관리자(운영) 권한이 필요합니다.`);
+  }
+}
+
+function shouldFilterLeadsByManager(scope?: ViewerScope): boolean {
+  return !hasOperationalFullAccess(scope);
+}
 
 type ConsultationRow = {
   id: string;
@@ -454,6 +541,61 @@ function counselingFieldsFromMemoOrRow(
   };
 }
 
+/** staff 저장 시 기존 상담 행의 담당자 문자열을 DB 내용 기준으로 복원 (메모 JSON 우선, 레거시는 counselor 컬럼·담당자 표시명) */
+function readCounselorFromConsultationRow(
+  memo: string,
+  counselorCol: string | null | undefined,
+  managerFallback: string
+): string {
+  const m = memo ?? "";
+  if (m.startsWith(CRM_CONSULTATION_MEMO_PREFIX)) {
+    try {
+      const p = JSON.parse(m.slice(CRM_CONSULTATION_MEMO_PREFIX.length)) as {
+        v?: number;
+        counselor?: string;
+      };
+      if (p?.v === 1 && typeof p.counselor === "string") {
+        const c = p.counselor.trim();
+        if (c) return c;
+      }
+    } catch {
+      /* fall through */
+    }
+  }
+  const col = typeof counselorCol === "string" ? counselorCol.trim() : "";
+  if (col) return col;
+  return managerFallback.trim();
+}
+
+async function fetchPersistedCounselorByConsultationId(
+  /** leads PK — trim 하지 않고 그대로 전달 */
+  leadId: NonNullable<Lead["id"]>,
+  managerFallback: string
+): Promise<Map<string, string>> {
+  ensureSupabaseConfigured();
+  let res = await supabase.from("consultations").select("id, memo, counselor").eq("lead_id", leadId);
+  if (res.error && unknownColumnFromPostgrestError(res.error) === "counselor") {
+    const retry = await supabase.from("consultations").select("id, memo").eq("lead_id", leadId);
+    res = retry as typeof res;
+  }
+  if (res.error) {
+    throw new Error(formatSupabaseError(res.error));
+  }
+  const map = new Map<string, string>();
+  for (const raw of res.data ?? []) {
+    const row = raw as { id?: unknown; memo?: string | null; counselor?: string | null };
+    const memo = typeof row.memo === "string" ? row.memo : "";
+    if (parseLeadExtraMemo(memo)) continue;
+    const id = counselingRecordIdKey(row.id);
+    if (!id) continue;
+    map.set(
+      id,
+      readCounselorFromConsultationRow(memo, row.counselor ?? null, managerFallback)
+    );
+  }
+  return map;
+}
+
 function coalesceCustomerType(raw: string | undefined): CustomerType {
   if (raw === "법인" || raw === "개인사업자" || raw === "개인") return raw;
   return "개인";
@@ -465,7 +607,8 @@ function mapRowToLead(
   contractRow: ContractRow | null,
   exportRow: ExportProgressRow | null
 ): Lead {
-  const forLead = consultations.filter((c) => c.lead_id === row.id);
+  const rowLeadId = coerceDbStringId(row.id);
+  const forLead = consultations.filter((c) => coerceDbStringId(c.lead_id) === rowLeadId);
   let extraPayload: LeadExtraPayloadV1 | null = null;
   const visibleConsultations: ConsultationRow[] = [];
   for (const rowC of forLead) {
@@ -480,7 +623,7 @@ function mapRowToLead(
   const records: CounselingRecord[] = visibleConsultations.map((c) => {
     const fields = counselingFieldsFromMemoOrRow(c.memo ?? "", c, row);
     return {
-      id: c.id,
+      id: coerceDbStringId(c.id),
       occurredAt: c.created_at,
       ...fields,
     };
@@ -582,8 +725,8 @@ function mapRowToLead(
   const depositAmt =
     typeof ext?.depositOrPrepaymentAmount === "string" ? ext.depositOrPrepaymentAmount : "";
   const lead: Lead = {
-    id: row.id,
-    managerUserId: row.manager_user_id,
+    id: rowLeadId,
+    managerUserId: nullableDbStringId(row.manager_user_id),
     createdAt: row.created_at,
     updatedAt: row.created_at,
     base: {
@@ -639,7 +782,7 @@ function toLeadInsertRow(lead: Lead) {
     status: lead.counselingStatus,
     sensitivity: lead.base.leadTemperature,
     manager: lead.base.ownerStaff,
-    manager_user_id: lead.managerUserId ?? null,
+    manager_user_id: nullableDbStringId(lead.managerUserId),
     next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
     created_at: lead.createdAt,
   };
@@ -654,7 +797,7 @@ function toLeadUpdateRow(lead: Lead) {
     status: lead.counselingStatus,
     sensitivity: lead.base.leadTemperature,
     manager: lead.base.ownerStaff,
-    manager_user_id: lead.managerUserId ?? null,
+    manager_user_id: nullableDbStringId(lead.managerUserId),
     next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
   };
 }
@@ -703,7 +846,7 @@ function toConsultationRows(lead: Lead): ConsultationInsert[] {
       created_at: r.occurredAt,
     };
     if (isUuidString(r.id)) {
-      row.id = r.id;
+      row.id = coerceDbStringId(r.id);
     }
     return row;
   });
@@ -870,6 +1013,7 @@ async function insertRowOmittingUnknownColumns(
   throw new Error(`[Supabase] ${table} insert: 반복 실패(알 수 없는 컬럼)`);
 }
 
+/** 일반 영업: 본인 `manager_user_id` 만. 관리자 운영 화면(`operationalFullAccess`)만 전체. */
 export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
   ensureSupabaseConfigured();
   const queryMeta = {
@@ -877,13 +1021,19 @@ export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
     order: "created_at desc",
     scopeRole: scope?.role ?? "all",
     scopeUserId: scope?.userId ?? null,
+    operationalFullAccess: hasOperationalFullAccess(scope),
   };
   let query = supabase
     .from("leads")
     .select("*")
     .order("created_at", { ascending: false });
-  if (scope && scope.role === "staff") {
-    query = query.eq("manager_user_id", scope.userId);
+  if (scope && shouldFilterLeadsByManager(scope)) {
+    const uid = nonEmptyUserId(scope.userId);
+    if (!uid) {
+      console.warn("[fetchLeads] scope without userId — returning no rows");
+      return [];
+    }
+    query = query.eq("manager_user_id", uid);
   }
   const { data: leadsData, error: leadsError } = await query;
   console.log("[fetchLeads] query result", {
@@ -930,7 +1080,8 @@ function sanitizeLeadSearchKeyword(raw: string): string {
 }
 
 /**
- * 고객명(`name`)·연락처(`phone`) ilike 검색. 직원은 담당 고객만.
+ * 고객명(`name`)·연락처(`phone`) ilike 검색.
+ * 일반: 본인 담당만. 관리자 운영 전용 스코프만 전체.
  */
 export async function searchLeads(
   keyword: string,
@@ -948,8 +1099,13 @@ export async function searchLeads(
     .order("created_at", { ascending: false })
     .limit(20);
 
-  if (scope?.role === "staff") {
-    query = query.eq("manager_user_id", scope.userId);
+  if (scope && shouldFilterLeadsByManager(scope)) {
+    const uid = nonEmptyUserId(scope.userId);
+    if (!uid) {
+      console.warn("[searchLeads] scope without userId — returning no hits");
+      return [];
+    }
+    query = query.eq("manager_user_id", uid);
   }
 
   const { data, error } = await query;
@@ -967,7 +1123,7 @@ export async function searchLeads(
     source: string;
   }>;
   return rows.map((r) => ({
-    id: r.id,
+    id: coerceDbStringId(r.id),
     customerName: r.name,
     phone: r.phone,
     status: r.status ?? "",
@@ -976,15 +1132,21 @@ export async function searchLeads(
   }));
 }
 
-/** 단일 고객 전체 관계 포함 조회 (전역 검색 모달 등). */
+/** 단일 고객 조회. 일반: 본인 담당이 아니면 null. 관리자 운영 스코프만 제한 없음. */
 export async function fetchLeadById(
   leadId: string,
   scope?: LeadSupabaseScope
 ): Promise<Lead | null> {
   ensureSupabaseConfigured();
-  let q = supabase.from("leads").select("*").eq("id", leadId);
-  if (scope?.role === "staff") {
-    q = q.eq("manager_user_id", scope.userId);
+  const idForQuery = coerceDbStringId(leadId);
+  let q = supabase.from("leads").select("*").eq("id", idForQuery);
+  if (scope && shouldFilterLeadsByManager(scope)) {
+    const uid = nonEmptyUserId(scope.userId);
+    if (!uid) {
+      console.warn("[fetchLeadById] scope without userId — denying access");
+      return null;
+    }
+    q = q.eq("manager_user_id", uid);
   }
   const { data: rowData, error: rowError } = await q.maybeSingle();
   if (rowError) {
@@ -1047,7 +1209,7 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
 
   const createdLead: Lead = {
     ...leadForInsert,
-    id: insertedRow.id,
+    id: coerceDbStringId(insertedRow.id),
     createdAt: insertedRow.created_at,
     updatedAt: insertedRow.created_at,
     statusUpdatedAt: insertedRow.created_at,
@@ -1062,15 +1224,20 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
 
 export async function updateLead(lead: Lead, scope?: ViewerScope) {
   ensureSupabaseConfigured();
-  if (scope?.role === "staff") {
+  const filterByManager = shouldFilterLeadsByManager(scope);
+  const scopeUid = nonEmptyUserId(scope?.userId) ?? "";
+  if (filterByManager) {
+    if (!scopeUid) {
+      throw new Error("계정 식별 정보가 없습니다. 다시 로그인해 주세요.");
+    }
     const { data: ownerRow, error: ownerErr } = await supabase
       .from("leads")
       .select("manager_user_id")
-      .eq("id", lead.id)
+      .eq("id", coerceDbStringId(lead.id))
       .maybeSingle();
     if (ownerErr) throw new Error(`담당 권한 확인 실패: ${formatSupabaseError(ownerErr)}`);
     const dbManager = (ownerRow as { manager_user_id: string | null } | null)?.manager_user_id;
-    if (dbManager != null && dbManager !== scope.userId) {
+    if (dbManager != null && dbManager !== scopeUid) {
       throw new Error("본인 담당 고객만 수정할 수 있습니다.");
     }
   }
@@ -1080,8 +1247,8 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
   const payload = toLeadUpdateRow(leadForUpdate);
   devLog("[Supabase] leads update payload (계약 탭 필드는 포함되지 않음):", payload);
   let updateQuery = supabase.from("leads").update(payload).eq("id", leadForUpdate.id);
-  if (scope?.role === "staff") {
-    updateQuery = updateQuery.eq("manager_user_id", scope.userId);
+  if (filterByManager && scopeUid) {
+    updateQuery = updateQuery.eq("manager_user_id", scopeUid);
   }
   const { error } = await updateQuery;
   if (error) {
@@ -1099,25 +1266,119 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
 
 export async function deleteLead(leadId: string, scope?: ViewerScope) {
   ensureSupabaseConfigured();
-  if (scope?.role === "staff") {
+  const idForDelete = coerceDbStringId(leadId);
+  if (shouldFilterLeadsByManager(scope)) {
+    const uid = nonEmptyUserId(scope?.userId);
+    if (!uid) {
+      throw new Error("계정 식별 정보가 없습니다. 다시 로그인해 주세요.");
+    }
     const { data, error } = await supabase
       .from("leads")
       .select("id")
-      .eq("id", leadId)
-      .eq("manager_user_id", scope.userId)
+      .eq("id", idForDelete)
+      .eq("manager_user_id", uid)
       .maybeSingle();
     if (error) throw new Error(`삭제 권한 확인 실패: ${formatSupabaseError(error)}`);
     if (!data) throw new Error("본인 담당 고객만 삭제할 수 있습니다.");
   }
   await Promise.all([
-    supabase.from("consultations").delete().eq("lead_id", leadId),
-    supabase.from("contracts").delete().eq("lead_id", leadId),
+    supabase.from("consultations").delete().eq("lead_id", idForDelete),
+    supabase.from("contracts").delete().eq("lead_id", idForDelete),
   ]);
-  const { error } = await supabase.from("leads").delete().eq("id", leadId);
+  const { error } = await supabase.from("leads").delete().eq("id", idForDelete);
   if (error) {
     console.error("[Supabase] leads delete error:", error, "leadId:", leadId);
     throw new Error(`고객 삭제 실패: ${formatSupabaseError(error)}`);
   }
+}
+
+function parseFeeWonFromDb(feeRaw: unknown, finalRaw: unknown): number {
+  const tryNum = (v: unknown) => {
+    if (v == null) return NaN;
+    const n = Number(String(v).replace(/,/g, "").trim());
+    return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : NaN;
+  };
+  const fromFinal = tryNum(finalRaw);
+  if (Number.isFinite(fromFinal)) return fromFinal;
+  const fromFee = tryNum(feeRaw);
+  return Number.isFinite(fromFee) ? fromFee : 0;
+}
+
+/**
+ * 직원 현황·엑셀용: lead_id별 계약 수수료·계약일(스냅샷 수수료 우선).
+ * contracts 테이블이 없거나 오류 시 빈 Map.
+ */
+export async function fetchContractFeeSummaryByLeadIds(
+  leadIds: string[],
+  scope: ViewerScope
+): Promise<Map<string, { feeWon: number; contractDate: string }>> {
+  assertAdminOperationalScope(scope, "계약 수수료 요약 조회");
+  const out = new Map<string, { feeWon: number; contractDate: string }>();
+  if (leadIds.length === 0) return out;
+  ensureSupabaseConfigured();
+  const ids = [...new Set(leadIds.map((id) => coerceDbStringId(id)).filter(Boolean))];
+  const chunkSize = 150;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from("contracts")
+      .select("lead_id,fee,final_fee_amount,contract_date")
+      .in("lead_id", chunk);
+    if (error) {
+      console.warn("[fetchContractFeeSummaryByLeadIds] skip chunk", formatSupabaseError(error));
+      continue;
+    }
+    for (const row of data ?? []) {
+      const r = row as {
+        lead_id: string;
+        fee?: unknown;
+        final_fee_amount?: unknown;
+        contract_date?: string | null;
+      };
+      const lid = coerceDbStringId(r.lead_id);
+      if (!lid) continue;
+      const feeWon = parseFeeWonFromDb(r.fee, r.final_fee_amount);
+      const contractDate = String(r.contract_date ?? "").trim().slice(0, 10);
+      out.set(lid, { feeWon, contractDate });
+    }
+  }
+  return out;
+}
+
+/** lead_id별 상담기록 최신 created_at (consultations 없으면 빈 Map). */
+export async function fetchMaxConsultationCreatedAtByLeadIds(
+  leadIds: string[],
+  scope: ViewerScope
+): Promise<Map<string, string>> {
+  assertAdminOperationalScope(scope, "상담기록 일시 조회");
+  const out = new Map<string, string>();
+  if (leadIds.length === 0) return out;
+  ensureSupabaseConfigured();
+  const ids = [...new Set(leadIds.map((id) => coerceDbStringId(id)).filter(Boolean))];
+  const chunkSize = 150;
+  for (let i = 0; i < ids.length; i += chunkSize) {
+    const chunk = ids.slice(i, i + chunkSize);
+    const { data, error } = await supabase
+      .from("consultations")
+      .select("lead_id,created_at")
+      .in("lead_id", chunk);
+    if (error) {
+      console.warn(
+        "[fetchMaxConsultationCreatedAtByLeadIds] skip chunk",
+        formatSupabaseError(error)
+      );
+      continue;
+    }
+    for (const row of data ?? []) {
+      const r = row as { lead_id: string; created_at: string };
+      const lid = coerceDbStringId(r.lead_id);
+      if (!lid) continue;
+      const ca = String(r.created_at ?? "");
+      const prev = out.get(lid);
+      if (!prev || ca > prev) out.set(lid, ca);
+    }
+  }
+  return out;
 }
 
 async function replaceLeadRelations(lead: Lead) {
@@ -1214,6 +1475,8 @@ type NoticeRow = {
   created_by: string;
   created_at: string;
   is_active: boolean;
+  is_pinned?: boolean | null;
+  is_important?: boolean | null;
 };
 
 function mapNoticeRow(row: NoticeRow): Notice {
@@ -1224,6 +1487,8 @@ function mapNoticeRow(row: NoticeRow): Notice {
     createdBy: row.created_by,
     createdAt: row.created_at,
     isActive: row.is_active === true,
+    isPinned: row.is_pinned === true,
+    isImportant: row.is_important === true,
   };
 }
 
@@ -1238,13 +1503,28 @@ function isNoticesUnavailableError(error: unknown): boolean {
   );
 }
 
-/** 공지 최신순 조회 (is_active 컬럼 필터는 앱 단에서 처리) */
+/** PostgREST 스키마 캐시가 DB보다 늦게 갱신될 때 나는 오류에 안내를 붙입니다. */
+function formatNoticeMutationError(error: unknown): string {
+  const base = formatSupabaseError(error);
+  const lower = base.toLowerCase();
+  if (lower.includes("schema cache") || lower.includes("could not find the '")) {
+    return `${base} — DB에 컬럼이 있는데도 동일하면 Supabase SQL에서 notify pgrst, 'reload schema'; 실행 후 재시도하세요. (.env의 프로젝트 URL과 SQL을 실행한 프로젝트가 같은지도 확인)`;
+  }
+  return base;
+}
+
+const NOTICE_SELECT =
+  "id, title, content, created_by, created_at, is_active, is_pinned, is_important";
+
+/** 공지 조회: 고정·중요·최신순 */
 export async function listNotices(limit = 5): Promise<Notice[]> {
   ensureSupabaseConfigured();
-  const lim = Math.min(Math.max(limit, 1), 20);
+  const lim = Math.min(Math.max(limit, 1), 200);
   const { data, error } = await supabase
     .from("notices")
-    .select("id, title, content, created_by, created_at, is_active")
+    .select(NOTICE_SELECT)
+    .order("is_pinned", { ascending: false })
+    .order("is_important", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(lim);
   if (error) {
@@ -1257,10 +1537,31 @@ export async function listNotices(limit = 5): Promise<Notice[]> {
   return ((data ?? []) as NoticeRow[]).map(mapNoticeRow).filter((n) => n.isActive);
 }
 
+export async function fetchNoticeById(id: string): Promise<Notice | null> {
+  ensureSupabaseConfigured();
+  const { data, error } = await supabase
+    .from("notices")
+    .select(NOTICE_SELECT)
+    .eq("id", id)
+    .maybeSingle();
+  if (error) {
+    if (isNoticesUnavailableError(error)) {
+      console.warn("[Supabase] fetchNoticeById:", formatSupabaseError(error));
+      return null;
+    }
+    throw new Error(`공지 조회 실패: ${formatSupabaseError(error)}`);
+  }
+  if (!data) return null;
+  const n = mapNoticeRow(data as NoticeRow);
+  return n.isActive ? n : null;
+}
+
 export async function createNotice(input: {
   title: string;
   content: string;
   createdBy: string;
+  isPinned?: boolean;
+  isImportant?: boolean;
 }): Promise<Notice> {
   ensureSupabaseConfigured();
   const title = input.title.trim();
@@ -1273,28 +1574,34 @@ export async function createNotice(input: {
       content,
       created_by: input.createdBy,
       is_active: true,
+      is_pinned: input.isPinned === true,
+      is_important: input.isImportant === true,
     })
-    .select("id, title, content, created_by, created_at, is_active")
+    .select(NOTICE_SELECT)
     .single();
-  if (error) throw new Error(`공지 등록 실패: ${formatSupabaseError(error)}`);
+  if (error) throw new Error(`공지 등록 실패: ${formatNoticeMutationError(error)}`);
   return mapNoticeRow(data as NoticeRow);
 }
 
 export async function updateNotice(
   id: string,
-  patch: { title?: string; content?: string; isActive?: boolean }
+  patch: {
+    title?: string;
+    content?: string;
+    isActive?: boolean;
+    isPinned?: boolean;
+    isImportant?: boolean;
+  }
 ): Promise<Notice> {
   ensureSupabaseConfigured();
   const row: Record<string, unknown> = {};
   if (patch.title !== undefined) row.title = patch.title.trim();
   if (patch.content !== undefined) row.content = patch.content.trim();
   if (patch.isActive !== undefined) row.is_active = patch.isActive;
+  if (patch.isPinned !== undefined) row.is_pinned = patch.isPinned;
+  if (patch.isImportant !== undefined) row.is_important = patch.isImportant;
   if (Object.keys(row).length === 0) {
-    const { data, error } = await supabase
-      .from("notices")
-      .select("id, title, content, created_by, created_at, is_active")
-      .eq("id", id)
-      .single();
+    const { data, error } = await supabase.from("notices").select(NOTICE_SELECT).eq("id", id).single();
     if (error) throw new Error(`공지 조회 실패: ${formatSupabaseError(error)}`);
     return mapNoticeRow(data as NoticeRow);
   }
@@ -1302,9 +1609,9 @@ export async function updateNotice(
     .from("notices")
     .update(row)
     .eq("id", id)
-    .select("id, title, content, created_by, created_at, is_active")
+    .select(NOTICE_SELECT)
     .single();
-  if (error) throw new Error(`공지 수정 실패: ${formatSupabaseError(error)}`);
+  if (error) throw new Error(`공지 수정 실패: ${formatNoticeMutationError(error)}`);
   return mapNoticeRow(data as NoticeRow);
 }
 

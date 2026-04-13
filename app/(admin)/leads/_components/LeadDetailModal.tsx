@@ -5,7 +5,7 @@ import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
 import { TapButton } from "@/app/_components/ui/crm-motion";
 import {
   BASE_CONTRACT_TERM_OPTIONS,
-  COUNSELING_STATUS_OPTIONS,
+  CONSULT_RESULT_OPTIONS,
   CREDIT_REVIEW_STATUS_OPTIONS,
   FAILURE_REASON_OPTIONS,
   LEAD_SOURCE_OPTIONS,
@@ -49,6 +49,7 @@ import {
   shouldPersistContractAmountSnapshot,
 } from "../../_lib/leaseCrmContractPersist";
 import { counselingStatusFromExportProgress } from "../../_lib/leaseCrmLogic";
+import { applyStaffLeadClientLocks } from "../../_lib/leaseCrmStorage";
 import { formatSupabaseError } from "../../_lib/leaseCrmSupabase";
 import { EMPLOYEES } from "../../_lib/leaseCrmSeed";
 import { listActiveUsers } from "../../_lib/usersSupabase";
@@ -248,6 +249,7 @@ function statusPillClass(status: CounselingStatus) {
     case "계약완료":
     case "확정":
     case "출고":
+    case "인도완료":
       return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200";
     case "보류":
       return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200";
@@ -328,25 +330,29 @@ export default function LeadDetailModal({
   onUpdate: (next: Lead) => void | Promise<void>;
   onDelete: (id: string) => void;
 }) {
-  type TabKey = "basic" | "counseling" | "records" | "quotes" | "contract" | "export";
+  type TabKey = "basic" | "records" | "quotes" | "contract" | "export";
   const [activeTab, setActiveTab] = useState<TabKey>("basic");
   const [draft, setDraft] = useState<Lead>(lead);
   const [saving, setSaving] = useState(false);
+  /** 상담기록 추가 시 함께 바꿀 상담결과 — 빈 문자열이면 유지 */
+  const [recordCounselingStatusSideEffect, setRecordCounselingStatusSideEffect] = useState<
+    "" | CounselingStatus
+  >("");
   const prevLeadIdRef = useRef<string | null>(null);
   const { profile } = useAuth();
   const staffContractLocked = profile?.role === "staff";
-  const canReassignLeadOwner = profile?.role === "admin" || profile?.role === "manager";
+  /** 담당 직원 변경은 Admin만 (staff·manager는 UI·저장 모두 본인/고정). */
+  const canReassignLeadOwner = profile?.role === "admin";
+  /** 상담기록의「상담 담당자」는 admin만 변경 가능(staff·manager는 읽기 전용). */
+  const canPickCounselor = profile?.role === "admin";
 
   const [leadOwnerOptions, setLeadOwnerOptions] = useState<string[]>(() => [...EMPLOYEES]);
 
   const leadPayloadForServer = useCallback(
     (l: Lead): Lead => {
-      if (!profile || profile.role !== "staff") return l;
-      return {
-        ...l,
-        managerUserId: profile.userId,
-        base: { ...l.base, ownerStaff: profile.name },
-      };
+      const shaped = ensureLeadShape(l);
+      if (!profile || profile.role !== "staff") return shaped;
+      return applyStaffLeadClientLocks(shaped, { userId: profile.userId, name: profile.name });
     },
     [profile]
   );
@@ -376,6 +382,25 @@ export default function LeadDetailModal({
     return Array.from(set).sort((a, b) => a.localeCompare(b, "ko"));
   }, [leadOwnerOptions, draft.base.ownerStaff]);
 
+  const [counselorOptions, setCounselorOptions] = useState<string[]>(() => [...EMPLOYEES]);
+
+  useEffect(() => {
+    if (!canPickCounselor) return;
+    let cancelled = false;
+    void listActiveUsers()
+      .then((users) => {
+        if (cancelled) return;
+        const names = users.map((u) => u.name).filter(Boolean) as string[];
+        setCounselorOptions(names.length > 0 ? names : [...EMPLOYEES]);
+      })
+      .catch(() => {
+        if (!cancelled) setCounselorOptions([...EMPLOYEES]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [canPickCounselor]);
+
   const base = draft.base;
 
   const [recordDraft, setRecordDraft] = useState<Omit<CounselingRecord, "id">>({
@@ -390,9 +415,28 @@ export default function LeadDetailModal({
     importance: "보통",
   });
 
+  const counselorSelectChoices = useMemo(() => {
+    const baseOpts = counselorOptions.length > 0 ? counselorOptions : [...EMPLOYEES];
+    const set = new Set<string>(baseOpts);
+    const cur = recordDraft.counselor?.trim();
+    if (cur) set.add(cur);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ko"));
+  }, [counselorOptions, recordDraft.counselor]);
+
   useEffect(() => {
-    setRecordDraft((p) => ({ ...p, counselor: base.ownerStaff }));
-  }, [base.ownerStaff]);
+    setRecordCounselingStatusSideEffect("");
+  }, [lead.id]);
+
+  useEffect(() => {
+    setRecordDraft((p) => {
+      if (profile?.role === "staff") {
+        const n = profile.name?.trim();
+        if (n) return { ...p, counselor: n };
+        return p;
+      }
+      return { ...p, counselor: base.ownerStaff };
+    });
+  }, [base.ownerStaff, profile?.role, profile?.name]);
 
   const [quoteDraft, setQuoteDraft] = useState<QuoteFormDraft>(() => emptyQuoteForm());
 
@@ -407,7 +451,10 @@ export default function LeadDetailModal({
       setQuoteDraft(emptyQuoteForm());
       setRecordDraft({
         occurredAt: new Date().toISOString(),
-        counselor: lead.base.ownerStaff,
+        counselor:
+          profile?.role === "staff"
+            ? profile?.name?.trim() || lead.base.ownerStaff
+            : lead.base.ownerStaff,
         method: "전화",
         content: "",
         reaction: "",
@@ -418,7 +465,7 @@ export default function LeadDetailModal({
       });
     }
     prevLeadIdRef.current = lead.id;
-  }, [lead]);
+  }, [lead, profile?.role, profile?.name]);
 
   const sortedQuotes = useMemo(
     () => [...(draft.quoteHistory ?? [])].sort((a, b) => b.quotedAt.localeCompare(a.quotedAt)),
@@ -428,7 +475,6 @@ export default function LeadDetailModal({
   const tabs = useMemo(
     () => [
       { key: "basic", label: "기본정보" },
-      { key: "counseling", label: "상담 진행" },
       { key: "records", label: "상담기록" },
       { key: "quotes", label: "견적 이력" },
       { key: "contract", label: "계약 고객" },
@@ -454,11 +500,36 @@ export default function LeadDetailModal({
   }
 
   async function saveBase() {
+    if (requiresFailureReasonStatus(draft.counselingStatus)) {
+      const fr = draft.failureReason?.trim() ?? "";
+      if (!fr) {
+        toast.error("실패 사유를 선택해 주세요.");
+        return;
+      }
+      if (fr === "기타" && !(draft.failureReasonNote ?? "").trim()) {
+        toast.error("기타 선택 시 상세 내용을 입력해 주세요.");
+        return;
+      }
+    }
+    if (profile?.role === "staff") {
+      const uid = profile.userId;
+      const myName = profile.name?.trim() ?? "";
+      if (draft.managerUserId != null && draft.managerUserId !== uid) {
+        toast.error("담당 직원은 본인만 지정할 수 있습니다.");
+        return;
+      }
+      if (myName && draft.base.ownerStaff?.trim() !== myName) {
+        toast.error("담당 직원은 본인만 지정할 수 있습니다.");
+        return;
+      }
+    }
     const nextIso = new Date().toISOString();
+    const statusChanged = draft.counselingStatus !== lead.counselingStatus;
     const next = leadPayloadForServer(
       ensureLeadShape({
         ...draft,
         updatedAt: nextIso,
+        ...(statusChanged ? { statusUpdatedAt: nextIso, lastHandledAt: nextIso } : {}),
       })
     );
     devLog("[LeadDetailModal] 기본정보 저장 직전 payload", next);
@@ -473,34 +544,6 @@ export default function LeadDetailModal({
     } finally {
       setSaving(false);
     }
-  }
-
-  async function saveCounseling(
-    nextStatus: CounselingStatus,
-    nextNextContactAt: string | null,
-    nextMemo: string
-  ) {
-    if (requiresFailureReasonStatus(nextStatus)) {
-      const fr = draft.failureReason?.trim() ?? "";
-      if (!fr) {
-        toast.error("실패 사유를 선택해 주세요.");
-        return;
-      }
-      if (fr === "기타" && !(draft.failureReasonNote ?? "").trim()) {
-        toast.error("기타 선택 시 상세 내용을 입력해 주세요.");
-        return;
-      }
-    }
-    const nextIso = new Date().toISOString();
-    await persist({
-      ...ensureLeadShape(draft),
-      counselingStatus: nextStatus,
-      statusUpdatedAt: nextIso,
-      nextContactAt: nextNextContactAt,
-      nextContactMemo: nextMemo,
-      updatedAt: nextIso,
-      lastHandledAt: nextIso,
-    });
   }
 
   async function saveContract(nextContract: ContractInfo | null, nextCounselingStatus?: CounselingStatus) {
@@ -1006,52 +1049,26 @@ export default function LeadDetailModal({
                         type="text"
                         readOnly
                         disabled
-                        value={profile?.name ?? draft.base.ownerStaff}
+                        value={draft.base.ownerStaff}
                         className="crm-field cursor-not-allowed opacity-90 dark:opacity-95"
-                        title="직원 계정은 담당 직원을 변경할 수 없습니다."
+                        title={
+                          profile?.role === "staff"
+                            ? "직원(staff)은 담당 직원을 본인으로만 유지할 수 있습니다."
+                            : "담당 직원 변경은 관리자(Admin)만 할 수 있습니다."
+                        }
                       />
                     )}
                   </Field>
 
-                  <div className="sm:col-span-2">
-                    <Field label="메모">
-                      <textarea
-                        value={draft.base.memo}
-                        onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            base: { ...p.base, memo: e.target.value },
-                          }))
-                        }
-                        rows={4}
-                        className="crm-field resize-none"
-                        placeholder="예: 고객 요구사항/메모"
-                      />
-                    </Field>
+                  <div className="sm:col-span-2 rounded-lg border border-zinc-200/90 bg-zinc-50/80 px-3 py-2.5 dark:border-zinc-800 dark:bg-zinc-900/40">
+                    <p className="text-xs leading-relaxed text-zinc-600 dark:text-zinc-400">
+                      <span className="font-semibold text-zinc-800 dark:text-zinc-200">상담결과</span>는 DB·목록과
+                      공유됩니다. 다음 연락 예정일·메모는{" "}
+                      <span className="font-semibold text-zinc-800 dark:text-zinc-200">상담기록</span> 탭에서만
+                      입력합니다.
+                    </p>
                   </div>
-                </div>
 
-                <div className="flex justify-end gap-2">
-                  <TapButton
-                    type="button"
-                    onClick={() => void saveBase()}
-                    className="crm-btn-primary disabled:opacity-50"
-                    disabled={saving}
-                  >
-                    {saving ? "저장 중…" : "기본정보 저장"}
-                  </TapButton>
-                </div>
-              </div>
-            ) : null}
-
-            {activeTab === "counseling" ? (
-              <div className="space-y-4">
-                <p className="rounded-md border border-zinc-200/90 bg-zinc-50/90 px-3 py-2.5 text-xs leading-relaxed text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900/40 dark:text-zinc-400">
-                  <span className="font-semibold text-zinc-800 dark:text-zinc-200">상담결과</span>는 DB·목록과 공유되는 값입니다.
-                  왼쪽 사이드바 메뉴(신규·재연락·계약 진행 등)는{" "}
-                  <span className="font-semibold text-zinc-800 dark:text-zinc-200">진행단계</span> 기준입니다.
-                </p>
-                <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="상담결과">
                     <select
                       value={draft.counselingStatus}
@@ -1066,45 +1083,13 @@ export default function LeadDetailModal({
                         statusPillClass(draft.counselingStatus)
                       )}
                     >
-                      {COUNSELING_STATUS_OPTIONS.map((s) => (
+                      {CONSULT_RESULT_OPTIONS.map((s) => (
                         <option key={s} value={s}>
-                          {s}
+                          {s === "인도완료" ? "인도 완료" : s}
                         </option>
                       ))}
                     </select>
                   </Field>
-
-                  <Field label="다음 연락 예정일">
-                    <input
-                      type="date"
-                      value={toDateInputValue(draft.nextContactAt)}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setDraft((p) => ({
-                          ...p,
-                          nextContactAt: v ? fromDateInputValue(v) : null,
-                        }));
-                      }}
-                      className="crm-field"
-                    />
-                  </Field>
-
-                  <div className="sm:col-span-2">
-                    <Field label="다음 연락 메모">
-                      <textarea
-                        value={draft.nextContactMemo}
-                        onChange={(e) =>
-                          setDraft((p) => ({
-                            ...p,
-                            nextContactMemo: e.target.value,
-                          }))
-                        }
-                        rows={4}
-                        className="crm-field resize-none"
-                        placeholder="예: 확인 포인트/문의사항"
-                      />
-                    </Field>
-                  </div>
 
                   {requiresFailureReasonStatus(draft.counselingStatus) ? (
                     <>
@@ -1156,23 +1141,34 @@ export default function LeadDetailModal({
                       </div>
                     </>
                   ) : null}
+
+                  <div className="sm:col-span-2">
+                    <Field label="메모">
+                      <textarea
+                        value={draft.base.memo}
+                        onChange={(e) =>
+                          setDraft((p) => ({
+                            ...p,
+                            base: { ...p.base, memo: e.target.value },
+                          }))
+                        }
+                        rows={4}
+                        className="crm-field resize-none"
+                        placeholder="예: 고객 요구사항/메모"
+                      />
+                    </Field>
+                  </div>
                 </div>
 
                 <div className="flex justify-end gap-2">
-                  <button
+                  <TapButton
                     type="button"
-                    onClick={() =>
-                      void saveCounseling(
-                        draft.counselingStatus,
-                        draft.nextContactAt,
-                        draft.nextContactMemo
-                      )
-                    }
+                    onClick={() => void saveBase()}
                     className="crm-btn-primary disabled:opacity-50"
                     disabled={saving}
                   >
-                    {saving ? "저장 중…" : "상담 진행 저장"}
-                  </button>
+                    {saving ? "저장 중…" : "기본정보 저장"}
+                  </TapButton>
                 </div>
               </div>
             ) : null}
@@ -1184,7 +1180,8 @@ export default function LeadDetailModal({
                     상담기록
                   </div>
                   <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                    기록 추가 시 다음 연락 예정일/메모도 함께 반영됩니다.
+                    다음 연락 예정일·메모는 각 상담기록에 입력하며, 저장 시 고객의「다음 연락」스냅샷으로
+                    반영됩니다.
                   </div>
                 </div>
 
@@ -1231,12 +1228,10 @@ export default function LeadDetailModal({
                               고객 반응: <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.reaction}</span>
                             </div>
                             <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
-                              다음 액션 날짜: <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.desiredProgressAt.slice(0, 10)}</span>
+                              다음 연락 예정일:{" "}
+                              <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.nextContactAt.slice(0, 10)}</span>
                             </div>
-                            <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
-                              다음 연락: <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.nextContactAt.slice(0, 10)}</span>
-                            </div>
-                            <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
+                            <div className="sm:col-span-2 rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
                               메모: <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.nextContactMemo || "-"}</span>
                             </div>
                           </div>
@@ -1261,22 +1256,32 @@ export default function LeadDetailModal({
                         toast.error("상담일시를 확인해 주세요.");
                         return;
                       }
+                      if (
+                        recordCounselingStatusSideEffect !== "" &&
+                        requiresFailureReasonStatus(recordCounselingStatusSideEffect) &&
+                        !(draft.failureReason ?? "").trim()
+                      ) {
+                        toast.error("보류/취소로 바꿀 때는 기본정보에서 실패 사유를 먼저 선택해 주세요.");
+                        return;
+                      }
                       const nextIso = new Date().toISOString();
                       const oc = new Date(recordDraft.occurredAt).toISOString();
-                      const desired =
-                        isValidIsoDateInput(recordDraft.desiredProgressAt)
-                          ? new Date(recordDraft.desiredProgressAt).toISOString()
-                          : oc;
+                      const desired = oc;
                       const nextContactRec =
                         isValidIsoDateInput(recordDraft.nextContactAt)
                           ? new Date(recordDraft.nextContactAt).toISOString()
                           : oc;
+                      const counselorForSave =
+                        profile?.role === "staff"
+                          ? (profile.name?.trim() || recordDraft.counselor)
+                          : recordDraft.counselor;
                       const rec: CounselingRecord = {
                         id:
                           typeof crypto !== "undefined" && "randomUUID" in crypto
                             ? crypto.randomUUID()
                             : `rec_${Math.random().toString(16).slice(2)}`,
                         ...recordDraft,
+                        counselor: counselorForSave,
                         occurredAt: oc,
                         desiredProgressAt: desired,
                         nextContactAt: nextContactRec,
@@ -1284,14 +1289,21 @@ export default function LeadDetailModal({
                       const priorRecords = Array.isArray(draft.counselingRecords)
                         ? draft.counselingRecords
                         : [];
+                      const statusSide =
+                        recordCounselingStatusSideEffect !== ""
+                          ? {
+                              counselingStatus: recordCounselingStatusSideEffect,
+                              statusUpdatedAt: nextIso,
+                              lastHandledAt: nextIso,
+                            }
+                          : {};
                       const nextLead = ensureLeadShape({
                         ...draft,
                         counselingRecords: [rec, ...priorRecords],
-                        nextContactAt: nextContactRec || null,
-                        nextContactMemo: rec.nextContactMemo?.trim() ?? "",
                         updatedAt: nextIso,
-                        statusUpdatedAt: draft.statusUpdatedAt,
-                        lastHandledAt: nextIso,
+                        statusUpdatedAt: statusSide.statusUpdatedAt ?? draft.statusUpdatedAt,
+                        lastHandledAt: statusSide.lastHandledAt ?? nextIso,
+                        ...statusSide,
                       });
                       devLog("[LeadDetailModal] 상담기록 추가 직전 payload", nextLead);
                       void (async () => {
@@ -1299,6 +1311,7 @@ export default function LeadDetailModal({
                           const toSave = leadPayloadForServer(nextLead);
                           await Promise.resolve(onUpdate(toSave));
                           setDraft(toSave);
+                          setRecordCounselingStatusSideEffect("");
                         } catch (err) {
                           console.error(
                             "[LeadDetailModal] 상담기록 추가 저장 실패",
@@ -1333,17 +1346,38 @@ export default function LeadDetailModal({
                     </Field>
 
                     <Field label="상담 담당자">
-                      <select
-                        value={recordDraft.counselor}
-                        onChange={(e) => setRecordDraft((p) => ({ ...p, counselor: e.target.value }))}
-                        className="crm-field crm-field-select"
-                      >
-                        {EMPLOYEES.map((s) => (
-                          <option key={s} value={s}>
-                            {s}
-                          </option>
-                        ))}
-                      </select>
+                      {canPickCounselor ? (
+                        <select
+                          value={recordDraft.counselor}
+                          onChange={(e) => setRecordDraft((p) => ({ ...p, counselor: e.target.value }))}
+                          className="crm-field crm-field-select"
+                        >
+                          {counselorSelectChoices.map((s) => (
+                            <option key={s} value={s}>
+                              {s}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <div className="space-y-1">
+                          <input
+                            readOnly
+                            value={recordDraft.counselor}
+                            className="crm-field cursor-not-allowed bg-zinc-50 text-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-200"
+                            aria-readonly="true"
+                          />
+                          {profile?.role === "staff" ? (
+                            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                              직원 계정은 상담 담당자가 본인으로만 저장됩니다.
+                            </p>
+                          ) : null}
+                          {profile?.role === "manager" ? (
+                            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                              상담 담당자 변경은 관리자만 할 수 있습니다.
+                            </p>
+                          ) : null}
+                        </div>
+                      )}
                     </Field>
 
                     <Field label="상담 방식">
@@ -1374,6 +1408,26 @@ export default function LeadDetailModal({
                       </select>
                     </Field>
 
+                    <Field label="저장 시 상담결과">
+                      <select
+                        value={recordCounselingStatusSideEffect}
+                        onChange={(e) =>
+                          setRecordCounselingStatusSideEffect((e.target.value || "") as "" | CounselingStatus)
+                        }
+                        className="crm-field crm-field-select"
+                      >
+                        <option value="">변경 없음</option>
+                        {CONSULT_RESULT_OPTIONS.map((s) => (
+                          <option key={s} value={s}>
+                            {s === "인도완료" ? "인도 완료" : s}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+                        선택 시 고객 상태가 함께 바뀌며, 저장 후 왼쪽 단계(예: 인도 완료)로 이동합니다.
+                      </p>
+                    </Field>
+
                     <div className="sm:col-span-2">
                       <Field label="상담 내용">
                         <textarea
@@ -1392,17 +1446,6 @@ export default function LeadDetailModal({
                         onChange={(e) => setRecordDraft((p) => ({ ...p, reaction: e.target.value }))}
                         className="crm-field"
                         placeholder="예: 긍정/보통/부정 등"
-                      />
-                    </Field>
-
-                    <Field label="다음 액션 날짜">
-                      <input
-                        type="date"
-                        value={toDateInputValue(recordDraft.desiredProgressAt)}
-                        onChange={(e) =>
-                          setRecordDraft((p) => ({ ...p, desiredProgressAt: fromDateInputValue(e.target.value) }))
-                        }
-                        className="crm-field"
                       />
                     </Field>
 
@@ -1433,9 +1476,13 @@ export default function LeadDetailModal({
                       <button
                         type="button"
                         onClick={() => {
+                          setRecordCounselingStatusSideEffect("");
                           setRecordDraft({
                             occurredAt: new Date().toISOString(),
-                            counselor: base.ownerStaff,
+                            counselor:
+                              profile?.role === "staff"
+                                ? profile?.name?.trim() || base.ownerStaff
+                                : base.ownerStaff,
                             method: "전화",
                             content: "",
                             reaction: "",

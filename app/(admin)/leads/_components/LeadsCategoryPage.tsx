@@ -3,19 +3,15 @@
 import { Suspense, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
-  COUNSELING_STATUS_OPTIONS,
-  CREDIT_REVIEW_STATUS_OPTIONS,
+  CONSULT_RESULT_OPTIONS,
   FAILURE_REASON_OPTIONS,
   LEAD_PRIORITY_OPTIONS,
   requiresFailureReasonStatus,
   type CounselingStatus,
-  type CreditReviewStatus,
   type Lead,
   type LeadCategoryKey,
   type LeadPriority,
   type LeadTemperature,
-  DELIVERY_TYPE_OPTIONS,
-  type DeliveryTypeOption,
 } from "../../_lib/leaseCrmTypes";
 import {
   computeCategory,
@@ -24,9 +20,12 @@ import {
   isContractPipelineCounselingStatus,
   isDeliveryDueSoon,
   isToday,
+  lastContactReferenceIso,
+  pathnameAfterCounselingStatusChange,
 } from "../../_lib/leaseCrmLogic";
 import { formatSupabaseError } from "../../_lib/leaseCrmSupabase";
 import {
+  applyStaffLeadClientLocks,
   createLead,
   deleteLeadById,
   ensureSeedLeads,
@@ -42,12 +41,7 @@ import { listActiveUsers } from "../../_lib/usersSupabase";
 import { motion } from "framer-motion";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
-import {
-  AnimatedStatNumber,
-  HoverCard,
-  LeadTableSkeleton,
-  TapButton,
-} from "@/app/_components/ui/crm-motion";
+import { AnimatedStatNumber, LeadTableSkeleton, TapButton } from "@/app/_components/ui/crm-motion";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -65,11 +59,12 @@ function statusPillClass(status: string) {
     case "계약완료":
     case "확정":
     case "출고":
+    case "인도완료":
       return "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200";
     case "보류":
       return "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200";
     case "취소":
-      return "border-zinc-200 bg-white text-zinc-700 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200";
+      return "border-rose-200/80 bg-rose-50/90 text-rose-800/90 dark:border-rose-500/25 dark:bg-rose-950/40 dark:text-rose-200/90";
     default:
       return "border-zinc-200 bg-white text-zinc-700";
   }
@@ -95,8 +90,6 @@ function priorityPillClass(p: LeadPriority) {
   return "border-[var(--crm-blue)]/30 bg-[var(--crm-blue)]/10 text-[var(--crm-blue-deep)] dark:border-sky-500/35 dark:bg-sky-500/10 dark:text-sky-200";
 }
 
-type DateFieldKey = "createdAt" | "statusUpdatedAt" | "nextContactAt";
-type DatePreset = "today" | "week" | "month" | "custom";
 type SortKey =
   | "latest"
   | "oldest"
@@ -105,36 +98,18 @@ type SortKey =
   | "lastContactOldest"
   | "lastContactNewest";
 
-/** 목록 내 추가 좁히기: 상담결과(Lead.counselingStatus). 왼쪽 메뉴 진행단계와 별도 */
-type NarrowStatusKey = "all" | CounselingStatus;
-
-const NARROW_STATUS_OPTIONS: { key: NarrowStatusKey; label: string }[] = [
-  { key: "all", label: "전체" },
-  ...COUNSELING_STATUS_OPTIONS.map((s) => ({ key: s as NarrowStatusKey, label: s })),
-];
-
 function toDateKey(isoLike: string | null | undefined) {
   if (!isoLike) return "";
   return isoLike.slice(0, 10);
 }
 
-function dateRangeByPreset(preset: DatePreset) {
+function monthRangeKeys() {
   const now = new Date();
-  const end = now.toISOString().slice(0, 10);
-  if (preset === "today") {
-    return { from: end, to: end };
-  }
-  if (preset === "week") {
-    const d = new Date(now);
-    const day = d.getDay() || 7; // 1..7
-    d.setDate(d.getDate() - (day - 1));
-    return { from: d.toISOString().slice(0, 10), to: end };
-  }
-  if (preset === "month") {
-    const d = new Date(now.getFullYear(), now.getMonth(), 1);
-    return { from: d.toISOString().slice(0, 10), to: end };
-  }
-  return { from: "", to: "" };
+  const start = new Date(now.getFullYear(), now.getMonth(), 1);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const from = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
+  const to = now.toISOString().slice(0, 10);
+  return { from, to };
 }
 
 function compareDateAsc(a: string | null | undefined, b: string | null | undefined) {
@@ -146,19 +121,6 @@ function compareDateAsc(a: string | null | undefined, b: string | null | undefin
   if (aa < bb) return -1;
   if (aa > bb) return 1;
   return 0;
-}
-
-/** 정렬용: 상담기록 최신 occurredAt → lastHandledAt → (기록 없으면) nextContactAt → createdAt */
-function lastContactReferenceIso(lead: Lead): string {
-  let maxIso = "";
-  const recs = Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [];
-  for (const r of recs) {
-    if (r.occurredAt > maxIso) maxIso = r.occurredAt;
-  }
-  if (lead.lastHandledAt > maxIso) maxIso = lead.lastHandledAt;
-  if (!maxIso && lead.nextContactAt) maxIso = lead.nextContactAt;
-  if (!maxIso) maxIso = lead.createdAt;
-  return maxIso;
 }
 
 function compareIsoAsc(a: string, b: string) {
@@ -182,20 +144,8 @@ function LeadsCategoryView({
   const [createOpen, setCreateOpen] = useState(false);
   const [activeLeadId, setActiveLeadId] = useState<string | null>(null);
   const { query: searchInput, setQuery: setSearchInput } = useLeadListSearch();
-  const [narrowStatusFilter, setNarrowStatusFilter] = useState<NarrowStatusKey>("all");
-  const [ownerFilter, setOwnerFilter] = useState("all");
-  const [datePreset, setDatePreset] = useState<DatePreset>("month");
-  const [dateField, setDateField] = useState<DateFieldKey>("createdAt");
-  const [customFrom, setCustomFrom] = useState("");
-  const [customTo, setCustomTo] = useState("");
   const [sortBy, setSortBy] = useState<SortKey>("lastContactOldest");
   const [createOwnerOptions, setCreateOwnerOptions] = useState<string[]>([]);
-  const [tempFilter, setTempFilter] = useState<"all" | LeadTemperature>("all");
-  const [priorityFilter, setPriorityFilter] = useState<"all" | LeadPriority>("all");
-  const [creditFilter, setCreditFilter] = useState<"all" | CreditReviewStatus>("all");
-  const [deliveryTypeFilter, setDeliveryTypeFilter] = useState<"all" | Exclude<DeliveryTypeOption, "">>(
-    "all"
-  );
   const [failReasonModal, setFailReasonModal] = useState<{
     lead: Lead;
     nextStatus: CounselingStatus;
@@ -260,43 +210,14 @@ function LeadsCategoryView({
   }, [profile, authLoading]);
 
   useEffect(() => {
-    const fd = searchParams.get("fromDash");
-    if (!fd) return;
-    switch (fd) {
-      case "todayNew":
-        setDatePreset("today");
-        setDateField("createdAt");
-        setNarrowStatusFilter("신규");
-        break;
-      case "todayCounseling":
-        setDatePreset("today");
-        setDateField("statusUpdatedAt");
-        setNarrowStatusFilter("상담중");
-        break;
-      case "monthContract":
-        setDatePreset("month");
-        setDateField("statusUpdatedAt");
-        setNarrowStatusFilter("계약완료");
-        break;
-      case "todayFollow":
-        setDatePreset("today");
-        setDateField("nextContactAt");
-        setNarrowStatusFilter("all");
-        break;
-      case "deliveryDue":
-        setDatePreset("month");
-        setDateField("createdAt");
-        setNarrowStatusFilter("all");
-        break;
-      case "contractPipe":
-        setDatePreset("month");
-        setDateField("createdAt");
-        setNarrowStatusFilter("all");
-        break;
-      default:
-        break;
+    if (searchParams.get("create") === "1") {
+      setCreateOpen(true);
+      const next = new URLSearchParams(searchParams.toString());
+      next.delete("create");
+      const q = next.toString();
+      router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
     }
-  }, [searchParams]);
+  }, [searchParams, pathname, router]);
 
   const selectedLead = useMemo(() => leads?.find((l) => l.id === activeLeadId) ?? null, [leads, activeLeadId]);
 
@@ -304,18 +225,6 @@ function LeadsCategoryView({
     if (!leads) return [];
     return computeCategory(leads, categoryKey);
   }, [leads, categoryKey]);
-
-  /** 담당자 필터: 활성 직원 목록 + 현재 목록에 나온 담당자 (검색 전 단계 기준) */
-  const ownerFilterOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const n of createOwnerOptions) {
-      if (n?.trim()) set.add(n.trim());
-    }
-    for (const l of byCategory) {
-      if (l.base.ownerStaff?.trim()) set.add(l.base.ownerStaff.trim());
-    }
-    return Array.from(set).sort((a, b) => a.localeCompare(b, "ko"));
-  }, [createOwnerOptions, byCategory]);
 
   const filtered = useMemo(() => {
     const raw = searchInput.trim();
@@ -332,62 +241,29 @@ function LeadsCategoryView({
         })
       : byCategory;
 
-    const byNarrowStatus =
-      narrowStatusFilter === "all"
-        ? bySearch
-        : bySearch.filter((l) => l.counselingStatus === narrowStatusFilter);
-
-    const byOwner =
-      ownerFilter === "all"
-        ? byNarrowStatus
-        : byNarrowStatus.filter((l) => l.base.ownerStaff === ownerFilter);
-
-    const byTemp =
-      tempFilter === "all"
-        ? byOwner
-        : byOwner.filter((l) => l.base.leadTemperature === tempFilter);
-
-    const byPriority =
-      priorityFilter === "all"
-        ? byTemp
-        : byTemp.filter((l) => (l.leadPriority ?? "일반") === priorityFilter);
-
-    const byCredit =
-      creditFilter === "all"
-        ? byPriority
-        : byPriority.filter((l) => (l.creditReviewStatus ?? "심사 전") === creditFilter);
-
-    const byDelivery =
-      deliveryTypeFilter === "all"
-        ? byCredit
-        : byCredit.filter((l) => (l.contract?.deliveryType ?? "") === deliveryTypeFilter);
-
-    const range =
-      datePreset === "custom"
-        ? { from: customFrom, to: customTo }
-        : dateRangeByPreset(datePreset);
-    const rangeFrom = range.from;
-    const rangeTo = range.to;
-
-    const byDate = byDelivery.filter((l) => {
-      if (!rangeFrom && !rangeTo) return true;
-      const raw =
-        dateField === "createdAt"
-          ? l.createdAt
-          : dateField === "statusUpdatedAt"
-            ? l.statusUpdatedAt
-            : l.nextContactAt;
-      const key = toDateKey(raw);
-      if (!key) return false;
-      if (rangeFrom && key < rangeFrom) return false;
-      if (rangeTo && key > rangeTo) return false;
-      return true;
-    });
-
+    const todayKey = toDateKey(new Date().toISOString());
     const fromDash = searchParams.get("fromDash");
-    let listForDash = byDate;
+    let listForDash = bySearch;
+
+    if (categoryKey === "new-db" && fromDash === "todayNew") {
+      listForDash = listForDash.filter((l) => toDateKey(l.createdAt) === todayKey);
+    }
     if (categoryKey === "new-db" && fromDash === "staleNew") {
       listForDash = listForDash.filter((l) => daysAgo(l.createdAt) >= 3);
+    }
+    if (categoryKey === "counseling-progress" && fromDash === "todayFollow") {
+      listForDash = listForDash.filter((l) => l.nextContactAt && isToday(l.nextContactAt));
+    }
+    if (categoryKey === "counseling-progress" && fromDash === "todayCounseling") {
+      listForDash = listForDash.filter((l) => toDateKey(l.statusUpdatedAt) === todayKey);
+    }
+    if (categoryKey === "contract-progress" && fromDash === "monthContract") {
+      const { from, to } = monthRangeKeys();
+      listForDash = listForDash.filter((l) => {
+        const k = toDateKey(l.statusUpdatedAt);
+        if (!k) return false;
+        return k >= from && k <= to;
+      });
     }
     if (
       (categoryKey === "counseling-progress" || categoryKey === "quote-sent") &&
@@ -397,7 +273,9 @@ function LeadsCategoryView({
         if (l.counselingStatus === "취소") return false;
         if (
           isContractPipelineCounselingStatus(l.counselingStatus) &&
-          (l.exportProgress?.stage === "인도 완료" || l.deliveredAt)
+          (l.exportProgress?.stage === "인도 완료" ||
+            l.deliveredAt ||
+            l.counselingStatus === "인도완료")
         ) {
           return false;
         }
@@ -420,23 +298,7 @@ function LeadsCategoryView({
       const bDelivery = b.exportProgress?.expectedDeliveryDate ?? b.contract?.pickupPlannedAt ?? null;
       return compareDateAsc(aDelivery, bDelivery);
     });
-  }, [
-    byCategory,
-    searchInput,
-    narrowStatusFilter,
-    ownerFilter,
-    datePreset,
-    dateField,
-    customFrom,
-    customTo,
-    sortBy,
-    searchParams.toString(),
-    categoryKey,
-    tempFilter,
-    priorityFilter,
-    creditFilter,
-    deliveryTypeFilter,
-  ]);
+  }, [byCategory, searchInput, sortBy, searchParams, categoryKey]);
 
   const automation = useMemo(() => {
     if (!leads) return null;
@@ -492,13 +354,20 @@ function LeadsCategoryView({
     devLog("[handleUpdateLead] 저장 직전 전체 payload", next);
     try {
       if (!profile) throw new Error("로그인이 필요합니다.");
+      if (profile.role === "staff") {
+        const myName = profile.name?.trim() ?? "";
+        if (next.managerUserId != null && next.managerUserId !== profile.userId) {
+          toast.error("담당 직원은 본인만 지정할 수 있습니다.");
+          throw new Error("담당 직원은 본인만 지정할 수 있습니다.");
+        }
+        if (myName && next.base.ownerStaff?.trim() !== myName) {
+          toast.error("담당 직원은 본인만 지정할 수 있습니다.");
+          throw new Error("담당 직원은 본인만 지정할 수 있습니다.");
+        }
+      }
       const payload =
         profile.role === "staff"
-          ? {
-              ...next,
-              managerUserId: profile.userId,
-              base: { ...next.base, ownerStaff: profile.name },
-            }
+          ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
           : next;
       await updateLead(payload, {
         role: profile.role,
@@ -506,11 +375,9 @@ function LeadsCategoryView({
       });
       commitLeads((leads ?? []).map((l) => (l.id === payload.id ? payload : l)));
       toast.success("저장 완료되었습니다.");
-      if (next.counselingStatus === "부재") {
-        const p = pathname ?? "";
-        if (!p.includes("/leads/unresponsive")) {
-          router.push("/leads/unresponsive");
-        }
+      const nextPath = pathnameAfterCounselingStatusChange(next.counselingStatus, categoryKey);
+      if (pathname !== nextPath) {
+        router.push(nextPath);
       }
     } catch (error) {
       console.error("[handleUpdateLead] 저장 오류", formatSupabaseError(error), error, next);
@@ -544,11 +411,7 @@ function LeadsCategoryView({
     if (!profile) throw new Error("로그인이 필요합니다.");
     const normalized =
       profile.role === "staff"
-        ? {
-            ...next,
-            managerUserId: profile.userId,
-            base: { ...next.base, ownerStaff: profile.name },
-          }
+        ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
         : next;
     console.log("[LeadsCategoryPage] quick create payload(full)", normalized);
 
@@ -594,15 +457,15 @@ function LeadsCategoryView({
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
-            진행단계
+            고객 단계
           </div>
           <h1 className="mt-1 text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
             {categoryLabel}
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
-            다른 단계로 이동하려면 왼쪽 사이드바에서 메뉴를 선택하세요. 아래{" "}
-            <span className="font-medium text-zinc-700 dark:text-zinc-300">상담결과</span>는 DB에 저장되는 상태이며,
-            진행단계와는 별개로 이 목록만 좁힙니다.
+            단계는 왼쪽 사이드바만 사용합니다. 표에서{" "}
+            <span className="font-medium text-zinc-700 dark:text-zinc-300">상담결과</span>를 바꾸면 저장 후 해당 단계
+            목록으로 자동 이동합니다.
           </p>
           <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-zinc-500 dark:text-zinc-400">
             <span>
@@ -624,18 +487,6 @@ function LeadsCategoryView({
               <>
                 <span className="text-zinc-300 dark:text-zinc-600">·</span>
                 <span>검색 적용</span>
-              </>
-            ) : null}
-            {narrowStatusFilter !== "all" ? (
-              <>
-                <span className="text-zinc-300 dark:text-zinc-600">·</span>
-                <span>상담결과 필터</span>
-              </>
-            ) : null}
-            {ownerFilter !== "all" ? (
-              <>
-                <span className="text-zinc-300 dark:text-zinc-600">·</span>
-                <span>담당자: {ownerFilter}</span>
               </>
             ) : null}
             <span className="text-zinc-300 dark:text-zinc-600">·</span>
@@ -667,210 +518,41 @@ function LeadsCategoryView({
         </TapButton>
       </div>
 
-      <HoverCard className="rounded-lg border border-zinc-200/90 bg-zinc-50/60 p-4 dark:border-zinc-800 dark:bg-zinc-900/25">
-        <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-lg border border-zinc-200/90 bg-zinc-50/60 p-4 sm:flex-row sm:items-end sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/25">
+        <div>
           <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
-            필터
+            정렬
           </div>
-          <p className="text-[11px] text-zinc-500 dark:text-zinc-500">
-            상담결과 칩과 드롭다운은 동일 필터입니다.
+          <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+            단계는 사이드바에서만 바꿉니다. 여기서는 목록 순서만 조정합니다.
           </p>
         </div>
-        <div className="mt-3 flex flex-wrap gap-2">
-          {NARROW_STATUS_OPTIONS.map((opt) => {
-            const active = narrowStatusFilter === opt.key;
-            return (
-              <TapButton
-                key={opt.key}
-                type="button"
-                onClick={() => setNarrowStatusFilter(opt.key)}
-                className={cn(
-                  "rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors",
-                  active
-                    ? "border-[var(--crm-blue-deep)] bg-[var(--crm-blue-deep)] text-white dark:border-[var(--crm-blue)] dark:bg-[var(--crm-blue)] dark:text-white"
-                    : "border-zinc-200 bg-white text-zinc-600 hover:border-[var(--crm-blue)]/30 hover:bg-white dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:border-zinc-600"
-                )}
-              >
-                {opt.label}
-              </TapButton>
-            );
-          })}
-        </div>
-
-        <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">고객 온도</label>
-            <select
-              value={tempFilter}
-              onChange={(e) => setTempFilter(e.target.value as typeof tempFilter)}
-              className="crm-field crm-field-select"
-            >
-              <option value="all">전체</option>
-              <option value="상">상</option>
-              <option value="중">중</option>
-              <option value="하">하</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">우선순위</label>
-            <select
-              value={priorityFilter}
-              onChange={(e) => setPriorityFilter(e.target.value as typeof priorityFilter)}
-              className="crm-field crm-field-select"
-            >
-              <option value="all">전체</option>
-              {LEAD_PRIORITY_OPTIONS.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">심사 상태</label>
-            <select
-              value={creditFilter}
-              onChange={(e) => setCreditFilter(e.target.value as typeof creditFilter)}
-              className="crm-field crm-field-select"
-            >
-              <option value="all">전체</option>
-              {CREDIT_REVIEW_STATUS_OPTIONS.map((c) => (
-                <option key={c} value={c}>
-                  {c}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">출고 유형</label>
-            <select
-              value={deliveryTypeFilter}
-              onChange={(e) =>
-                setDeliveryTypeFilter(e.target.value as typeof deliveryTypeFilter)
-              }
-              className="crm-field crm-field-select"
-            >
-              <option value="all">전체</option>
-              {DELIVERY_TYPE_OPTIONS.map((d) => (
-                <option key={d} value={d}>
-                  {d}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">담당자</label>
-            <select
-              value={ownerFilter}
-              onChange={(e) => setOwnerFilter(e.target.value)}
-              className="crm-field crm-field-select"
-            >
-              <option value="all">전체</option>
-              {ownerFilterOptions.map((o) => (
-                <option key={o} value={o}>
-                  {o}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">상담결과</label>
-            <select
-              value={narrowStatusFilter}
-              onChange={(e) => setNarrowStatusFilter(e.target.value as NarrowStatusKey)}
-              className="crm-field crm-field-select"
-            >
-              {NARROW_STATUS_OPTIONS.map((s) => (
-                <option key={s.key} value={s.key}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">날짜 범위</label>
-            <select
-              value={datePreset}
-              onChange={(e) => setDatePreset(e.target.value as DatePreset)}
-              className="crm-field crm-field-select"
-            >
-              <option value="today">오늘</option>
-              <option value="week">이번 주</option>
-              <option value="month">이번 달</option>
-              <option value="custom">직접 선택</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">날짜 기준</label>
-            <select
-              value={dateField}
-              onChange={(e) => setDateField(e.target.value as DateFieldKey)}
-              className="crm-field crm-field-select"
-            >
-              <option value="createdAt">등록일</option>
-              <option value="statusUpdatedAt">상담결과 변경일</option>
-              <option value="nextContactAt">다음연락일</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">정렬</label>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as SortKey)}
-              className="crm-field crm-field-select"
-            >
-              <option value="lastContactOldest">최근 연락 · 오래된 순</option>
-              <option value="lastContactNewest">최근 연락 · 최신 순</option>
-              <option value="latest">등록일 · 최신순</option>
-              <option value="oldest">등록일 · 오래된순</option>
-              <option value="nextContactSoon">다음 연락일 빠른순</option>
-              <option value="deliverySoon">인도예정일 빠른순</option>
-            </select>
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">시작일</label>
-            <input
-              type="date"
-              value={customFrom}
-              onChange={(e) => setCustomFrom(e.target.value)}
-              className="crm-field"
-              disabled={datePreset !== "custom"}
-            />
-          </div>
-          <div>
-            <label className="mb-1 block text-xs font-medium text-zinc-500 dark:text-zinc-400">종료일</label>
-            <input
-              type="date"
-              value={customTo}
-              onChange={(e) => setCustomTo(e.target.value)}
-              className="crm-field"
-              disabled={datePreset !== "custom"}
-            />
-          </div>
-        </div>
-        <div className="mt-3 flex justify-end border-t border-zinc-200/80 pt-3 dark:border-zinc-800">
+        <div className="flex flex-wrap items-center gap-2">
+          <label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">정렬 기준</label>
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as SortKey)}
+            className="crm-field crm-field-select min-w-[200px]"
+          >
+            <option value="lastContactOldest">최근 연락 · 오래된 순</option>
+            <option value="lastContactNewest">최근 연락 · 최신 순</option>
+            <option value="latest">등록일 · 최신순</option>
+            <option value="oldest">등록일 · 오래된순</option>
+            <option value="nextContactSoon">다음 연락일 빠른순</option>
+            <option value="deliverySoon">인도예정일 빠른순</option>
+          </select>
           <TapButton
             type="button"
             onClick={() => {
               setSearchInput("");
-              setNarrowStatusFilter("all");
-              setOwnerFilter("all");
-              setTempFilter("all");
-              setPriorityFilter("all");
-              setCreditFilter("all");
-              setDeliveryTypeFilter("all");
-              setDatePreset("month");
-              setDateField("createdAt");
-              setCustomFrom("");
-              setCustomTo("");
               setSortBy("lastContactOldest");
             }}
             className="crm-btn-secondary"
           >
-            필터 초기화
+            검색·정렬 초기화
           </TapButton>
         </div>
-      </HoverCard>
+      </div>
 
       {todayFollowUpsInList.length > 0 ? (
         <div
@@ -883,7 +565,7 @@ function LeadsCategoryView({
               오늘 재연락 예정 ·{" "}
               <span className="tabular-nums">{todayFollowUpsInList.length}</span>건
               <span className="ml-2 text-xs font-normal text-zinc-600 dark:text-zinc-400">
-                (현재 검색·필터·담당자 조건 반영)
+                (현재 단계·검색·대시보드 링크 조건 반영)
               </span>
             </div>
           </div>
@@ -940,8 +622,8 @@ function LeadsCategoryView({
                   <td colSpan={9} className="px-4 py-10 text-center text-sm text-zinc-500">
                     <div className="font-medium text-zinc-700 dark:text-zinc-300">데이터가 없습니다.</div>
                     <div className="mt-1 text-xs text-zinc-500">
-                      {searchInput.trim() || narrowStatusFilter !== "all" || ownerFilter !== "all"
-                        ? "검색·필터 조건을 바꿔 보세요."
+                      {searchInput.trim()
+                        ? "검색어를 바꿔 보세요."
                         : "이 단계에 등록된 고객이 없습니다."}
                     </div>
                   </td>
@@ -1061,9 +743,9 @@ function LeadsCategoryView({
                           )}
                           aria-label="상담결과 변경"
                         >
-                          {COUNSELING_STATUS_OPTIONS.map((s) => (
+                          {CONSULT_RESULT_OPTIONS.map((s) => (
                             <option key={s} value={s}>
-                              {s}
+                              {s === "인도완료" ? "인도 완료" : s}
                             </option>
                           ))}
                         </select>

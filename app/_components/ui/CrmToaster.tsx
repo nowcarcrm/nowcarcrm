@@ -15,7 +15,9 @@ export function CrmToaster() {
           iconTheme: { primary: "#4f46e5", secondary: "#fff" },
         },
         error: {
-          iconTheme: { primary: "#e11d48", secondary: "#fff" },
+          className:
+            "!rounded-xl !border !border-rose-200/90 !bg-rose-50/95 !px-4 !py-3 !text-sm !font-medium !text-rose-950 !shadow-md dark:!border-rose-500/25 dark:!bg-rose-950/50 dark:!text-rose-50",
+          iconTheme: { primary: "#b45309", secondary: "#fff" },
         },
       }}
     />

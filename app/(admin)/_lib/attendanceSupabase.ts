@@ -394,7 +394,7 @@ export async function checkIn(
   if (!position) {
     throw new Error("GPS 위치 정보가 없어 출근 처리할 수 없습니다.");
   }
-  if (!userId?.trim()) {
+  if (userId == null || userId === "") {
     throw new Error("직원 ID가 없습니다. 다시 로그인하거나 사용자를 선택하세요.");
   }
 

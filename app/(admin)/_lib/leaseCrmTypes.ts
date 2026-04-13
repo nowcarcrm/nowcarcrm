@@ -80,7 +80,6 @@ export type QuoteHistoryEntry = {
 
 /**
  * 회사 공지 (public.notices)
- * 향후 확장: 고정(pin), 읽음 추적, 긴급(urgent) 플래그 등
  */
 export type Notice = {
   id: string;
@@ -89,6 +88,10 @@ export type Notice = {
   createdBy: string;
   createdAt: string;
   isActive: boolean;
+  /** 상단 고정 (마이그레이션 20260413120000) */
+  isPinned: boolean;
+  /** 중요 공지 배지 */
+  isImportant: boolean;
 };
 
 /** 상담결과(DB `status`와 동일). 진행단계(메뉴·파이프라인)와 별도입니다. */
@@ -99,6 +102,7 @@ export type CounselingStatus =
   | "계약완료"
   | "확정"
   | "출고"
+  | "인도완료"
   | "보류"
   | "취소";
 
@@ -109,9 +113,13 @@ export const COUNSELING_STATUS_OPTIONS: CounselingStatus[] = [
   "계약완료",
   "확정",
   "출고",
+  "인도완료",
   "보류",
   "취소",
 ];
+
+/** UI·드롭다운 공통 — 값은 DB `status`와 동일하게 `인도완료` 한글 붙여 쓰기 */
+export const CONSULT_RESULT_OPTIONS: CounselingStatus[] = COUNSELING_STATUS_OPTIONS;
 
 export function requiresFailureReasonStatus(status: CounselingStatus): boolean {
   return status === "보류" || status === "취소";
@@ -126,13 +134,12 @@ export function normalizeCounselingStatus(raw: string | null | undefined): Couns
   if (s === "부재/연락안됨" || s === "부재") return "부재";
   if (s === "신규 디비") return "신규";
   if (s === "종료") return "취소";
+  if (s === "인도완료" || s === "인도 완료") return "인도완료";
   if (
     s === "계약진행" ||
     s === "계약 진행" ||
     s === "출고진행" ||
     s === "출고 진행" ||
-    s === "인도완료" ||
-    s === "인도 완료" ||
     s === "사후관리"
   ) {
     return "계약완료";
@@ -336,5 +343,7 @@ export type LeadCategoryKey =
   | "contract-progress"
   | "export-progress"
   | "delivery-complete"
-  | "aftercare";
+  | "aftercare"
+  | "hold"
+  | "cancel";
 

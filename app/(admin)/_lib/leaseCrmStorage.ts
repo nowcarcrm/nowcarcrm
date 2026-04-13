@@ -1,3 +1,4 @@
+import { applyNextContactSnapshotFromRecords } from "./leaseCrmLogic";
 import type { Lead } from "./leaseCrmTypes";
 import type { UserRole } from "./usersSupabase";
 import {
@@ -12,7 +13,21 @@ import { ensureDefaultUsers } from "./usersSupabase";
 export type LeadViewerScope = {
   role: UserRole;
   userId: string;
+  /** @see LeadSupabaseScope.operationalFullAccess — 관리자 운영 화면 전용 */
+  operationalFullAccess?: boolean;
 };
+
+/** staff 저장 시 리드 담당(manager·표시명)을 로그인 프로필로 고정(UI 조작·낙관적 상태와 서버 prepare 이중 방어). 상담기록 작성자는 추가 시점에만 본인으로 넣는다(기존 이력은 덮지 않음). */
+export function applyStaffLeadClientLocks(
+  lead: Lead,
+  profile: { userId: string; name: string }
+): Lead {
+  return {
+    ...lead,
+    managerUserId: profile.userId,
+    base: { ...lead.base, ownerStaff: profile.name },
+  };
+}
 
 export async function loadLeadsFromStorage(scope?: LeadViewerScope): Promise<Lead[]> {
   try {
@@ -42,7 +57,7 @@ export async function createLead(lead: Lead, scope?: LeadViewerScope) {
 }
 
 export async function updateLead(lead: Lead, scope?: LeadViewerScope) {
-  await updateLeadInDb(lead, scope);
+  await updateLeadInDb(applyNextContactSnapshotFromRecords(lead), scope);
 }
 
 export async function deleteLeadById(leadId: string, scope?: LeadViewerScope) {

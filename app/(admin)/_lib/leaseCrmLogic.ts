@@ -1,3 +1,4 @@
+import { calculateExpectedCommission } from "./leaseCrmCommissionMetrics";
 import { effectiveContractFeeForMetrics } from "./leaseCrmContractPersist";
 import type {
   CounselingStatus,
@@ -7,9 +8,103 @@ import type {
   LeadCategoryKey,
 } from "./leaseCrmTypes";
 
+/**
+ * 상담기록이 1건 이상일 때만: occurredAt 최신 기준으로 다음 연락일·메모를 leads 스냅샷에 반영.
+ * 기록이 비어 있으면 기존 `lead.nextContactAt` 유지(목록 등 부분 로드 시 DB 값 보존).
+ */
+export function applyNextContactSnapshotFromRecords(lead: Lead): Lead {
+  const records = lead.counselingRecords;
+  if (!Array.isArray(records) || records.length === 0) {
+    return lead;
+  }
+  const sorted = [...records].sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1));
+  const latest = sorted[0];
+  if (!latest) return lead;
+  const atRaw = latest.nextContactAt?.trim() ?? "";
+  const memo = (latest.nextContactMemo ?? "").trim();
+  if (!atRaw) {
+    return { ...lead, nextContactAt: null, nextContactMemo: memo };
+  }
+  const parsed = Date.parse(atRaw);
+  const nextContactAt = Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+  return { ...lead, nextContactAt, nextContactMemo: memo };
+}
+
 /** 계약·출고 파이프라인(계약 진행 고객 등)에 포함되는 상담결과 */
 export function isContractPipelineCounselingStatus(s: CounselingStatus): boolean {
-  return s === "계약완료" || s === "확정" || s === "출고";
+  return s === "계약완료" || s === "확정" || s === "출고" || s === "인도완료";
+}
+
+const LEAD_CATEGORY_PATH: Record<LeadCategoryKey, string> = {
+  "new-db": "/leads/new-db",
+  "counseling-progress": "/leads/counseling-progress",
+  "follow-up": "/leads/follow-up",
+  "unresponsive": "/leads/unresponsive",
+  "quote-sent": "/leads/quote-sent",
+  "contract-progress": "/leads/contract-progress",
+  "export-progress": "/leads/export-progress",
+  "delivery-complete": "/leads/delivery-complete",
+  aftercare: "/leads/aftercare",
+  hold: "/leads/hold",
+  cancel: "/leads/cancel",
+};
+
+/**
+ * 상담결과(저장값) → 좌측 단계(LeadCategoryKey) 단일 매핑.
+ * 목록 경로·저장 후 이동에 공통 사용.
+ */
+export function resolveLeadStageKeyFromCounselingResult(result: CounselingStatus): LeadCategoryKey {
+  switch (result) {
+    case "신규":
+      return "new-db";
+    case "상담중":
+      return "counseling-progress";
+    case "부재":
+      return "unresponsive";
+    case "계약완료":
+    case "확정":
+      return "contract-progress";
+    case "출고":
+      return "export-progress";
+    case "인도완료":
+      return "delivery-complete";
+    case "보류":
+      return "hold";
+    case "취소":
+      return "cancel";
+    default:
+      return "counseling-progress";
+  }
+}
+
+/** 상담결과 → 좌측 메뉴 카테고리 키 (목록/상세/상담기록 저장 후 이동 공통) */
+export const getLeadCategoryKeyFromConsultResult = resolveLeadStageKeyFromCounselingResult;
+
+/** 상담결과 저장 직후 이동할 고객 목록 경로 */
+export function leadListPathAfterCounselingStatusChange(result: CounselingStatus): string {
+  return LEAD_CATEGORY_PATH[resolveLeadStageKeyFromCounselingResult(result)];
+}
+
+const PATH_TO_LEAD_CATEGORY: Record<string, LeadCategoryKey> = Object.fromEntries(
+  (Object.entries(LEAD_CATEGORY_PATH) as [LeadCategoryKey, string][]).map(([k, p]) => [p, k])
+) as Record<string, LeadCategoryKey>;
+
+/** 현재 URL → 좌측 진행단계 키 (글로벌 검색 등에서 상담결과 저장 후 이동용) */
+export function leadCategoryKeyFromPathname(pathname: string | null | undefined): LeadCategoryKey | null {
+  if (!pathname) return null;
+  const base = pathname.split("?")[0].replace(/\/$/, "") || pathname;
+  return PATH_TO_LEAD_CATEGORY[base] ?? null;
+}
+
+/**
+ * 상담결과 저장 후 이동할 목록 경로 (항상 해당 단계로 이동).
+ * 두 번째 인자는 시그니처 호환용으로 무시됩니다.
+ */
+export function pathnameAfterCounselingStatusChange(
+  result: CounselingStatus,
+  _currentCategoryKey?: LeadCategoryKey | null
+): string {
+  return leadListPathAfterCounselingStatusChange(result);
 }
 
 export type LeadCategoryBootstrap = Pick<
@@ -98,7 +193,7 @@ export function leadBootstrapForCategory(
       };
     case "export-progress":
       return {
-        counselingStatus: "계약완료",
+        counselingStatus: "출고",
         nextContactAt: null,
         nextContactMemo: "",
         exportProgress: minimalExport("발주 요청"),
@@ -107,7 +202,7 @@ export function leadBootstrapForCategory(
       };
     case "delivery-complete":
       return {
-        counselingStatus: "계약완료",
+        counselingStatus: "인도완료",
         nextContactAt: null,
         nextContactMemo: "",
         exportProgress: minimalExport("인도 완료", { deliveredAt: nowIso }),
@@ -116,12 +211,30 @@ export function leadBootstrapForCategory(
       };
     case "aftercare":
       return {
-        counselingStatus: "계약완료",
+        counselingStatus: "인도완료",
         nextContactAt: null,
         nextContactMemo: "",
         exportProgress: minimalExport("인도 완료", { deliveredAt: deliveredPast }),
         contract: null,
         deliveredAt: deliveredPast,
+      };
+    case "hold":
+      return {
+        counselingStatus: "보류",
+        nextContactAt: null,
+        nextContactMemo: "",
+        exportProgress: null,
+        contract: null,
+        deliveredAt: null,
+      };
+    case "cancel":
+      return {
+        counselingStatus: "취소",
+        nextContactAt: null,
+        nextContactMemo: "",
+        exportProgress: null,
+        contract: null,
+        deliveredAt: null,
       };
     default:
       return {
@@ -159,6 +272,58 @@ export function daysAgo(iso: string) {
   return Math.floor((now - t) / MS_DAY);
 }
 
+/** 정렬·대시보드용: 상담기록 최신 occurredAt → lastHandledAt → nextContactAt → createdAt */
+export function lastContactReferenceIso(lead: Lead): string {
+  let maxIso = "";
+  const recs = Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [];
+  for (const r of recs) {
+    if (r.occurredAt > maxIso) maxIso = r.occurredAt;
+  }
+  if (lead.lastHandledAt > maxIso) maxIso = lead.lastHandledAt;
+  if (!maxIso && lead.nextContactAt) maxIso = lead.nextContactAt;
+  if (!maxIso) maxIso = lead.createdAt;
+  return maxIso;
+}
+
+function compareIsoAsc(a: string, b: string): number {
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+/** 홈 대시보드 파이프라인(진행 단계 메뉴와 동일 규칙) */
+export function computePipelineStageCounts(leads: Lead[]) {
+  return {
+    newDb: computeCategory(leads, "new-db").length,
+    counseling: computeCategory(leads, "counseling-progress").length,
+    contract: computeCategory(leads, "contract-progress").length,
+    exportProgress: computeCategory(leads, "export-progress").length,
+    deliveryComplete: computeCategory(leads, "delivery-complete").length,
+    total: leads.length,
+  };
+}
+
+/** 오늘 연락 예정(nextContactAt이 오늘) */
+export function pickTodayContactLeads(leads: Lead[], limit: number): Lead[] {
+  return leads
+    .filter((l) => !!l.nextContactAt && isToday(l.nextContactAt))
+    .sort((a, b) => compareIsoAsc(a.nextContactAt!, b.nextContactAt!))
+    .slice(0, Math.max(0, limit));
+}
+
+/** 부재(미응답) 중 연락 기준 시점이 오래된 순 */
+export function pickStaleUnresponsiveLeads(leads: Lead[], limit: number): Lead[] {
+  return leads
+    .filter((l) => l.counselingStatus === "부재")
+    .sort((a, b) => compareIsoAsc(lastContactReferenceIso(a), lastContactReferenceIso(b)))
+    .slice(0, Math.max(0, limit));
+}
+
+/** 최근 등록 */
+export function pickRecentLeads(leads: Lead[], limit: number): Lead[] {
+  return [...leads].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, Math.max(0, limit));
+}
+
 function isAfterDays(iso: string, days: number) {
   const t = new Date(iso).getTime();
   const now = Date.now();
@@ -192,27 +357,36 @@ export function computeCategory(leads: Lead[], categoryKey: LeadCategoryKey): Le
     case "follow-up":
       return leads.filter((l) => l.counselingStatus === "상담중" && !!l.nextContactAt);
     case "unresponsive":
-      return leads.filter(
-        (l) =>
-          l.counselingStatus === "부재" ||
-          (l.counselingStatus === "상담중" && !l.nextContactAt)
-      );
+      return leads.filter((l) => l.counselingStatus === "부재");
     case "contract-progress":
-      return leads.filter(
-        (l) =>
+      return leads.filter((l) => {
+        if (l.counselingStatus === "출고" || l.counselingStatus === "인도완료") return false;
+        return (
           isContractPipelineCounselingStatus(l.counselingStatus) &&
-          (!l.exportProgress || exportStageIndex(l.exportProgress.stage) < exportStageIndex("인도 완료"))
-      );
+          (!l.exportProgress ||
+            exportStageIndex(l.exportProgress.stage) < exportStageIndex("인도 완료"))
+        );
+      });
     case "export-progress":
-      return leads.filter(
-        (l) =>
+      return leads.filter((l) => {
+        const stage = l.exportProgress?.stage;
+        const deliveredDone =
+          stage === "인도 완료" || !!l.deliveredAt || l.counselingStatus === "인도완료";
+        if (deliveredDone) return false;
+        const inExportBand =
           !!l.exportProgress &&
-          exportStageIndex(l.exportProgress.stage) >= exportStageIndex("발주 요청") &&
-          exportStageIndex(l.exportProgress.stage) < exportStageIndex("인도 완료")
-      );
+          stage != null &&
+          exportStageIndex(stage) >= exportStageIndex("발주 요청") &&
+          exportStageIndex(stage) < exportStageIndex("인도 완료");
+        const byStatus = l.counselingStatus === "출고";
+        return inExportBand || byStatus;
+      });
     case "delivery-complete":
       return leads.filter(
-        (l) => l.exportProgress?.stage === "인도 완료" || !!l.deliveredAt
+        (l) =>
+          l.counselingStatus === "인도완료" ||
+          l.exportProgress?.stage === "인도 완료" ||
+          !!l.deliveredAt
       );
     case "aftercare":
       return leads.filter((l) => {
@@ -221,9 +395,79 @@ export function computeCategory(leads: Lead[], categoryKey: LeadCategoryKey): Le
         if (!l.deliveredAt) return false;
         return isAfterDays(l.deliveredAt, 90);
       });
+    case "hold":
+      return leads.filter((l) => l.counselingStatus === "보류");
+    case "cancel":
+      return leads.filter((l) => l.counselingStatus === "취소");
     default:
       return [];
   }
+}
+
+/** 운영·직원 현황용 단일 stage (리드당 1개). `computeCategory` 우선순위와 동일. */
+export type OperationalStageKey =
+  | "new"
+  | "active"
+  | "missed"
+  | "contract"
+  | "delivery"
+  | "delivered"
+  | "hold"
+  | "cancel";
+
+export const OPERATIONAL_STAGE_LABEL_KO: Record<OperationalStageKey, string> = {
+  new: "신규",
+  active: "상담중",
+  missed: "부재",
+  contract: "계약",
+  delivery: "출고",
+  delivered: "인도완료",
+  hold: "보류",
+  cancel: "취소",
+};
+
+const OPERATIONAL_STAGE_PIPELINE_ORDER: LeadCategoryKey[] = [
+  "cancel",
+  "hold",
+  "aftercare",
+  "delivery-complete",
+  "export-progress",
+  "contract-progress",
+  "unresponsive",
+  "new-db",
+  "counseling-progress",
+  "follow-up",
+  "quote-sent",
+];
+
+export function operationalStageKeyForLead(lead: Lead): OperationalStageKey {
+  for (const cat of OPERATIONAL_STAGE_PIPELINE_ORDER) {
+    if (computeCategory([lead], cat).length !== 1) continue;
+    switch (cat) {
+      case "cancel":
+        return "cancel";
+      case "hold":
+        return "hold";
+      case "aftercare":
+      case "delivery-complete":
+        return "delivered";
+      case "export-progress":
+        return "delivery";
+      case "contract-progress":
+        return "contract";
+      case "unresponsive":
+        return "missed";
+      case "new-db":
+        return "new";
+      default:
+        return "active";
+    }
+  }
+  return "active";
+}
+
+export function operationalStageLabelForLead(lead: Lead): string {
+  return OPERATIONAL_STAGE_LABEL_KO[operationalStageKeyForLead(lead)];
 }
 
 /**
@@ -234,6 +478,7 @@ export function counselingStatusFromExportProgress(
   hasContract: boolean
 ): CounselingStatus {
   if (!exp) return hasContract ? "계약완료" : "상담중";
+  if (exp.stage === "인도 완료") return "인도완료";
   return "계약완료";
 }
 
@@ -262,7 +507,9 @@ export function computeAutomationCounts(leads: Lead[]) {
     if (l.counselingStatus === "취소") return false;
     if (
       isContractPipelineCounselingStatus(l.counselingStatus) &&
-      (l.exportProgress?.stage === "인도 완료" || !!l.deliveredAt)
+      (l.exportProgress?.stage === "인도 완료" ||
+        !!l.deliveredAt ||
+        l.counselingStatus === "인도완료")
     ) {
       return false;
     }
@@ -381,7 +628,8 @@ export function computeDashboardMetrics(leads: Lead[]) {
     (l) =>
       isContractPipelineCounselingStatus(l.counselingStatus) &&
       l.exportProgress?.stage !== "인도 완료" &&
-      !l.deliveredAt
+      !l.deliveredAt &&
+      l.counselingStatus !== "인도완료"
   ).length;
   const thisMonthContractCompleted = leads.filter(
     (l) =>
@@ -395,6 +643,9 @@ export function computeDashboardMetrics(leads: Lead[]) {
       return l.contract.contractDate.startsWith(thisMonthKeyPrefix);
     })
     .reduce((sum, l) => sum + effectiveContractFeeForMetrics(l.contract!), 0);
+
+  /** 취소 제외·계약 또는 최신 견적 수수료 합산 — 대시보드「예상 수수료」 */
+  const expectedCommissionTotal = calculateExpectedCommission(leads);
 
   const staff = new Map<
     string,
@@ -427,14 +678,11 @@ export function computeDashboardMetrics(leads: Lead[]) {
     contractInProgress,
     thisMonthContractCompleted,
     thisMonthExpectedFee,
+    expectedCommissionTotal,
     staff: Array.from(staff.values()).sort((a, b) => b.counselingCount - a.counselingCount),
     unprocessedNewDb: automation.unprocessedNewDb,
     followUpPlanned: leads.filter((l) => l.counselingStatus === "상담중" && !!l.nextContactAt).length,
-    unresponsive: leads.filter(
-      (l) =>
-        l.counselingStatus === "부재" ||
-        (l.counselingStatus === "상담중" && !l.nextContactAt)
-    ).length,
+    unresponsive: leads.filter((l) => l.counselingStatus === "부재").length,
     exportInProgress: leads.filter((l) => computeCategory([l], "export-progress").length === 1).length,
     automation,
     abandoned7days: automation.abandoned7days,
@@ -443,3 +691,4 @@ export function computeDashboardMetrics(leads: Lead[]) {
   };
 }
 
+export { calculateExpectedCommission, expectedFeeWonForLead, toSafeMoney } from "./leaseCrmCommissionMetrics";

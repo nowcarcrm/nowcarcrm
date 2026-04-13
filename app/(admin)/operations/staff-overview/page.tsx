@@ -1,0 +1,487 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import toast from "react-hot-toast";
+import { useAuth } from "@/app/_components/auth/AuthProvider";
+import {
+  fetchContractFeeSummaryByLeadIds,
+  fetchLeadById,
+  fetchMaxConsultationCreatedAtByLeadIds,
+} from "../../_lib/leaseCrmSupabase";
+import {
+  applyStaffLeadClientLocks,
+  loadLeadsFromStorage,
+  updateLead,
+  deleteLeadById,
+} from "../../_lib/leaseCrmStorage";
+import type { Lead } from "../../_lib/leaseCrmTypes";
+import {
+  buildStaffOverviewRows,
+  pipelineStageLabelForLead,
+  truncateMemo,
+  type StaffOverviewRow,
+} from "../../_lib/staffOverviewMetrics";
+import {
+  downloadXlsxRows,
+  formatDateForExcel,
+  formatDateOnlyForExcel,
+  todayYmdKst,
+} from "../../_lib/excelExport";
+import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
+import { effectiveContractFeeForMetrics } from "../../_lib/leaseCrmContractPersist";
+import { listActiveUsers } from "../../_lib/usersSupabase";
+import LeadDetailModal from "../../leads/_components/LeadDetailModal";
+
+function cn(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
+}
+
+function formatWon(n: number): string {
+  return `${n.toLocaleString("ko-KR")}원`;
+}
+
+export default function StaffOverviewPage() {
+  const router = useRouter();
+  const { profile, loading: authLoading } = useAuth();
+  const [leads, setLeads] = useState<Lead[] | null>(null);
+  const [overviewRows, setOverviewRows] = useState<StaffOverviewRow[]>([]);
+  const [contractByLead, setContractByLead] = useState<
+    Map<string, { feeWon: number; contractDate: string }>
+  >(() => new Map());
+  const [lastConsultByLead, setLastConsultByLead] = useState<Map<string, string>>(
+    () => new Map()
+  );
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [modalLead, setModalLead] = useState<Lead | null>(null);
+  const [modalLoading, setModalLoading] = useState(false);
+
+  const opScope = useMemo(() => {
+    if (!profile || profile.role !== "admin") return null;
+    return {
+      role: profile.role,
+      userId: profile.userId,
+      operationalFullAccess: true,
+    } as const;
+  }, [profile]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    if (!profile || profile.role !== "admin") {
+      router.replace("/dashboard");
+      return;
+    }
+    let mounted = true;
+    (async () => {
+      try {
+        const users = await listActiveUsers();
+        const loaded = await loadLeadsFromStorage({
+          role: "admin",
+          userId: profile.userId,
+          operationalFullAccess: true,
+        });
+        const ids = loaded.map((l) => l.id);
+        const scope = {
+          role: profile.role,
+          userId: profile.userId,
+          operationalFullAccess: true,
+        } as const;
+        const [contracts, consultMap] = await Promise.all([
+          fetchContractFeeSummaryByLeadIds(ids, scope),
+          fetchMaxConsultationCreatedAtByLeadIds(ids, scope),
+        ]);
+        const rows = buildStaffOverviewRows(loaded, users, contracts, consultMap);
+        if (!mounted) return;
+        setContractByLead(contracts);
+        setLastConsultByLead(consultMap);
+        setOverviewRows(rows);
+        setLoadError(null);
+        setLeads(loaded);
+      } catch (e) {
+        if (!mounted) return;
+        const msg = e instanceof Error ? e.message : String(e);
+        setLoadError(msg);
+        toast.error("직원 현황을 불러오지 못했습니다.");
+        setLeads([]);
+        setOverviewRows([]);
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [profile, authLoading, router]);
+
+  const leadsForSelected = useMemo(() => {
+    if (!leads || !selectedUserId) return [];
+    return leads.filter((l) => (l.managerUserId ?? "").trim() === selectedUserId);
+  }, [leads, selectedUserId]);
+
+  const selectedName = useMemo(() => {
+    if (!selectedUserId) return "";
+    return overviewRows.find((r) => r.userId === selectedUserId)?.name ?? "";
+  }, [overviewRows, selectedUserId]);
+
+  const openLead = useCallback(
+    async (id: string) => {
+      if (!opScope) return;
+      setModalLoading(true);
+      try {
+        const lead = await fetchLeadById(id, opScope);
+        if (!lead) {
+          toast.error("고객을 찾을 수 없습니다.");
+          return;
+        }
+        setModalLead(lead);
+      } catch (e) {
+        toast.error(e instanceof Error ? e.message : "불러오기 실패");
+      } finally {
+        setModalLoading(false);
+      }
+    },
+    [opScope]
+  );
+
+  const downloadSummaryExcel = useCallback(() => {
+    if (!overviewRows.length) {
+      toast.error("보낼 데이터가 없습니다.");
+      return;
+    }
+    const rows = overviewRows.map((r) => ({
+      직원명: r.name,
+      담당고객수: r.assignedTotal,
+      이번달등록: r.registeredThisMonth,
+      오늘등록: r.registeredToday,
+      상담중: r.countCounseling,
+      부재: r.countAbsent,
+      계약: r.countContract,
+      출고: r.countExport,
+      인도완료: r.countDelivered,
+      보류: r.countHold,
+      취소: r.countCancel,
+      이번달수수료원: r.feeThisMonthWon,
+      최근상담일: r.lastConsultAt ? formatDateForExcel(r.lastConsultAt) : "",
+      오늘연락예정: r.todayNextContactCount,
+    }));
+    downloadXlsxRows(rows, "직원현황요약", `직원현황요약_${todayYmdKst()}`);
+    toast.success("요약 엑셀을 저장했습니다.");
+  }, [overviewRows]);
+
+  const downloadStaffLeadsExcel = useCallback(() => {
+    if (!selectedUserId || !leadsForSelected.length) {
+      toast.error("직원을 선택하고 고객이 있어야 합니다.");
+      return;
+    }
+    const safeName = selectedName.replace(/\s+/g, "") || "직원";
+    const rows = [...leadsForSelected]
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      .map((l) => {
+        const consult = lastConsultByLead.get(l.id);
+        const recent =
+          consult && consult > lastContactReferenceIso(l)
+            ? consult
+            : lastContactReferenceIso(l);
+        const fee =
+          l.contract != null
+            ? effectiveContractFeeForMetrics(l.contract)
+            : contractByLead.get(l.id)?.feeWon ?? "";
+        const vehicle = l.contract?.vehicleName?.trim() || l.base.desiredVehicle || "";
+        return {
+          고객명: l.base.name,
+          연락처: l.base.phone,
+          등록일: formatDateOnlyForExcel(l.createdAt),
+          상담결과: l.counselingStatus,
+          현재단계: pipelineStageLabelForLead(l),
+          다음연락예정일: formatDateOnlyForExcel(l.nextContactAt),
+          최근상담일: formatDateForExcel(recent),
+          차량명: vehicle,
+          수수료원: fee === "" ? "" : fee,
+          "메모요약": truncateMemo(l.base.memo, 200),
+        };
+      });
+    downloadXlsxRows(rows, "고객목록", `${safeName}_고객목록_${todayYmdKst()}`);
+    toast.success("고객 목록 엑셀을 저장했습니다.");
+  }, [
+    selectedUserId,
+    selectedName,
+    leadsForSelected,
+    lastConsultByLead,
+    contractByLead,
+  ]);
+
+  if (authLoading || !profile) {
+    return (
+      <div className="py-16 text-center text-sm text-slate-500">로딩 중…</div>
+    );
+  }
+
+  if (profile.role !== "admin") {
+    return null;
+  }
+
+  return (
+    <div className="space-y-6">
+      <header className="rounded-2xl border border-slate-200/90 bg-gradient-to-br from-slate-50 to-white px-6 py-5 shadow-sm dark:border-zinc-800 dark:from-zinc-900 dark:to-zinc-950">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-violet-700 dark:text-violet-400">
+              운영 · 관리자 보고
+            </p>
+            <h1 className="mt-1 text-2xl font-bold tracking-tight text-slate-900 dark:text-zinc-50">
+              직원 현황
+            </h1>
+            <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
+              직원별 담당 규모·단계 분포·이번 달 수수료·오늘 연락 예정을 한눈에 확인합니다. 행을
+              눌러 해당 직원 고객 목록을 펼칩니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={downloadSummaryExcel}
+            className="inline-flex shrink-0 items-center justify-center rounded-xl border border-emerald-600/80 bg-emerald-600 px-5 py-2.5 text-[14px] font-semibold text-white shadow-sm transition hover:bg-emerald-700"
+          >
+            요약 엑셀
+          </button>
+        </div>
+      </header>
+
+      {loadError ? (
+        <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 text-rose-900 dark:border-rose-500/40 dark:bg-rose-950/40 dark:text-rose-100">
+          {loadError}
+        </div>
+      ) : null}
+
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+        <div className="overflow-x-auto">
+          <table className="min-w-[1400px] w-full border-collapse text-left text-[12px]">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50/95 text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:border-zinc-800 dark:bg-zinc-900/80 dark:text-zinc-400">
+                <th className="px-2 py-2.5">직원</th>
+                <th className="px-2 py-2.5">담당</th>
+                <th className="px-2 py-2.5">월등록</th>
+                <th className="px-2 py-2.5">오늘</th>
+                <th className="px-2 py-2.5">상담중</th>
+                <th className="px-2 py-2.5">부재</th>
+                <th className="px-2 py-2.5">계약</th>
+                <th className="px-2 py-2.5">출고</th>
+                <th className="px-2 py-2.5">인도</th>
+                <th className="px-2 py-2.5">보류</th>
+                <th className="px-2 py-2.5">취소</th>
+                <th className="px-2 py-2.5">월수수료</th>
+                <th className="px-2 py-2.5">최근상담</th>
+                <th className="px-2 py-2.5">오늘연락</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leads === null ? (
+                <tr>
+                  <td colSpan={14} className="px-3 py-12 text-center text-slate-500">
+                    불러오는 중…
+                  </td>
+                </tr>
+              ) : overviewRows.length === 0 ? (
+                <tr>
+                  <td colSpan={14} className="px-3 py-12 text-center text-slate-500">
+                    표시할 직원이 없습니다.
+                  </td>
+                </tr>
+              ) : (
+                overviewRows.map((r) => {
+                  const active = selectedUserId === r.userId;
+                  return (
+                    <tr
+                      key={r.userId}
+                      className={cn(
+                        "cursor-pointer border-b border-slate-100 transition dark:border-zinc-800/80",
+                        active
+                          ? "bg-violet-50 dark:bg-violet-950/35"
+                          : "hover:bg-slate-50 dark:hover:bg-zinc-900/50"
+                      )}
+                      onClick={() =>
+                        setSelectedUserId((prev) => (prev === r.userId ? null : r.userId))
+                      }
+                    >
+                      <td className="px-2 py-2 font-semibold text-slate-900 dark:text-zinc-100">
+                        {r.name}
+                      </td>
+                      <td className="px-2 py-2 text-slate-700 dark:text-zinc-300">
+                        {r.assignedTotal}
+                      </td>
+                      <td className="px-2 py-2">{r.registeredThisMonth}</td>
+                      <td className="px-2 py-2">{r.registeredToday}</td>
+                      <td className="px-2 py-2">{r.countCounseling}</td>
+                      <td className="px-2 py-2">{r.countAbsent}</td>
+                      <td className="px-2 py-2">{r.countContract}</td>
+                      <td className="px-2 py-2">{r.countExport}</td>
+                      <td className="px-2 py-2">{r.countDelivered}</td>
+                      <td className="px-2 py-2">{r.countHold}</td>
+                      <td className="px-2 py-2">{r.countCancel}</td>
+                      <td className="px-2 py-2 whitespace-nowrap">{formatWon(r.feeThisMonthWon)}</td>
+                      <td className="px-2 py-2 whitespace-nowrap text-slate-600 dark:text-zinc-400">
+                        {r.lastConsultAt ? formatDateForExcel(r.lastConsultAt) : "—"}
+                      </td>
+                      <td className="px-2 py-2">{r.todayNextContactCount}</td>
+                    </tr>
+                  );
+                })
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {selectedUserId ? (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-50">
+              {selectedName} · 고객 {leadsForSelected.length}건
+            </h2>
+            <button
+              type="button"
+              onClick={downloadStaffLeadsExcel}
+              disabled={!leadsForSelected.length}
+              className="inline-flex items-center rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              이 직원 고객 엑셀
+            </button>
+          </div>
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-[960px] w-full border-collapse text-left text-[13px]">
+              <thead>
+                <tr className="border-b border-slate-200 text-[11px] font-semibold text-slate-500 dark:border-zinc-800 dark:text-zinc-400">
+                  <th className="py-2 pr-3">고객명</th>
+                  <th className="py-2 pr-3">연락처</th>
+                  <th className="py-2 pr-3">등록일</th>
+                  <th className="py-2 pr-3">상담결과</th>
+                  <th className="py-2 pr-3">단계</th>
+                  <th className="py-2 pr-3">다음 연락</th>
+                  <th className="py-2 pr-3">최근 상담</th>
+                  <th className="py-2 pr-3">차량</th>
+                  <th className="py-2 pr-3">수수료</th>
+                </tr>
+              </thead>
+              <tbody>
+                {leadsForSelected.length === 0 ? (
+                  <tr>
+                    <td colSpan={9} className="py-8 text-center text-slate-500">
+                      담당 고객이 없습니다.
+                    </td>
+                  </tr>
+                ) : (
+                  [...leadsForSelected]
+                    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+                    .map((l) => {
+                      const consult = lastConsultByLead.get(l.id);
+                      const recent =
+                        consult && consult > lastContactReferenceIso(l)
+                          ? consult
+                          : lastContactReferenceIso(l);
+                      const fee =
+                        l.contract != null
+                          ? effectiveContractFeeForMetrics(l.contract)
+                          : contractByLead.get(l.id)?.feeWon ?? null;
+                      const vehicle =
+                        l.contract?.vehicleName?.trim() || l.base.desiredVehicle || "—";
+                      return (
+                        <tr
+                          key={l.id}
+                          className="cursor-pointer border-b border-slate-100 hover:bg-violet-50/50 dark:border-zinc-800 dark:hover:bg-violet-950/20"
+                          onClick={() => void openLead(l.id)}
+                        >
+                          <td className="py-2 pr-3 font-medium text-slate-900 dark:text-zinc-100">
+                            {l.base.name}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-700 dark:text-zinc-300">
+                            {l.base.phone}
+                          </td>
+                          <td className="py-2 pr-3 whitespace-nowrap text-slate-600 dark:text-zinc-400">
+                            {formatDateOnlyForExcel(l.createdAt)}
+                          </td>
+                          <td className="py-2 pr-3">{l.counselingStatus}</td>
+                          <td className="py-2 pr-3">{pipelineStageLabelForLead(l)}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap text-slate-600 dark:text-zinc-400">
+                            {formatDateOnlyForExcel(l.nextContactAt)}
+                          </td>
+                          <td className="py-2 pr-3 whitespace-nowrap text-slate-600 dark:text-zinc-400">
+                            {formatDateForExcel(recent)}
+                          </td>
+                          <td className="py-2 pr-3 text-slate-700 dark:text-zinc-300">{vehicle}</td>
+                          <td className="py-2 pr-3 whitespace-nowrap">
+                            {fee != null && fee > 0 ? formatWon(fee) : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
+      {modalLoading ? (
+        <div className="fixed inset-0 z-[55] grid place-items-center bg-black/20 text-sm font-medium text-slate-700 dark:text-zinc-200">
+          불러오는 중…
+        </div>
+      ) : null}
+
+      {modalLead && profile && opScope ? (
+        <LeadDetailModal
+          key={modalLead.id}
+          lead={modalLead}
+          onClose={() => setModalLead(null)}
+          onUpdate={async (next) => {
+            const payload =
+              profile.role === "staff"
+                ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
+                : next;
+            await updateLead(payload, opScope);
+            setModalLead(payload);
+            const nextLeads = (leads ?? []).map((x) => (x.id === payload.id ? payload : x));
+            setLeads(nextLeads);
+            const users = await listActiveUsers();
+            const consultMap = await fetchMaxConsultationCreatedAtByLeadIds(
+              nextLeads.map((x) => x.id),
+              opScope!
+            );
+            const contracts = await fetchContractFeeSummaryByLeadIds(
+              nextLeads.map((x) => x.id),
+              opScope!
+            );
+            setOverviewRows(buildStaffOverviewRows(nextLeads, users, contracts, consultMap));
+            setContractByLead(contracts);
+            setLastConsultByLead(consultMap);
+            toast.success("저장되었습니다.");
+          }}
+          onDelete={(id) => {
+            void (async () => {
+              try {
+                await deleteLeadById(id, opScope);
+                setModalLead(null);
+                const nextLeads = (leads ?? []).filter((x) => x.id !== id);
+                setLeads(nextLeads);
+                const users = await listActiveUsers();
+                const consultMap = await fetchMaxConsultationCreatedAtByLeadIds(
+                  nextLeads.map((x) => x.id),
+                  opScope!
+                );
+                const contracts = await fetchContractFeeSummaryByLeadIds(
+                  nextLeads.map((x) => x.id),
+                  opScope!
+                );
+                setOverviewRows(
+                  buildStaffOverviewRows(nextLeads, users, contracts, consultMap)
+                );
+                setContractByLead(contracts);
+                setLastConsultByLead(consultMap);
+                toast.success("삭제되었습니다.");
+              } catch (e) {
+                toast.error(e instanceof Error ? e.message : "삭제 실패");
+              }
+            })();
+          }}
+        />
+      ) : null}
+    </div>
+  );
+}

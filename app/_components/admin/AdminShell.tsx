@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { createContext, useContext, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { LayoutGroup, motion } from "framer-motion";
 import GlobalLeadSearch from "./GlobalLeadSearch";
 
@@ -21,16 +21,20 @@ export function useLeadListSearch() {
   return ctx;
 }
 
-type NavSectionKey = "home" | "pipeline" | "work" | "admin";
+type NavSectionKey = "sales" | "operations";
 
 type NavItem = {
   label: string;
   href: string;
   description: string;
   section: NavSectionKey;
+  /** 관리자만 사이드바에 표시 */
+  adminOnly?: boolean;
 };
 
 type ShellUser = {
+  /** public.users.id (레거시 스키마와 동일 목적) */
+  userId: string;
   name: string;
   role: "admin" | "manager" | "staff";
   /** 표시용 (예: 관리자 / 매니저 / 직원) */
@@ -38,80 +42,96 @@ type ShellUser = {
   email?: string;
 };
 
-const APP_NAME = "나우카 고객관리";
+const APP_NAME = "NOWCAR";
+const APP_SUBTITLE = "CRM";
 
 const NAV_ITEMS: NavItem[] = [
   {
-    section: "home",
-    label: "HOME",
+    section: "sales",
+    label: "대시보드",
     href: "/dashboard",
-    description: "오늘 현황과 자동 알림을 한눈에 확인합니다.",
+    description: "지표·오늘 할 일 (본인 담당)",
   },
   {
-    section: "pipeline",
+    section: "sales",
     label: "신규",
     href: "/leads/new-db",
-    description: "진행 단계 · 신규 디비",
+    description: "상담결과 · 신규",
   },
   {
-    section: "pipeline",
-    label: "상담 진행 고객",
+    section: "sales",
+    label: "상담중",
     href: "/leads/counseling-progress",
-    description: "진행 단계 · 상담 중",
+    description: "상담결과 · 상담 진행 중",
   },
   {
-    section: "pipeline",
-    label: "재연락 예정 고객",
-    href: "/leads/follow-up",
-    description: "진행 단계 · 다음 연락 일정",
-  },
-  {
-    section: "pipeline",
-    label: "부재/미응답 고객",
+    section: "sales",
+    label: "부재",
     href: "/leads/unresponsive",
-    description: "진행 단계 · 연락 일정 없음",
+    description: "상담결과 · 미응답·부재",
   },
   {
-    section: "pipeline",
-    label: "견적 발송 고객",
-    href: "/leads/quote-sent",
-    description: "진행 단계 · 견적 후 회신 대기",
-  },
-  {
-    section: "pipeline",
-    label: "계약 진행 고객",
+    section: "sales",
+    label: "계약",
     href: "/leads/contract-progress",
-    description: "진행 단계 · 체결·확정",
+    description: "계약완료·확정 (출고 전)",
   },
   {
-    section: "pipeline",
-    label: "출고 진행 고객",
+    section: "sales",
+    label: "출고",
     href: "/leads/export-progress",
-    description: "진행 단계 · 발주~인도 전",
+    description: "상담결과 · 출고 진행",
   },
   {
-    section: "pipeline",
-    label: "인도 완료 고객",
+    section: "sales",
+    label: "인도완료",
     href: "/leads/delivery-complete",
-    description: "진행 단계 · 인도 완료",
+    description: "상담결과 · 인도 완료",
   },
   {
-    section: "pipeline",
-    label: "사후관리 고객",
-    href: "/leads/aftercare",
-    description: "진행 단계 · 인도 후 3개월+",
+    section: "sales",
+    label: "보류",
+    href: "/leads/hold",
+    description: "상담결과 · 재개 가능",
   },
   {
-    section: "work",
+    section: "sales",
+    label: "취소",
+    href: "/leads/cancel",
+    description: "상담결과 · 종료",
+  },
+  {
+    section: "sales",
     label: "근태 관리",
     href: "/attendance",
     description: "출근·퇴근 및 근태 현황",
   },
   {
-    section: "admin",
+    section: "operations",
+    label: "공지사항",
+    href: "/notices",
+    description: "회사 공지 · 고정·중요 표시",
+  },
+  {
+    section: "operations",
+    label: "전체 상담 고객",
+    href: "/operations/all-customers",
+    description: "전사 고객 · 인수인계·백업 (관리자)",
+    adminOnly: true,
+  },
+  {
+    section: "operations",
+    label: "직원 현황",
+    href: "/operations/staff-overview",
+    description: "직원별 진행·실적 집계 (관리자)",
+    adminOnly: true,
+  },
+  {
+    section: "operations",
     label: "직원 관리",
     href: "/employees",
     description: "승인 대기 · 계정 생성 (관리자)",
+    adminOnly: true,
   },
 ];
 
@@ -122,18 +142,45 @@ type NavSection = {
   items: NavItem[];
 };
 
-const SECTION_META: Record<
-  NavSectionKey,
-  { title: string; subtitle?: string }
-> = {
-  home: { title: "", subtitle: undefined },
-  pipeline: {
-    title: "진행 단계",
-    subtitle: "계약·출고 파이프라인 (상담결과와 별도)",
+const SECTION_META: Record<NavSectionKey, { title: string; subtitle?: string }> = {
+  sales: {
+    title: "영업",
+    subtitle: "본인 담당 고객만 집계·목록에 표시됩니다",
   },
-  work: { title: "업무", subtitle: undefined },
-  admin: { title: "관리", subtitle: undefined },
+  operations: {
+    title: "운영 / 관리자",
+    subtitle: undefined,
+  },
 };
+
+/** 긴 경로를 먼저 두어 prefix 매칭이 겹치지 않게 함 */
+const PAGE_TITLE_ROUTES: { prefix: string; title: string }[] = [
+  { prefix: "/leads/counseling-progress", title: "상담중" },
+  { prefix: "/leads/export-progress", title: "출고" },
+  { prefix: "/leads/contract-progress", title: "계약" },
+  { prefix: "/leads/delivery-complete", title: "인도완료" },
+  { prefix: "/leads/unresponsive", title: "부재" },
+  { prefix: "/leads/hold", title: "보류" },
+  { prefix: "/leads/cancel", title: "취소" },
+  { prefix: "/leads/quote-sent", title: "견적 발송 고객" },
+  { prefix: "/leads/follow-up", title: "재연락 예정 고객" },
+  { prefix: "/leads/new-db", title: "신규 고객" },
+  { prefix: "/leads/aftercare", title: "사후관리 고객" },
+  { prefix: "/operations/staff-overview", title: "직원 현황" },
+  { prefix: "/operations/all-customers", title: "전체 상담 고객" },
+  { prefix: "/dashboard", title: "대시보드" },
+  { prefix: "/notices", title: "공지사항" },
+  { prefix: "/counseling", title: "상담" },
+  { prefix: "/attendance", title: "근태 관리" },
+  { prefix: "/employees", title: "직원 관리" },
+];
+
+function titleForPathname(pathname: string | null): string {
+  if (!pathname) return "대시보드";
+  const p = pathname.replace(/\/$/, "") || "/";
+  const hit = PAGE_TITLE_ROUTES.find((x) => p === x.prefix || p.startsWith(`${x.prefix}/`));
+  return hit?.title ?? "NOWCAR CRM";
+}
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -278,17 +325,23 @@ function SidebarContents({
   const pathname = usePathname();
   const activeHref = useMemo(() => {
     if (!pathname) return "";
-    const hit = NAV_ITEMS.find(
-      (i) => pathname === i.href || pathname.startsWith(`${i.href}/`)
-    );
-    return hit?.href ?? "";
+    const p = pathname.replace(/\/$/, "") || "/";
+    let best = "";
+    for (const i of NAV_ITEMS) {
+      if (p === i.href || p.startsWith(`${i.href}/`)) {
+        if (i.href.length > best.length) best = i.href;
+      }
+    }
+    return best;
   }, [pathname]);
 
   const visibleNavSections = useMemo((): NavSection[] => {
-    const visible = NAV_ITEMS.filter((i) =>
-      i.href === "/employees" ? currentUser?.role === "admin" : true
-    );
-    const order: NavSectionKey[] = ["home", "pipeline", "work", "admin"];
+    /** 관리자 전용 메뉴: users.role 이 정확히 "admin" 일 때만 (DB·프로필 불일치 시 운영에서 숨겨질 수 있음) */
+    const visible = NAV_ITEMS.filter((i) => {
+      if (i.adminOnly && currentUser?.role !== "admin") return false;
+      return true;
+    });
+    const order: NavSectionKey[] = ["sales", "operations"];
     const out: NavSection[] = [];
     for (const key of order) {
       const items = visible.filter((i) => i.section === key);
@@ -301,19 +354,26 @@ function SidebarContents({
     return out;
   }, [currentUser?.role]);
 
+  useEffect(() => {
+    console.log("sidebar profile", {
+      userId: currentUser?.userId,
+      role: currentUser?.role,
+      name: currentUser?.name,
+      email: currentUser?.email,
+    });
+  }, [currentUser?.userId, currentUser?.role, currentUser?.name, currentUser?.email]);
+
   return (
     <div className="flex h-full flex-col">
       <div className="border-b border-white/10 px-5 pb-4 pt-5">
         <div className="flex items-center gap-3.5">
-          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2563eb] to-[#1e3a5f] text-[11px] font-bold tracking-tight text-white shadow-lg ring-1 ring-white/10">
-            나
+          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2563eb] to-[#1e3a5f] text-[10px] font-extrabold tracking-tight text-white shadow-lg ring-1 ring-white/10">
+            NC
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[15px] font-bold tracking-tight text-white">
-              {APP_NAME}
-            </div>
+            <div className="truncate text-[15px] font-bold tracking-tight text-white">{APP_NAME}</div>
             <div className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
-              B2B CRM · 운영 콘솔
+              {APP_SUBTITLE} · 리스·렌트 운영 콘솔
             </div>
           </div>
         </div>
@@ -396,6 +456,8 @@ export default function AdminShell({
   currentUser?: ShellUser;
   onLogout?: () => void;
 }) {
+  const pathname = usePathname();
+  const pageTitle = titleForPathname(pathname);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [leadSearchQuery, setLeadSearchQuery] = useState("");
   const leadSearchValue = useMemo(
@@ -450,9 +512,9 @@ export default function AdminShell({
 
           {/* Main column */}
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white/90 shadow-[0_1px_0_rgba(15,23,42,0.04)] backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95">
-              <div className="flex min-h-[52px] flex-col gap-2 px-4 py-2 sm:px-6 lg:h-14 lg:flex-row lg:items-center lg:gap-4 lg:px-8 lg:py-0">
-                <div className="flex items-center gap-3 lg:contents">
+            <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)] dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="px-4 py-3 sm:px-6 lg:px-8">
+                <div className="relative flex flex-wrap items-center gap-3 sm:gap-4 lg:flex-nowrap">
                   <button
                     type="button"
                     onClick={() => setMobileOpen(true)}
@@ -462,50 +524,84 @@ export default function AdminShell({
                     <Icon name="menu" className="size-5" />
                   </button>
 
-                  <div className="min-w-0 flex-1 lg:max-w-[220px] lg:flex-none">
-                    <div className="truncate text-[13px] font-semibold text-slate-900 dark:text-zinc-50">
-                      {APP_NAME}
+                  <Link
+                    href="/dashboard"
+                    className="flex min-w-0 max-w-[55%] items-center gap-2.5 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-[var(--crm-blue)]/35 focus-visible:ring-offset-2 sm:max-w-none lg:min-w-[200px] lg:max-w-[280px]"
+                  >
+                    <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--crm-blue-deep)] text-[10px] font-extrabold tracking-tight text-white shadow-sm dark:bg-[#163a5e]">
+                      NC
+                    </span>
+                    <span className="min-w-0 text-left">
+                      <span className="block truncate text-[15px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-50">
+                        {APP_NAME}
+                        <span className="ml-1.5 text-[14px] font-semibold text-slate-500 dark:text-zinc-400">
+                          {APP_SUBTITLE}
+                        </span>
+                      </span>
+                      <span className="mt-0.5 hidden truncate text-[13px] font-medium text-slate-500 dark:text-zinc-500 lg:block">
+                        리스·렌트 통합 운영
+                      </span>
+                    </span>
+                  </Link>
+
+                  <div className="order-last hidden w-full flex-1 justify-center lg:order-none lg:flex">
+                    <h1 className="text-[18px] font-semibold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">
+                      {pageTitle}
+                    </h1>
+                  </div>
+
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-2 lg:min-w-0 lg:flex-1">
+                    <Link
+                      href="/leads/new-db?create=1"
+                      className="crm-btn-primary whitespace-nowrap px-3 py-2 text-[14px] sm:px-4"
+                    >
+                      고객 추가
+                    </Link>
+                    <Link
+                      href="/leads/counseling-progress"
+                      className="hidden whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-[14px] font-semibold text-slate-800 shadow-[var(--crm-shadow-sm)] transition-[border-color,background] hover:border-[var(--crm-blue)]/40 hover:bg-slate-50 sm:inline-flex dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800/80"
+                    >
+                      상담 기록
+                    </Link>
+                    <div className="hidden flex-col items-end text-right md:flex">
+                      <span className="text-[14px] font-semibold text-slate-900 dark:text-zinc-100">
+                        {currentUser?.name ?? "—"}
+                      </span>
+                      <span className="text-[13px] text-slate-500 dark:text-zinc-400">
+                        {currentUser ? (currentUser.roleLabel ?? currentUser.role) : ""}
+                      </span>
                     </div>
-                    <div className="truncate text-[11px] font-medium text-slate-500 dark:text-zinc-400">
-                      {currentUser
-                        ? `${currentUser.name} · ${currentUser.roleLabel ?? currentUser.role}`
-                        : "고객 · 상담 · 계약 · 출고 통합 운영"}
-                    </div>
-                    {currentUser?.email ? (
-                      <div className="truncate text-[10px] text-slate-400 dark:text-zinc-500 lg:hidden">
-                        {currentUser.email}
-                      </div>
-                    ) : null}
+                    {onLogout ? (
+                      <button
+                        type="button"
+                        onClick={onLogout}
+                        className="crm-btn-secondary whitespace-nowrap px-3 py-2 text-[14px]"
+                      >
+                        로그아웃
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="inline-flex items-center justify-center rounded-lg p-2 text-slate-600 hover:bg-slate-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                        aria-label="알림"
+                      >
+                        <Icon name="bell" className="size-5" />
+                      </button>
+                    )}
                   </div>
                 </div>
 
-                <div className="w-full flex-1 lg:hidden">
+                <h1 className="mt-3 text-[17px] font-semibold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100 lg:hidden">
+                  {pageTitle}
+                </h1>
+
+                <div className="mt-3 lg:hidden">
                   <GlobalLeadSearch
                     variant="header"
                     value={leadSearchQuery}
                     onChange={setLeadSearchQuery}
                     className="w-full"
                   />
-                </div>
-
-                <div className="flex shrink-0 items-center justify-end gap-2 lg:ml-auto">
-                  {onLogout ? (
-                    <button
-                      type="button"
-                      onClick={onLogout}
-                      className="crm-btn-secondary px-3 py-1.5 text-xs"
-                    >
-                      로그아웃
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="inline-flex items-center justify-center rounded-lg p-2 text-slate-600 hover:bg-slate-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
-                      aria-label="알림"
-                    >
-                      <Icon name="bell" className="size-5" />
-                    </button>
-                  )}
                 </div>
               </div>
             </header>

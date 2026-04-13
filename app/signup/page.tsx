@@ -12,6 +12,7 @@ import {
   type UserRow,
 } from "@/app/(admin)/_lib/usersSupabase";
 import { authErrorMessageKo } from "@/app/_lib/authErrorMessages";
+import { formatPostgrestForMessage, pickPostgrestFields } from "@/app/_lib/postgrestError";
 import {
   AuthBrandHeader,
   AuthFooterNote,
@@ -57,11 +58,15 @@ export default function SignupPage() {
     setBusy(true);
     setHelper(null);
     try {
+      const origin = typeof window !== "undefined" ? window.location.origin : "";
       const { data, error } = await supabase.auth.signUp({
         email: trimmedEmail,
         password,
         options: {
           data: { name: trimmedName },
+          emailRedirectTo: origin
+            ? `${origin}/auth/callback?next=${encodeURIComponent("/login")}`
+            : undefined,
         },
       });
       const signUpSuccess = !error;
@@ -115,7 +120,16 @@ export default function SignupPage() {
               name: trimmedName,
             }),
           });
-          const json = (await res.json()) as { ok?: boolean; row?: unknown; error?: string };
+          const json = (await res.json()) as {
+            ok?: boolean;
+            row?: unknown;
+            error?: string;
+            message?: string;
+            code?: string;
+            details?: string;
+            hint?: string;
+            status?: number;
+          };
           if (res.ok && json.ok !== false) {
             profileFromServer = true;
             insertResult = json.row ?? json;
@@ -124,9 +138,14 @@ export default function SignupPage() {
               insertResult,
             });
           } else {
-            console.error("[signup][ENSURE_PROFILE_API] failed raw", {
-              status: res.status,
-              body: json,
+            console.error("[signup][ENSURE_PROFILE_API] failed", {
+              httpStatus: res.status,
+              error: json.error ?? json.message ?? null,
+              code: json.code ?? null,
+              details: json.details ?? null,
+              hint: json.hint ?? null,
+              status: json.status ?? null,
+              fullBody: json,
             });
           }
         } catch (apiErr) {
@@ -153,23 +172,18 @@ export default function SignupPage() {
             insertResult,
           });
         } catch (insertErr) {
-          const rawLog =
-            insertErr && typeof insertErr === "object" && insertErr !== null
-              ? {
-                  ...(insertErr as object),
-                  message:
-                    insertErr instanceof Error
-                      ? insertErr.message
-                      : "message" in insertErr
-                        ? String((insertErr as { message: unknown }).message)
-                        : undefined,
-                }
-              : insertErr;
-          console.error("[signup][PUBLIC_USERS_INSERT] failed raw", { raw: rawLog, insertErr });
+          const fields = pickPostgrestFields(insertErr);
+          console.error("[signup][PUBLIC_USERS_INSERT] failed", {
+            ...fields,
+            raw: insertErr,
+          });
           await supabase.auth.signOut().catch(() => {});
-          const msg = insertErr instanceof Error ? insertErr.message : String(insertErr);
+          const msg =
+            insertErr instanceof Error
+              ? insertErr.message
+              : formatPostgrestForMessage(insertErr);
           throw new Error(
-            `CRM 프로필 생성 실패: ${msg}. 관리자에게 users INSERT/RLS 정책을 확인해 달라고 요청하세요.`
+            `CRM 프로필 생성 실패: ${msg}. (스키마·제약·중복 키 등 DB 응답을 확인하세요.)`
           );
         }
       }

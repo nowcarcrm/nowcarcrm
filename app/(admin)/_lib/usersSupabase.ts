@@ -1,3 +1,4 @@
+import { formatPostgrestForMessage, pickPostgrestFields } from "@/app/_lib/postgrestError";
 import { EMPLOYEES } from "./leaseCrmSeed";
 import { supabase } from "./supabaseClient";
 
@@ -176,7 +177,10 @@ export async function updateUserAuthLink(userId: string, authUserId: string) {
   return data as UserRow;
 }
 
-/** 공개 회원가입 직후 트리거가 users 행을 만들지 않은 경우 보조 삽입 */
+/**
+ * 공개 회원가입 직후 트리거가 users 행을 만들지 않은 경우 보조 삽입.
+ * 항상 staff + pending + is_active true 로만 쓰며, 승인(approved) 변경은 서버 API만 사용할 것.
+ */
 export async function createPendingStaffProfileFromAuth(input: {
   authUserId: string;
   email: string;
@@ -204,18 +208,15 @@ export async function createPendingStaffProfileFromAuth(input: {
     .select("*")
     .maybeSingle();
   if (error) {
-    const e = error as { message?: string; code?: string; details?: string; hint?: string };
+    const fields = pickPostgrestFields(error);
     console.error("[signup][PUBLIC_USERS_INSERT] failed", {
       authUserId: input.authUserId,
       email: input.email,
       name: input.name,
-      message: e.message ?? null,
-      code: e.code ?? null,
-      details: e.details ?? null,
-      hint: e.hint ?? null,
+      ...fields,
       raw: error,
     });
-    throw error;
+    throw new Error(formatPostgrestForMessage(error));
   }
   console.log("[signup][PUBLIC_USERS_INSERT] success", {
     authUserId: input.authUserId,
@@ -223,23 +224,5 @@ export async function createPendingStaffProfileFromAuth(input: {
     name: input.name,
     data,
   });
-  return (data as UserRow | null) ?? null;
-}
-
-export async function createActiveUserFromAuth(input: {
-  authUserId: string;
-  email: string;
-  name: string;
-}) {
-  const payload = {
-    id: input.authUserId,
-    auth_user_id: input.authUserId,
-    email: input.email,
-    name: input.name,
-    role: "staff" as UserRole,
-    approval_status: "approved" as const,
-  };
-  const { data, error } = await supabase.from("users").insert(payload).select("*").maybeSingle();
-  if (error) throw error;
   return (data as UserRow | null) ?? null;
 }

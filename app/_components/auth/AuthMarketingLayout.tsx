@@ -101,10 +101,12 @@ export function AuthPrimaryButton({
   );
 }
 
-export function AuthFooterNote() {
+export function AuthFooterNote({ className = "" }: { className?: string }) {
   return (
-    <p className="mt-6 text-center text-[12px] leading-relaxed text-zinc-500 dark:text-zinc-500">
-      문제가 있을 경우 관리자에게 문의하세요.
+    <p
+      className={`mt-6 text-center text-[13px] leading-relaxed text-zinc-500 dark:text-zinc-500 ${className}`}
+    >
+      문의는 관리자에게 연락해 주세요.
     </p>
   );
 }
@@ -112,10 +114,7 @@ export function AuthFooterNote() {
 export function AuthErrorBanner({ message }: { message: string }) {
   if (!message.trim()) return null;
   return (
-    <div
-      role="alert"
-      className="mt-4 rounded-[12px] border border-rose-200/90 bg-rose-50/95 px-3.5 py-2.5 text-[13px] leading-snug text-rose-800 dark:border-rose-500/30 dark:bg-rose-950/40 dark:text-rose-100"
-    >
+    <div role="alert" className="crm-auth-error-soft">
       {message}
     </div>
   );
