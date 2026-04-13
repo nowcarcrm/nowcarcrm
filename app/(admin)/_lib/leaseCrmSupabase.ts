@@ -849,7 +849,6 @@ type ConsultationInsert = {
   next_contact_memo: string | null;
   memo: string;
   created_at: string;
-  id?: string;
 };
 
 /** DB에 counselor 등 컬럼이 없어도 동작하도록 memo(CRM1 JSON) + 필수 컬럼만 insert */
@@ -898,21 +897,14 @@ function toConsultationRows(lead: Lead): ConsultationInsert[] {
   };
   const defaultNextAction = normalizeConsultTimestamptz(lead.nextContactAt ?? lead.createdAt);
 
-  const extraRow: ConsultationInsert = {
-    lead_id: leadId,
-    counselor: defaultCounselor,
-    method: defaultMethod,
-    importance: defaultImportance,
-    reaction: "",
-    desired_progress_at: normalizeTimestamptzForDb(lead.createdAt),
-    next_action_at: defaultNextAction,
-    next_contact_memo: lead.nextContactMemo?.trim() || "",
-    memo: serializeLeadExtraMemo(lead),
-    created_at: normalizeConsultTimestamptz(lead.createdAt) ?? new Date().toISOString(),
-  };
+  const sanitizeConsultationRow = (row: ConsultationInsert): ConsultationInsert =>
+    Object.fromEntries(
+      Object.entries(row).filter(([key, value]) => key !== "id" && value !== undefined)
+    ) as ConsultationInsert;
+
   const list = Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [];
   const rows = list.map((r) => {
-    const row: ConsultationInsert = {
+    const row = {
       lead_id: leadId,
       counselor: (r.counselor ?? "").trim() || defaultCounselor,
       method: (r.method ?? "").trim() || defaultMethod,
@@ -924,12 +916,10 @@ function toConsultationRows(lead: Lead): ConsultationInsert[] {
       memo: (r.content ?? "").trim(),
       created_at: normalizeConsultTimestamptz(r.occurredAt) ?? new Date().toISOString(),
     };
-    if (isUuidString(r.id)) {
-      row.id = coerceDbStringId(r.id);
-    }
-    return row;
+    return sanitizeConsultationRow(row);
   });
-  return [extraRow, ...rows];
+  // consultations에는 상담 레코드 컬럼만 저장한다(CRM_EXTRA 메타 행 제외).
+  return rows;
 }
 
 /** contracts INSERT 시 snake_case 컬럼 → UI/의미 (누락 경고용) */
