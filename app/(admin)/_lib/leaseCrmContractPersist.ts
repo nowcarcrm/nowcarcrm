@@ -12,6 +12,8 @@ import type {
 } from "./leaseCrmTypes";
 
 export const CONTRACT_NOTE_MARKER = "\n\n[[CRM_CONTRACT_X1]]\n";
+const CONTRACT_NOTE_MARKER_COMPACT = "[[CRM_CONTRACT_X1]]";
+const CONTRACT_NOTE_MARKER_LEGACY = "[CRM_CONTRACT_X1]";
 
 export type ContractExtraV1 = {
   v: 1;
@@ -181,10 +183,22 @@ export function splitContractNote(raw: string | null | undefined): {
   extra: ContractExtraV1 | null;
 } {
   const s = raw ?? "";
-  const i = s.indexOf(CONTRACT_NOTE_MARKER);
-  if (i === -1) return { userNote: s.trimEnd(), extra: null };
+  const fullMarker = CONTRACT_NOTE_MARKER;
+  const compactMarker = CONTRACT_NOTE_MARKER.trimStart();
+  const idxFull = s.indexOf(fullMarker);
+  const idxCompact = s.indexOf(compactMarker);
+  const idxLegacy = s.indexOf(CONTRACT_NOTE_MARKER_LEGACY);
+  const markerIndexCandidates = [idxFull, idxCompact, idxLegacy].filter((i) => i >= 0);
+  if (markerIndexCandidates.length === 0) return { userNote: s.trimEnd(), extra: null };
+  const i = Math.min(...markerIndexCandidates);
+  const markerLen =
+    i === idxFull
+      ? fullMarker.length
+      : i === idxCompact
+        ? compactMarker.length
+        : CONTRACT_NOTE_MARKER_LEGACY.length;
   const userNote = s.slice(0, i).trimEnd();
-  const jsonPart = s.slice(i + CONTRACT_NOTE_MARKER.length).trim();
+  const jsonPart = s.slice(i + markerLen).trim();
   try {
     const p = JSON.parse(jsonPart) as ContractExtraV1;
     if (p && p.v === 1) return { userNote, extra: p };
@@ -198,9 +212,22 @@ export function joinContractNote(userNote: string, extra: ContractExtraV1 | null
   const u = (userNote ?? "").trimEnd();
   if (!extra) return u;
   const payload = JSON.stringify(extra);
-  if (!u) return CONTRACT_NOTE_MARKER.trimStart() + "\n" + payload;
+  if (!u) return CONTRACT_NOTE_MARKER_COMPACT + "\n" + payload;
   return u + CONTRACT_NOTE_MARKER + payload;
 }
+
+/** 메타 JSON만 추출 (없으면 null) */
+export function extractContractMeta(raw: string | null | undefined): ContractExtraV1 | null {
+  return splitContractNote(raw).extra;
+}
+
+/** 사용자에게 보여줄 비고 텍스트만 추출 */
+export function stripContractMeta(raw: string | null | undefined): string {
+  return splitContractNote(raw).userNote;
+}
+
+/** 명시적 별칭: 사용자 비고 + 내부 메타 결합 */
+export const buildContractNote = joinContractNote;
 
 /** note에 JSON을 붙일지 여부(빈 확장은 기존 note만 유지해 레거시와 동일하게 유지) */
 export function shouldPersistContractExtra(e: ContractExtraV1): boolean {
