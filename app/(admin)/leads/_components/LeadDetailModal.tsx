@@ -343,7 +343,11 @@ export default function LeadDetailModal({
   onClose: () => void;
   onUpdate: (
     next: Lead,
-    options?: { syncConsultations?: boolean }
+    options?: {
+      syncConsultations?: boolean;
+      syncContracts?: boolean;
+      syncExportProgress?: boolean;
+    }
   ) => void | Promise<void>;
   onDelete: (id: string) => void;
 }) {
@@ -516,7 +520,9 @@ export default function LeadDetailModal({
     devLog("[LeadDetailModal] persist 저장 직전 payload", payload);
     setSaving(true);
     try {
-      await Promise.resolve(onUpdate(payload, { syncConsultations: false }));
+      await Promise.resolve(
+        onUpdate(payload, { syncConsultations: true, syncContracts: false, syncExportProgress: false })
+      );
       setDraft(payload);
       toast.success("저장했습니다.");
     } catch (error) {
@@ -529,6 +535,8 @@ export default function LeadDetailModal({
 
   async function saveBase() {
     console.log("selectedUserId:", draft.managerUserId ?? null);
+    console.log("saveBase payload:", draft);
+    console.log("saveBase should sync contracts?:", false);
     if (canReassignLeadOwner && !draft.managerUserId) {
       toast.error("담당 직원을 선택해 주세요.");
       return;
@@ -568,8 +576,21 @@ export default function LeadDetailModal({
     devLog("[LeadDetailModal] 기본정보 저장 직전 payload", next);
     setSaving(true);
     try {
-      await Promise.resolve(onUpdate(next, { syncConsultations: false }));
-      setDraft(next);
+      await Promise.resolve(
+        onUpdate(next, { syncConsultations: true, syncContracts: false, syncExportProgress: false })
+      );
+      if (profile) {
+        const fresh = await fetchLeadById(next.id, { role: profile.role, userId: profile.userId });
+        if (fresh) {
+          setDraft(ensureLeadShape(fresh));
+          console.log("review status after save refetch:", {
+            leadId: fresh.id,
+            reviewStatus: fresh.creditReviewStatus ?? null,
+          });
+        }
+      } else {
+        setDraft(next);
+      }
       toast.success("저장했습니다.");
     } catch (error) {
       console.error("[LeadDetailModal] 기본정보 저장 실패", formatSupabaseError(error), error, next);
@@ -670,7 +691,9 @@ export default function LeadDetailModal({
     setSaving(true);
     try {
       const toSave = leadPayloadForServer(payload);
-      await Promise.resolve(onUpdate(toSave, { syncConsultations: false }));
+      await Promise.resolve(
+        onUpdate(toSave, { syncConsultations: false, syncContracts: true, syncExportProgress: false })
+      );
       devLog("[계약 저장] onUpdate 완료(서버 성공)", {
         leadId: toSave.id,
         contract: toSave.contract,
@@ -726,7 +749,9 @@ export default function LeadDetailModal({
     setSaving(true);
     try {
       const toSave = leadPayloadForServer(payload);
-      await Promise.resolve(onUpdate(toSave, { syncConsultations: false }));
+      await Promise.resolve(
+        onUpdate(toSave, { syncConsultations: false, syncContracts: false, syncExportProgress: true })
+      );
       setDraft(toSave);
       toast.success("저장했습니다.");
     } catch (error) {
@@ -1372,7 +1397,13 @@ export default function LeadDetailModal({
                       void (async () => {
                         try {
                           const toSave = leadPayloadForServer(nextLead);
-                          await Promise.resolve(onUpdate(toSave, { syncConsultations: true }));
+                          await Promise.resolve(
+                            onUpdate(toSave, {
+                              syncConsultations: true,
+                              syncContracts: false,
+                              syncExportProgress: false,
+                            })
+                          );
                           setDraft(toSave);
                           setRecordCounselingStatusSideEffect("");
                         } catch (err) {

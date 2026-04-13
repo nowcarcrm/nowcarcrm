@@ -428,6 +428,10 @@ type ViewerScope = LeadSupabaseScope;
 export type UpdateLeadOptions = {
   /** true일 때만 consultations delete/insert 수행 (기본 true) */
   syncConsultations?: boolean;
+  /** true일 때만 contracts upsert 수행 (기본 true) */
+  syncContracts?: boolean;
+  /** true일 때만 export_progress delete/insert 수행 (기본 true) */
+  syncExportProgress?: boolean;
 };
 
 /** 운영 화면 전체 접근: 관리자 + 명시 플래그만 인정 */
@@ -1399,7 +1403,7 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
         leadId: leadForUpdate.id,
         reason: formatSupabaseError(relError),
       });
-      return;
+      throw new Error("운영 DB 테이블이 준비되지 않아 저장할 수 없습니다.");
     }
     throw relError;
   }
@@ -1526,10 +1530,22 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
   const leadId = coerceDbStringId(lead.id);
   if (!leadId) throw new Error("leadId 없음");
   const shouldSyncConsultations = options?.syncConsultations !== false;
+  const shouldSyncContracts = options?.syncContracts !== false;
+  const shouldSyncExport = options?.syncExportProgress !== false;
+  console.log("replaceLeadRelations input", {
+    hasContractData: !!lead.contract,
+    hasConsultations: Array.isArray(lead.counselingRecords) && lead.counselingRecords.length > 0,
+    syncConsultations: shouldSyncConsultations,
+    syncContracts: shouldSyncContracts,
+    syncExport: shouldSyncExport,
+    reviewStatus: lead.creditReviewStatus ?? null,
+  });
   if (shouldSyncConsultations) {
     await supabase.from("consultations").delete().eq("lead_id", leadId);
   }
-  await supabase.from("export_progress").delete().eq("lead_id", leadId);
+  if (shouldSyncExport) {
+    await supabase.from("export_progress").delete().eq("lead_id", leadId);
+  }
 
   if (shouldSyncConsultations) {
     const consultations = toConsultationRows(lead);
@@ -1552,7 +1568,7 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
   }
 
   const contract = toContractRow(lead);
-  if (contract) {
+  if (shouldSyncContracts && contract) {
     logContractDeliveryDateResolution(lead);
     const cleanPayload = Object.fromEntries(
       Object.entries(contract).filter(([, v]) => v !== undefined && v !== null)
@@ -1572,6 +1588,7 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
       console.log("contract update result:", data);
       if (error) {
         console.error("contract update error:", error);
+        console.error("contract update error parsed:", postgrestLikeFields(error));
         throw error;
       }
       const { data: contractsRowsAfterWrite, error: contractsRowsAfterWriteErr } = await supabase
@@ -1595,7 +1612,7 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
     }
   }
   const exportProgress = toExportRow(lead);
-  if (exportProgress) {
+  if (shouldSyncExport && exportProgress) {
     devLog("[Supabase] export_progress INSERT 의도 payload (전체)", exportProgress);
     try {
       const { omitted, finalPayload } = await insertRowOmittingUnknownColumns(
