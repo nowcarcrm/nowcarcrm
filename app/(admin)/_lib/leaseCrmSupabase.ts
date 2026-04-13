@@ -271,6 +271,15 @@ async function resolveManagerUserIdForAdmin(lead: Lead): Promise<string | null> 
   return (data as { id: string } | null)?.id ?? null;
 }
 
+async function getAuthenticatedUserId(): Promise<string | null> {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) {
+    console.warn("[getAuthenticatedUserId] auth.getUser failed", formatSupabaseError(error));
+    return null;
+  }
+  return nonEmptyUserId(data.user?.id) ?? null;
+}
+
 async function fetchUserDisplayNameById(userId: string): Promise<string | null> {
   const { data, error } = await supabase
     .from("users")
@@ -364,7 +373,13 @@ async function prepareLeadForSupabaseWrite(lead: Lead, scope?: ViewerScope): Pro
         counselingRecords,
       };
     }
-    const managerUserId = await resolveManagerUserIdForAdmin(lead);
+    const selectedUserId = nonEmptyUserId(lead.managerUserId) ?? null;
+    console.log("selectedUserId:", selectedUserId);
+    const authUserId = await getAuthenticatedUserId();
+    const managerUserId = selectedUserId || authUserId || (await resolveManagerUserIdForAdmin(lead));
+    if (!managerUserId) {
+      throw new Error("manager_user_id 없음");
+    }
     return { ...lead, managerUserId };
   } catch (raw) {
     const { code, message, details, hint } = postgrestLikeFields(raw);
@@ -393,6 +408,9 @@ type LeadRow = {
   manager: string;
   manager_user_id: string | null;
   next_contact_at: string | null;
+  summary_text?: string | null;
+  next_action?: string | null;
+  customer_intent?: string | null;
   created_at: string;
 };
 
@@ -756,6 +774,14 @@ function mapRowToLead(
     exportProgress,
     deliveredAt: exportProgress?.deliveredAt ?? null,
     lastHandledAt: row.created_at,
+    summaryText: (row.summary_text ?? "").trim() || "",
+    nextAction: (row.next_action ?? "").trim() || "",
+    customerIntent:
+      row.customer_intent === "exploring" ||
+      row.customer_intent === "interested" ||
+      row.customer_intent === "closing"
+        ? row.customer_intent
+        : "",
     ...defaultLeadOperationalFields(),
     leadPriority: coalescePriority(ext?.leadPriority),
     failureReason: typeof ext?.failureReason === "string" ? ext.failureReason : "",

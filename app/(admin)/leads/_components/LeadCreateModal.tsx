@@ -6,6 +6,8 @@ import { LEAD_SOURCE_OPTIONS, defaultLeadOperationalFields } from "../../_lib/le
 import { leadBootstrapForCategory } from "../../_lib/leaseCrmLogic";
 import toast from "react-hot-toast";
 
+type OwnerOption = { id: string; name: string };
+
 type DraftBase = Pick<
   CustomerBase,
   "name" | "phone" | "desiredVehicle" | "source" | "ownerStaff"
@@ -15,6 +17,7 @@ export default function LeadCreateModal({
   onClose,
   onCreate,
   ownerOptions,
+  defaultOwnerId,
   defaultOwner,
   categoryKey,
   categoryLabel,
@@ -23,7 +26,8 @@ export default function LeadCreateModal({
 }: {
   onClose: () => void;
   onCreate: (lead: Lead) => Promise<Lead>;
-  ownerOptions: string[];
+  ownerOptions: OwnerOption[];
+  defaultOwnerId?: string;
   defaultOwner?: string;
   categoryKey: LeadCategoryKey;
   categoryLabel: string;
@@ -32,8 +36,11 @@ export default function LeadCreateModal({
   lockedOwnerDisplayName?: string;
 }) {
   const initialOwner = canAssignOwner
-    ? (defaultOwner ?? ownerOptions[0] ?? "")
+    ? (defaultOwner ?? ownerOptions[0]?.name ?? "")
     : (lockedOwnerDisplayName || defaultOwner || "").trim();
+  const initialOwnerId = canAssignOwner
+    ? (defaultOwnerId ?? ownerOptions[0]?.id ?? "")
+    : "";
   const [draft, setDraft] = useState<DraftBase>({
     name: "",
     phone: "",
@@ -41,6 +48,7 @@ export default function LeadCreateModal({
     source: "",
     ownerStaff: initialOwner,
   });
+  const [selectedUserId, setSelectedUserId] = useState<string>(initialOwnerId);
   const [error, setError] = useState<string | null>(null);
 
   const nowIso = useMemo(() => new Date().toISOString(), []);
@@ -55,6 +63,7 @@ export default function LeadCreateModal({
     if (!draft.desiredVehicle.trim()) return "원하는 차종을 입력해주세요.";
     if (!draft.source.trim()) return "유입 경로를 선택해주세요.";
     if (canAssignOwner && !draft.ownerStaff.trim()) return "담당 직원을 입력해주세요.";
+    if (canAssignOwner && !selectedUserId) return "담당 직원 ID를 선택해주세요.";
     if (!canAssignOwner && !lockedOwnerDisplayName.trim()) return "로그인 사용자 정보를 확인할 수 없습니다.";
     return null;
   }
@@ -101,6 +110,7 @@ export default function LeadCreateModal({
             className="mt-5 grid gap-4 sm:grid-cols-2"
             onSubmit={(e) => {
               e.preventDefault();
+              console.log("selectedUserId:", selectedUserId);
               const v = validate();
               if (v) {
                 setError(v);
@@ -141,6 +151,7 @@ export default function LeadCreateModal({
                 exportProgress: bootstrap.exportProgress,
                 deliveredAt: bootstrap.deliveredAt,
                 lastHandledAt: nowIso,
+                managerUserId: selectedUserId || undefined,
                 ...defaultLeadOperationalFields(),
               };
               console.log("[LeadCreateModal] submit lead payload(full)", lead);
@@ -218,13 +229,21 @@ export default function LeadCreateModal({
               </label>
               {canAssignOwner ? (
                 <select
-                  value={draft.ownerStaff}
-                  onChange={(e) => setDraft((p) => ({ ...p, ownerStaff: e.target.value }))}
+                  value={selectedUserId}
+                  onChange={(e) => {
+                    const uid = e.target.value;
+                    const selected = ownerOptions.find((x) => x.id === uid);
+                    setSelectedUserId(uid);
+                    setDraft((p) => ({ ...p, ownerStaff: selected?.name ?? p.ownerStaff }));
+                  }}
                   className="crm-field crm-field-select"
                 >
+                  <option value="" disabled>
+                    담당 직원을 선택하세요
+                  </option>
                   {ownerOptions.map((s) => (
-                    <option key={s} value={s}>
-                      {s}
+                    <option key={s.id} value={s.id}>
+                      {s.name}
                     </option>
                   ))}
                 </select>

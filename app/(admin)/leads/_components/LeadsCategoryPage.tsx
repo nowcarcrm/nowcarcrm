@@ -144,7 +144,7 @@ function LeadsCategoryView({
   const [activeLeadId, setActiveLeadId] = useState<string | null>(null);
   const { query: searchInput, setQuery: setSearchInput } = useLeadListSearch();
   const [sortBy, setSortBy] = useState<SortKey>("lastContactOldest");
-  const [createOwnerOptions, setCreateOwnerOptions] = useState<string[]>([]);
+  const [createOwnerOptions, setCreateOwnerOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [failReasonModal, setFailReasonModal] = useState<{
     lead: Lead;
     nextStatus: CounselingStatus;
@@ -174,16 +174,22 @@ function LeadsCategoryView({
       try {
         await ensureSeedLeads();
         const users = await listActiveUsers();
-        const names = users.map((u) => u.name);
+        const ownerOptions = users
+          .filter((u) => !!u.id && !!u.name?.trim())
+          .map((u) => ({ id: u.id, name: u.name.trim() }));
+        const profileOwner =
+          profile.userId && profile.name?.trim()
+            ? [{ id: profile.userId, name: profile.name.trim() }]
+            : [];
         if (!mounted) return;
         window.setTimeout(
           () =>
             setCreateOwnerOptions(
               profile.role === "staff"
-                ? [profile.name]
-                : names.length > 0
-                  ? names
-                  : [profile.name]
+                ? profileOwner
+                : ownerOptions.length > 0
+                  ? ownerOptions
+                  : profileOwner
             ),
           0
         );
@@ -199,7 +205,15 @@ function LeadsCategoryView({
         console.error("[LeadsCategoryPage] load failed", e);
         setLeadsLoadError(msg);
         toast.error("데이터를 불러오지 못했습니다.");
-        window.setTimeout(() => setCreateOwnerOptions([profile.name]), 0);
+        window.setTimeout(
+          () =>
+            setCreateOwnerOptions(
+              profile.userId && profile.name?.trim()
+                ? [{ id: profile.userId, name: profile.name.trim() }]
+                : []
+            ),
+          0
+        );
         window.setTimeout(() => setLeads([]), 0);
       }
     })();
@@ -887,6 +901,7 @@ function LeadsCategoryView({
           onClose={() => setCreateOpen(false)}
           onCreate={handleCreateLead}
           ownerOptions={createOwnerOptions}
+          defaultOwnerId={profile?.userId}
           defaultOwner={profile?.name}
           categoryKey={categoryKey}
           categoryLabel={categoryLabel}

@@ -352,7 +352,9 @@ export default function LeadDetailModal({
   /** 상담기록의「상담 담당자」는 admin만 변경 가능(staff·manager는 읽기 전용). */
   const canPickCounselor = profile?.role === "admin";
 
-  const [leadOwnerOptions, setLeadOwnerOptions] = useState<string[]>(() => [...EMPLOYEES]);
+  const [leadOwnerOptions, setLeadOwnerOptions] = useState<Array<{ id: string; name: string }>>(
+    () => []
+  );
 
   const leadPayloadForServer = useCallback(
     (l: Lead): Lead => {
@@ -369,11 +371,13 @@ export default function LeadDetailModal({
     void listActiveUsers()
       .then((users) => {
         if (cancelled) return;
-        const names = users.map((u) => u.name).filter(Boolean) as string[];
-        setLeadOwnerOptions(names.length > 0 ? names : [...EMPLOYEES]);
+        const options = users
+          .filter((u) => !!u.id && !!u.name?.trim())
+          .map((u) => ({ id: u.id, name: u.name.trim() }));
+        setLeadOwnerOptions(options);
       })
       .catch(() => {
-        if (!cancelled) setLeadOwnerOptions([...EMPLOYEES]);
+        if (!cancelled) setLeadOwnerOptions([]);
       });
     return () => {
       cancelled = true;
@@ -381,12 +385,14 @@ export default function LeadDetailModal({
   }, [canReassignLeadOwner]);
 
   const leadOwnerSelectChoices = useMemo(() => {
-    const base = leadOwnerOptions.length > 0 ? leadOwnerOptions : [...EMPLOYEES];
-    const set = new Set<string>(base);
-    const cur = draft.base.ownerStaff?.trim();
-    if (cur) set.add(cur);
-    return Array.from(set).sort((a, b) => a.localeCompare(b, "ko"));
-  }, [leadOwnerOptions, draft.base.ownerStaff]);
+    const byId = new Map<string, string>(leadOwnerOptions.map((u) => [u.id, u.name]));
+    if (draft.managerUserId && draft.base.ownerStaff?.trim() && !byId.has(draft.managerUserId)) {
+      byId.set(draft.managerUserId, draft.base.ownerStaff.trim());
+    }
+    return Array.from(byId.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  }, [leadOwnerOptions, draft.managerUserId, draft.base.ownerStaff]);
 
   const [counselorOptions, setCounselorOptions] = useState<string[]>(() => [...EMPLOYEES]);
 
@@ -506,6 +512,11 @@ export default function LeadDetailModal({
   }
 
   async function saveBase() {
+    console.log("selectedUserId:", draft.managerUserId ?? null);
+    if (canReassignLeadOwner && !draft.managerUserId) {
+      toast.error("담당 직원을 선택해 주세요.");
+      return;
+    }
     if (requiresFailureReasonStatus(draft.counselingStatus)) {
       const fr = draft.failureReason?.trim() ?? "";
       if (!fr) {
@@ -1035,18 +1046,25 @@ export default function LeadDetailModal({
                   <Field label="담당 직원">
                     {canReassignLeadOwner ? (
                       <select
-                        value={draft.base.ownerStaff}
-                        onChange={(e) =>
+                        value={draft.managerUserId ?? ""}
+                        onChange={(e) => {
+                          const selectedUserId = e.target.value;
+                          const selected = leadOwnerSelectChoices.find((u) => u.id === selectedUserId);
+                          console.log("selectedUserId:", selectedUserId || null);
                           setDraft((p) => ({
                             ...p,
-                            base: { ...p.base, ownerStaff: e.target.value },
-                          }))
-                        }
+                            managerUserId: selectedUserId || null,
+                            base: { ...p.base, ownerStaff: selected?.name ?? p.base.ownerStaff },
+                          }));
+                        }}
                         className="crm-field crm-field-select"
                       >
+                        <option value="" disabled>
+                          담당 직원을 선택하세요
+                        </option>
                         {leadOwnerSelectChoices.map((s) => (
-                          <option key={s} value={s}>
-                            {s}
+                          <option key={s.id} value={s.id}>
+                            {s.name}
                           </option>
                         ))}
                       </select>
