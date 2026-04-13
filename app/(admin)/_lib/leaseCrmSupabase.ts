@@ -839,7 +839,14 @@ function toLeadUpdateRow(lead: Lead) {
 }
 
 type ConsultationInsert = {
-  lead_id: string;
+  lead_id: number;
+  counselor: string;
+  method: string;
+  importance: string;
+  reaction: string;
+  desired_progress_at: string | null;
+  next_action_at: string | null;
+  next_contact_memo: string | null;
   memo: string;
   created_at: string;
   id?: string;
@@ -869,17 +876,53 @@ function coerceNumericForDb(value: unknown): number | null {
 }
 
 function toConsultationRows(lead: Lead): ConsultationInsert[] {
+  const leadIdText = coerceDbStringId(lead.id);
+  if (!/^\d+$/.test(leadIdText)) {
+    throw new Error(`consultations.lead_id는 bigint여야 합니다. 현재 값: ${leadIdText}`);
+  }
+  const leadId = Number(leadIdText);
+  if (!Number.isSafeInteger(leadId) || leadId <= 0) {
+    throw new Error(`consultations.lead_id bigint 변환 실패: ${leadIdText}`);
+  }
+
+  const defaultCounselor = lead.base.ownerStaff?.trim() || "미지정";
+  const defaultMethod = "전화";
+  const defaultImportance = "보통";
+  const normalizeConsultTimestamptz = (value: string | null | undefined): string | null => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+    const ms = Date.parse(raw);
+    if (!Number.isFinite(ms)) return null;
+    return new Date(ms).toISOString();
+  };
+  const defaultNextAction = normalizeConsultTimestamptz(lead.nextContactAt ?? lead.createdAt);
+
   const extraRow: ConsultationInsert = {
-    lead_id: lead.id,
+    lead_id: leadId,
+    counselor: defaultCounselor,
+    method: defaultMethod,
+    importance: defaultImportance,
+    reaction: "",
+    desired_progress_at: normalizeTimestamptzForDb(lead.createdAt),
+    next_action_at: defaultNextAction,
+    next_contact_memo: lead.nextContactMemo?.trim() || "",
     memo: serializeLeadExtraMemo(lead),
-    created_at: lead.createdAt,
+    created_at: normalizeConsultTimestamptz(lead.createdAt) ?? new Date().toISOString(),
   };
   const list = Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [];
   const rows = list.map((r) => {
     const row: ConsultationInsert = {
-      lead_id: lead.id,
-      memo: serializeConsultationToMemo(r),
-      created_at: r.occurredAt,
+      lead_id: leadId,
+      counselor: (r.counselor ?? "").trim() || defaultCounselor,
+      method: (r.method ?? "").trim() || defaultMethod,
+      importance: (r.importance ?? "").trim() || defaultImportance,
+      reaction: (r.reaction ?? "").trim(),
+      desired_progress_at: normalizeConsultTimestamptz(r.desiredProgressAt ?? null),
+      next_action_at: normalizeConsultTimestamptz(r.nextContactAt ?? null),
+      next_contact_memo: (r.nextContactMemo ?? "").trim() || null,
+      memo: (r.content ?? "").trim(),
+      created_at: normalizeConsultTimestamptz(r.occurredAt) ?? new Date().toISOString(),
     };
     if (isUuidString(r.id)) {
       row.id = coerceDbStringId(r.id);
@@ -1050,15 +1093,14 @@ async function insertRowOmittingUnknownColumns(
 }
 
 function isRelationTableUnavailableError(error: unknown): boolean {
-  const msg = formatSupabaseError(error).toLowerCase();
+  const e = error as { code?: string; message?: string; details?: string };
+  const code = String(e.code ?? "").toUpperCase();
+  const text = `${e.message ?? ""} ${e.details ?? ""}`.toLowerCase();
   return (
-    msg.includes("consultations") ||
-    msg.includes("contracts") ||
-    msg.includes("export_progress") ||
-    msg.includes("schema cache") ||
-    msg.includes("could not find") ||
-    msg.includes("pgrst205") ||
-    msg.includes("42p01")
+    code === "PGRST205" ||
+    code === "42P01" ||
+    text.includes("relation") && text.includes("does not exist") ||
+    text.includes("could not find the table")
   );
 }
 
@@ -1549,11 +1591,20 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
 
   if (shouldSyncConsultations) {
     const consultations = toConsultationRows(lead);
-    console.log("consultations payload:", consultations);
+    console.log("consultations payload full:", JSON.stringify(consultations, null, 2));
+    console.log("consultations first row:", consultations?.[0]);
     if (consultations.length > 0) {
       const { error: cErr } = await supabase.from("consultations").insert(consultations);
       if (cErr) {
         const detail = postgrestLikeFields(cErr);
+        console.error("[Supabase] consultations insert failed raw:", cErr);
+        console.error("[Supabase] consultations insert failed parsed:", {
+          message: (cErr as { message?: string })?.message ?? null,
+          code: (cErr as { code?: string })?.code ?? null,
+          details: (cErr as { details?: string | null })?.details ?? null,
+          hint: (cErr as { hint?: string | null })?.hint ?? null,
+          error: cErr,
+        });
         console.error("[Supabase] consultations insert failed", {
           leadId: lead.id,
           counselingStatus: lead.counselingStatus,
