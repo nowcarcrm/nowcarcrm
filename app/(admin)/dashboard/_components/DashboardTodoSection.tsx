@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { motion } from "framer-motion";
 import type { Lead } from "../../_lib/leaseCrmTypes";
 import { formatPhoneMasked } from "./dashboardUtils";
 
@@ -13,7 +14,7 @@ function ListSkeleton({ rows = 4 }: { rows?: number }) {
     <ul className="divide-y divide-slate-100 dark:divide-zinc-800/80">
       {Array.from({ length: rows }).map((_, i) => (
         <li key={i} className="flex gap-3 py-3">
-          <span className="h-12 flex-1 animate-pulse rounded-lg bg-slate-100 dark:bg-zinc-800" />
+          <span className="crm-skeleton crm-skeleton-shimmer h-12 flex-1 rounded-lg" />
         </li>
       ))}
     </ul>
@@ -76,23 +77,42 @@ function LeadTodoRow({
   onSelect: (id: string) => void;
 }) {
   const name = lead.base.name?.trim() || "이름 없음";
+  const status = String(lead.counselingStatus ?? "").trim();
+  const statusClass =
+    status === "상담중"
+      ? "bg-blue-100 text-blue-700"
+      : status === "계약"
+        ? "bg-emerald-100 text-emerald-700"
+        : status === "출고"
+          ? "bg-purple-100 text-purple-700"
+          : status === "취소"
+            ? "bg-rose-100 text-rose-700"
+            : "bg-slate-100 text-slate-600";
   return (
-    <button
+    <motion.button
       type="button"
       onClick={() => onSelect(lead.id!)}
+      whileHover={{ scale: 1.01 }}
+      whileTap={{ scale: 0.97 }}
+      transition={{ duration: 0.15, ease: "easeOut" }}
       className={cn(
-        "flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-3 text-left transition-colors",
-        "hover:bg-slate-50 dark:hover:bg-zinc-900/70"
+        "flex w-full cursor-pointer items-start gap-3 rounded-xl border-l-[3px] border-l-[#2563eb] px-3 py-3 text-left transition-colors duration-150 ease-out",
+        "hover:bg-[#f1f5f9] dark:hover:bg-zinc-900/70"
       )}
     >
       <div className="min-w-0 flex-1">
-        <div className="text-[15px] font-semibold text-slate-900 dark:text-zinc-100">{name}</div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="text-[15px] font-semibold text-slate-900 dark:text-zinc-100">{name}</div>
+          {status ? (
+            <span className={cn("rounded-full px-[10px] py-1 text-[12px] font-medium", statusClass)}>{status}</span>
+          ) : null}
+        </div>
         <div className="mt-0.5 text-[13px] text-slate-600 dark:text-zinc-400">{detail}</div>
       </div>
       <span className="shrink-0 text-[12px] tabular-nums text-slate-500 dark:text-zinc-500">
         {formatPhoneMasked(lead.base.phone)}
       </span>
-    </button>
+    </motion.button>
   );
 }
 

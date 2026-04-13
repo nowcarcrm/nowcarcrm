@@ -84,7 +84,7 @@ export default function DashboardNoticesPreview({
         {loading ? (
           <div className="space-y-3">
             {[1, 2, 3].map((k) => (
-              <div key={k} className="h-20 animate-pulse rounded-xl bg-slate-100 dark:bg-zinc-800" />
+              <div key={k} className="crm-skeleton crm-skeleton-shimmer h-20 rounded-xl" />
             ))}
           </div>
         ) : items.length === 0 ? (
@@ -97,7 +97,7 @@ export default function DashboardNoticesPreview({
                   href={`/notices/${n.id}`}
                   className={cn(
                     "block rounded-xl border border-slate-200/90 bg-white p-4 transition-[transform,box-shadow,border-color] duration-200",
-                    "hover:-translate-y-0.5 hover:border-[var(--crm-blue)]/25 hover:shadow-md",
+                    "hover:-translate-y-[3px] hover:border-[var(--crm-blue)]/25 hover:shadow-[0_20px_40px_rgba(15,23,42,0.1)]",
                     "dark:border-zinc-800 dark:bg-zinc-900/60 dark:hover:border-sky-500/30",
                     n.isPinned && "border-[var(--crm-blue)]/35 bg-[#f4f7fc] dark:border-sky-500/40 dark:bg-sky-950/20",
                     n.isImportant && !n.isPinned && "border-amber-200/80 bg-amber-50/50 dark:border-amber-500/25 dark:bg-amber-500/5"

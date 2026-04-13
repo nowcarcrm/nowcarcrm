@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { motion, useReducedMotion } from "framer-motion";
+import CountUp from "react-countup";
 import { dashboardKpiItem, dashboardKpiStagger } from "@/app/_lib/crmMotion";
 
 function cn(...parts: Array<string | false | null | undefined>) {
@@ -28,8 +29,24 @@ export type PipelineStageCounts = {
   total: number;
 };
 
-function formatWon(n: number): string {
-  return `${new Intl.NumberFormat("ko-KR").format(n)}원`;
+function AnimatedNumber({
+  value,
+  suffix = "",
+  loading,
+  className,
+}: {
+  value: number;
+  suffix?: string;
+  loading: boolean;
+  className?: string;
+}) {
+  if (loading) return <PrimarySkeleton tall />;
+  return (
+    <span className={className}>
+      <CountUp end={value} duration={1} separator="," />
+      {suffix}
+    </span>
+  );
 }
 
 function PrimarySkeleton({ tall }: { tall?: boolean }) {
@@ -55,7 +72,8 @@ type PrimaryDef = {
   accent: string;
   tier: 1 | 2;
   valueTone?: "up" | "risk" | "neutral";
-  format: (v: DashboardKpiValues) => string;
+  suffix: string;
+  value: (v: DashboardKpiValues) => number;
 };
 
 const PRIMARY: PrimaryDef[] = [
@@ -67,7 +85,8 @@ const PRIMARY: PrimaryDef[] = [
     accent: "bg-[#1a365d]",
     tier: 1,
     valueTone: "up",
-    format: (v) => formatWon(v.expectedCommissionWon),
+    suffix: "원",
+    value: (v) => v.expectedCommissionWon,
   },
   {
     key: "confirmed",
@@ -77,7 +96,8 @@ const PRIMARY: PrimaryDef[] = [
     accent: "bg-indigo-700",
     tier: 1,
     valueTone: "up",
-    format: (v) => formatWon(v.confirmedCommissionThisMonthWon),
+    suffix: "원",
+    value: (v) => v.confirmedCommissionThisMonthWon,
   },
   {
     key: "monthReg",
@@ -87,7 +107,8 @@ const PRIMARY: PrimaryDef[] = [
     accent: "bg-slate-500",
     tier: 2,
     valueTone: "up",
-    format: (v) => `${v.thisMonthRegisteredCount}건`,
+    suffix: "건",
+    value: (v) => v.thisMonthRegisteredCount,
   },
   {
     key: "assigned",
@@ -97,7 +118,8 @@ const PRIMARY: PrimaryDef[] = [
     accent: "bg-slate-400",
     tier: 2,
     valueTone: "neutral",
-    format: (v) => `${v.assignedCustomerCount}건`,
+    suffix: "건",
+    value: (v) => v.assignedCustomerCount,
   },
 ];
 
@@ -171,7 +193,7 @@ const PIPELINE: {
 ];
 
 const cardBase =
-  "group flex h-full min-h-full flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] leading-[1.65] dark:border-zinc-800 dark:bg-zinc-950";
+  "group flex h-full min-h-full flex-col overflow-hidden rounded-[20px] border border-slate-200/90 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.06)] transition-all duration-200 leading-[1.65] hover:-translate-y-[3px] hover:shadow-[0_20px_40px_rgba(15,23,42,0.1)] dark:border-zinc-800 dark:bg-zinc-950";
 
 function valueToneClass(tone: "up" | "risk" | "neutral" | undefined) {
   if (tone === "up") return "text-[#16a34a] dark:text-emerald-300";
@@ -214,19 +236,23 @@ export default function DashboardKpiCards({
               key={p.key}
               href={p.href}
               variants={kpiItem}
+              whileHover={reduce ? undefined : { scale: 1.02 }}
+              whileTap={reduce ? undefined : { scale: 0.99 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
               className={cn(cardBase, "crm-card-interactive min-h-[158px] cursor-pointer")}
             >
-              <div className={cn("h-1 w-full shrink-0", p.accent)} aria-hidden />
+              <div className="h-[3px] w-full shrink-0 bg-[linear-gradient(90deg,#2563eb,#60a5fa)]" aria-hidden />
               <div className="flex flex-1 flex-col p-5 pt-4">
                 <div className="text-[15px] font-medium leading-[1.6] text-[#666] dark:text-zinc-400">{p.label}</div>
-                <div
+                <AnimatedNumber
+                  value={values ? p.value(values) : 0}
+                  suffix={p.suffix}
+                  loading={loading || !values}
                   className={cn(
-                    "mt-3 tabular-nums text-[30px] font-extrabold leading-[1.6] tracking-tight",
+                    "mt-3 tabular-nums text-3xl font-bold leading-[1.6] tracking-tight sm:text-[34px]",
                     valueToneClass(p.valueTone)
                   )}
-                >
-                  {loading || !values ? <PrimarySkeleton tall={p.tier === 1} /> : p.format(values)}
-                </div>
+                />
                 <p className="mt-auto pt-3 text-[12px] leading-[1.6] text-[#999] dark:text-zinc-500">{p.hint}</p>
               </div>
             </MotionLink>
@@ -253,24 +279,27 @@ export default function DashboardKpiCards({
               key={s.key}
               href={s.href}
               variants={kpiItem}
+              whileHover={reduce ? undefined : { scale: 1.02 }}
+              whileTap={reduce ? undefined : { scale: 0.99 }}
+              transition={{ duration: 0.15, ease: "easeOut" }}
               className={cn(
                 cardBase,
                 "crm-card-interactive min-h-[108px] cursor-pointer",
                 s.compact && "lg:col-span-1 xl:opacity-95"
               )}
             >
-              <div className={cn("h-0.5 w-full shrink-0", s.accent)} aria-hidden />
+              <div className={cn("h-[3px] w-full shrink-0", s.accent)} aria-hidden />
               <div className="flex flex-1 flex-col px-3 py-3 sm:px-4 sm:py-4">
                 <div className="text-center text-[15px] font-medium leading-[1.6] text-[#666] dark:text-zinc-400">
                   {s.label}
                 </div>
                 <div
                   className={cn(
-                    "mt-2 text-center tabular-nums text-[30px] font-extrabold leading-[1.6]",
+                    "mt-2 text-center tabular-nums text-3xl font-bold leading-[1.6]",
                     valueToneClass(s.valueTone)
                   )}
                 >
-                  {loading || !pipeline ? <PipelineSkeleton /> : pipeline[s.valueKey]}
+                  {loading || !pipeline ? <PipelineSkeleton /> : <CountUp end={pipeline[s.valueKey]} duration={1} />}
                 </div>
                 <p className="mt-2 text-center text-[12px] leading-[1.6] text-[#999] dark:text-zinc-500">
                   {s.hint}
