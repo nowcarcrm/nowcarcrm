@@ -309,6 +309,13 @@ export type Lead = {
   // 화면에서 쓰기 좋은 "마지막 처리일"
   lastHandledAt: string; // ISO
 
+  /** AI 상담 어시스트 요약(옵션 · leads 컬럼) */
+  summaryText?: string;
+  /** AI 다음 행동 추천(옵션 · leads 컬럼) */
+  nextAction?: string;
+  /** AI 고객 의도 태그(옵션 · leads 컬럼) */
+  customerIntent?: "exploring" | "interested" | "closing" | "";
+
   /** 우선순위 · DB 없음 · CRM_EXTRA */
   leadPriority: LeadPriority;
   /** 취소/보류 시 필수(저장 시 검증) */

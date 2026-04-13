@@ -1039,6 +1039,74 @@ async function insertRowOmittingUnknownColumns(
   throw new Error(`[Supabase] ${table} insert: 반복 실패(알 수 없는 컬럼)`);
 }
 
+function isRelationTableUnavailableError(error: unknown): boolean {
+  const msg = formatSupabaseError(error).toLowerCase();
+  return (
+    msg.includes("consultations") ||
+    msg.includes("contracts") ||
+    msg.includes("export_progress") ||
+    msg.includes("schema cache") ||
+    msg.includes("could not find") ||
+    msg.includes("pgrst205") ||
+    msg.includes("42p01")
+  );
+}
+
+async function fetchLeadRelationsByIds(leadIds: string[]): Promise<{
+  consultations: ConsultationRow[];
+  contracts: ContractRow[];
+  exportRows: ExportProgressRow[];
+}> {
+  const ids = [...new Set(leadIds.map((id) => coerceDbStringId(id)).filter(Boolean))];
+  if (ids.length === 0) return { consultations: [], contracts: [], exportRows: [] };
+
+  const [consultationsRes, contractsRes, exportRes] = await Promise.all([
+    supabase.from("consultations").select("*").in("lead_id", ids),
+    supabase.from("contracts").select("*").in("lead_id", ids),
+    supabase.from("export_progress").select("*").in("lead_id", ids),
+  ]);
+
+  if (consultationsRes.error) {
+    if (isRelationTableUnavailableError(consultationsRes.error)) {
+      console.warn("[fetchLeadRelationsByIds] consultations unavailable", {
+        reason: formatSupabaseError(consultationsRes.error),
+      });
+    } else {
+      throw new Error(`상담 이력 조회 실패: ${formatSupabaseError(consultationsRes.error)}`);
+    }
+  }
+  if (contractsRes.error) {
+    if (isRelationTableUnavailableError(contractsRes.error)) {
+      console.warn("[fetchLeadRelationsByIds] contracts unavailable", {
+        reason: formatSupabaseError(contractsRes.error),
+      });
+    } else {
+      throw new Error(`계약 정보 조회 실패: ${formatSupabaseError(contractsRes.error)}`);
+    }
+  }
+  if (exportRes.error) {
+    if (isRelationTableUnavailableError(exportRes.error)) {
+      console.warn("[fetchLeadRelationsByIds] export_progress unavailable", {
+        reason: formatSupabaseError(exportRes.error),
+      });
+    } else {
+      throw new Error(`출고 정보 조회 실패: ${formatSupabaseError(exportRes.error)}`);
+    }
+  }
+
+  return {
+    consultations: ((consultationsRes.data ?? []) as ConsultationRow[]).filter((r) =>
+      ids.includes(coerceDbStringId(r.lead_id))
+    ),
+    contracts: ((contractsRes.data ?? []) as ContractRow[]).filter((r) =>
+      ids.includes(coerceDbStringId(r.lead_id))
+    ),
+    exportRows: ((exportRes.data ?? []) as ExportProgressRow[]).filter((r) =>
+      ids.includes(coerceDbStringId(r.lead_id))
+    ),
+  };
+}
+
 /** 일반 영업: 본인 `manager_user_id` 만. 관리자 운영 화면(`operationalFullAccess`)만 전체. */
 export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
   ensureSupabaseConfigured();
@@ -1082,9 +1150,21 @@ export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
 
   const leadRows = (leadsData ?? []) as LeadRow[];
   if (leadRows.length === 0) return [];
-  // 운영 환경에서 relation 테이블(consultations/contracts/export_progress)이 없을 수 있어
-  // 목록 조회는 leads 단일 테이블만 사용한다.
-  return leadRows.map((row) => mapRowToLead(row, [], null, null));
+  const leadIds = leadRows.map((row) => coerceDbStringId(row.id));
+  const { consultations, contracts, exportRows } = await fetchLeadRelationsByIds(leadIds);
+  const contractByLeadId = new Map<string, ContractRow>();
+  const exportByLeadId = new Map<string, ExportProgressRow>();
+  for (const c of contracts) contractByLeadId.set(coerceDbStringId(c.lead_id), c);
+  for (const e of exportRows) exportByLeadId.set(coerceDbStringId(e.lead_id), e);
+
+  return leadRows.map((row) =>
+    mapRowToLead(
+      row,
+      consultations,
+      contractByLeadId.get(coerceDbStringId(row.id)) ?? null,
+      exportByLeadId.get(coerceDbStringId(row.id)) ?? null
+    )
+  );
 }
 
 /** DB 컬럼은 `name`, `phone` (고객명 / 연락처). 표시·API용 별칭은 hit 객체 필드명으로 매핑합니다. */
@@ -1180,8 +1260,9 @@ export async function fetchLeadById(
   }
   const row = rowData as LeadRow | null;
   if (!row) return null;
-  // 상세 조회도 임시로 leads 단일 테이블만 사용한다.
-  return mapRowToLead(row, [], null, null);
+  const rowLeadId = coerceDbStringId(row.id);
+  const { consultations, contracts, exportRows } = await fetchLeadRelationsByIds([rowLeadId]);
+  return mapRowToLead(row, consultations, contracts[0] ?? null, exportRows[0] ?? null);
 }
 
 export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead> {
@@ -1286,8 +1367,31 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
     throw new Error(`고객 수정 실패: ${formatSupabaseError(error)}`);
   }
 
-  // logActivity / logStatusHistory 미호출 — crm_activity_logs·lead_status_history 요청 없음(leads update만).
-  // 운영 DB에서 relation 테이블이 없을 수 있어 updateLead는 leads 단일 테이블만 갱신한다.
+  const contractPayload = toContractRow(leadForUpdate);
+  console.log("contract payload:", {
+    lead_id: leadForUpdate.id,
+    commission: contractPayload?.fee ?? null,
+    commission_rate: leadForUpdate.contract?.feePercent ?? null,
+    fee: contractPayload?.fee ?? null,
+    contract_date: contractPayload?.contract_date ?? null,
+    delivered_at: leadForUpdate.exportProgress?.deliveredAt ?? leadForUpdate.deliveredAt ?? null,
+    category: null,
+    customer_stage: leadForUpdate.counselingStatus,
+    consultation_result: leadForUpdate.counselingStatus,
+  });
+
+  try {
+    await replaceLeadRelations(leadForUpdate);
+  } catch (relError) {
+    if (isRelationTableUnavailableError(relError)) {
+      console.warn("[updateLead] relation table unavailable; kept leads update only", {
+        leadId: leadForUpdate.id,
+        reason: formatSupabaseError(relError),
+      });
+      return;
+    }
+    throw relError;
+  }
 }
 
 export async function deleteLead(leadId: string, scope?: ViewerScope) {

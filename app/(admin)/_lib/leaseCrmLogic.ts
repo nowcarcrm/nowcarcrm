@@ -660,15 +660,16 @@ export function computeDashboardMetrics(leads: Lead[]) {
   ).length;
 
   /**
-   * 이번 달 확정 반영 수수료: 인도완료이면서 인도/상태 기준일이 이번 달인 건의 수수료 합계
+   * 이번 달 수수료: 계약 파이프라인 고객 중 계약일(contractDate) 기준으로 합산.
+   * 계약 탭 저장(금액/퍼센트)과 대시보드 집계 기준을 동일하게 맞춘다.
    */
   const thisMonthConfirmedCommissionWon = leads.reduce((sum, l) => {
-    if (l.counselingStatus !== "인도완료") return sum;
-    const refRaw =
-      (l.deliveredAt?.trim() || l.statusUpdatedAt?.trim() || l.contract?.contractDate?.trim() || "").trim();
-    if (!refRaw) return sum;
-    if (!toLocalDateKey(refRaw).startsWith(thisMonthKeyPrefix)) return sum;
-    const fee = l.contract ? effectiveContractFeeForMetrics(l.contract) : expectedFeeWonForLead(l);
+    if (!isContractPipelineCounselingStatus(l.counselingStatus)) return sum;
+    if (!l.contract) return sum;
+    const contractDate = String(l.contract.contractDate ?? "").trim();
+    if (!contractDate) return sum;
+    if (!toLocalDateKey(contractDate).startsWith(thisMonthKeyPrefix)) return sum;
+    const fee = effectiveContractFeeForMetrics(l.contract);
     return sum + fee;
   }, 0);
 

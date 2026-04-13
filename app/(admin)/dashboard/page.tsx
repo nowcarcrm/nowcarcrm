@@ -241,10 +241,12 @@ export default function DashboardPage() {
                 ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
                 : next;
             await updateLead(payload, { role: profile.role, userId: profile.userId });
-            setModalLead(payload);
-            setLeads((prev) =>
-              prev ? prev.map((l) => (l.id === payload.id ? payload : l)) : prev
-            );
+            const [refreshedLead, refreshedLeads] = await Promise.all([
+              fetchLeadById(payload.id, { role: profile.role, userId: profile.userId }),
+              loadLeadsFromStorage({ role: profile.role, userId: profile.userId }),
+            ]);
+            setModalLead(refreshedLead ?? payload);
+            setLeads(refreshedLeads);
             const nextPath = pathnameAfterCounselingStatusChange(payload.counselingStatus);
             if (pathname !== nextPath) {
               router.push(nextPath);
@@ -255,7 +257,11 @@ export default function DashboardPage() {
               try {
                 await deleteLeadById(id, { role: profile.role, userId: profile.userId });
                 setModalLead(null);
-                setLeads((prev) => (prev ? prev.filter((l) => l.id !== id) : prev));
+                const refreshed = await loadLeadsFromStorage({
+                  role: profile.role,
+                  userId: profile.userId,
+                });
+                setLeads(refreshed);
                 toast.success("삭제되었습니다.");
               } catch (e) {
                 toast.error(e instanceof Error ? e.message : "삭제에 실패했습니다.");

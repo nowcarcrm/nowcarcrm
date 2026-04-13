@@ -386,7 +386,11 @@ function LeadsCategoryView({
         role: profile.role,
         userId: profile.userId,
       });
-      commitLeads((leads ?? []).map((l) => (l.id === payload.id ? payload : l)));
+      const refreshed = await loadLeadsFromStorage({
+        role: profile.role,
+        userId: profile.userId,
+      });
+      commitLeads(refreshed);
       toast.success("저장 완료되었습니다.");
       const nextPath = pathnameAfterCounselingStatusChange(next.counselingStatus, categoryKey);
       if (pathname !== nextPath) {

@@ -635,6 +635,17 @@ export default function LeadDetailModal({
       updatedAt: nextIso,
       lastHandledAt: nextIso,
     });
+    console.log("contract payload:", payload);
+    console.log("[contract payload fields]", {
+      commission: payload.contract?.fee ?? null,
+      commission_rate: payload.contract?.feePercent ?? null,
+      fee: payload.contract?.fee ?? null,
+      contract_date: payload.contract?.contractDate ?? null,
+      delivered_at: payload.deliveredAt ?? payload.exportProgress?.deliveredAt ?? null,
+      category: null,
+      customer_stage: payload.counselingStatus,
+      consultation_result: payload.counselingStatus,
+    });
     devLog("[계약 저장] 최종 Lead payload (모달 → onUpdate / handleUpdateLead)", payload);
     devLog("[계약 저장] 계약 탭 contract 필드만", payload.contract);
     devLog(
