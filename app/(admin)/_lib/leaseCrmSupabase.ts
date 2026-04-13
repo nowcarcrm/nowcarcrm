@@ -425,6 +425,10 @@ export type LeadSupabaseScope = {
 };
 
 type ViewerScope = LeadSupabaseScope;
+export type UpdateLeadOptions = {
+  /** true일 때만 consultations delete/insert 수행 (기본 true) */
+  syncConsultations?: boolean;
+};
 
 /** 운영 화면 전체 접근: 관리자 + 명시 플래그만 인정 */
 export function hasOperationalFullAccess(scope?: ViewerScope): boolean {
@@ -1333,7 +1337,7 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
   return createdLead;
 }
 
-export async function updateLead(lead: Lead, scope?: ViewerScope) {
+export async function updateLead(lead: Lead, scope?: ViewerScope, options?: UpdateLeadOptions) {
   ensureSupabaseConfigured();
   const filterByManager = shouldFilterLeadsByManager(scope);
   const scopeUid = nonEmptyUserId(scope?.userId) ?? "";
@@ -1388,7 +1392,7 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
   });
 
   try {
-    await replaceLeadRelations(leadForUpdate);
+    await replaceLeadRelations(leadForUpdate, options);
   } catch (relError) {
     if (isRelationTableUnavailableError(relError)) {
       console.warn("[updateLead] relation table unavailable; kept leads update only", {
@@ -1518,26 +1522,32 @@ export async function fetchMaxConsultationCreatedAtByLeadIds(
   return out;
 }
 
-async function replaceLeadRelations(lead: Lead) {
+async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
   const leadId = coerceDbStringId(lead.id);
   if (!leadId) throw new Error("leadId 없음");
-  await Promise.all([
-    supabase.from("consultations").delete().eq("lead_id", leadId),
-    supabase.from("export_progress").delete().eq("lead_id", leadId),
-  ]);
+  const shouldSyncConsultations = options?.syncConsultations !== false;
+  if (shouldSyncConsultations) {
+    await supabase.from("consultations").delete().eq("lead_id", leadId);
+  }
+  await supabase.from("export_progress").delete().eq("lead_id", leadId);
 
-  const consultations = toConsultationRows(lead);
-  if (consultations.length > 0) {
-    const { error: cErr } = await supabase.from("consultations").insert(consultations);
-    if (cErr) {
-      console.error("[Supabase] consultations insert failed", {
-        leadId: lead.id,
-        counselingStatus: lead.counselingStatus,
-        rowCount: consultations.length,
-        firstRow: consultations[0],
-        error: cErr,
-      });
-      throw cErr;
+  if (shouldSyncConsultations) {
+    const consultations = toConsultationRows(lead);
+    console.log("consultations payload:", consultations);
+    if (consultations.length > 0) {
+      const { error: cErr } = await supabase.from("consultations").insert(consultations);
+      if (cErr) {
+        const detail = postgrestLikeFields(cErr);
+        console.error("[Supabase] consultations insert failed", {
+          leadId: lead.id,
+          counselingStatus: lead.counselingStatus,
+          rowCount: consultations.length,
+          firstRow: consultations[0],
+          error: cErr,
+        });
+        console.error("[Supabase] consultations insert failed detail", detail);
+        throw cErr;
+      }
     }
   }
 

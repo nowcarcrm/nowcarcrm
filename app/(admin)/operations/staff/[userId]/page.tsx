@@ -291,12 +291,12 @@ export default function StaffCustomerDetailPage() {
           key={modalLead.id}
           lead={modalLead}
           onClose={() => setModalLead(null)}
-          onUpdate={async (next) => {
+          onUpdate={async (next, options) => {
             const payload =
               profile.role === "staff"
                 ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
                 : next;
-            await updateLead(payload, opScope);
+            await updateLead(payload, opScope, options);
             setModalLead(payload);
             setLeads((prev) => {
               if (!prev) return prev;

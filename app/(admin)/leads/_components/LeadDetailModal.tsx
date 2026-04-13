@@ -329,7 +329,10 @@ export default function LeadDetailModal({
 }: {
   lead: Lead;
   onClose: () => void;
-  onUpdate: (next: Lead) => void | Promise<void>;
+  onUpdate: (
+    next: Lead,
+    options?: { syncConsultations?: boolean }
+  ) => void | Promise<void>;
   onDelete: (id: string) => void;
 }) {
   type TabKey = "basic" | "records" | "quotes" | "contract" | "export";
@@ -501,7 +504,7 @@ export default function LeadDetailModal({
     devLog("[LeadDetailModal] persist 저장 직전 payload", payload);
     setSaving(true);
     try {
-      await Promise.resolve(onUpdate(payload));
+      await Promise.resolve(onUpdate(payload, { syncConsultations: false }));
       setDraft(payload);
       toast.success("저장했습니다.");
     } catch (error) {
@@ -553,7 +556,7 @@ export default function LeadDetailModal({
     devLog("[LeadDetailModal] 기본정보 저장 직전 payload", next);
     setSaving(true);
     try {
-      await Promise.resolve(onUpdate(next));
+      await Promise.resolve(onUpdate(next, { syncConsultations: false }));
       setDraft(next);
       toast.success("저장했습니다.");
     } catch (error) {
@@ -655,7 +658,7 @@ export default function LeadDetailModal({
     setSaving(true);
     try {
       const toSave = leadPayloadForServer(payload);
-      await Promise.resolve(onUpdate(toSave));
+      await Promise.resolve(onUpdate(toSave, { syncConsultations: false }));
       devLog("[계약 저장] onUpdate 완료(서버 성공)", {
         leadId: toSave.id,
         contract: toSave.contract,
@@ -707,7 +710,7 @@ export default function LeadDetailModal({
     setSaving(true);
     try {
       const toSave = leadPayloadForServer(payload);
-      await Promise.resolve(onUpdate(toSave));
+      await Promise.resolve(onUpdate(toSave, { syncConsultations: false }));
       setDraft(toSave);
       toast.success("저장했습니다.");
     } catch (error) {
@@ -1353,7 +1356,7 @@ export default function LeadDetailModal({
                       void (async () => {
                         try {
                           const toSave = leadPayloadForServer(nextLead);
-                          await Promise.resolve(onUpdate(toSave));
+                          await Promise.resolve(onUpdate(toSave, { syncConsultations: true }));
                           setDraft(toSave);
                           setRecordCounselingStatusSideEffect("");
                         } catch (err) {

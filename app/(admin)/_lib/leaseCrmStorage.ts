@@ -6,6 +6,7 @@ import {
   deleteLead as deleteLeadInDb,
   fetchLeads,
   seedLeadsIfEmpty,
+  type UpdateLeadOptions,
   updateLead as updateLeadInDb,
 } from "./leaseCrmSupabase";
 import { ensureDefaultUsers } from "./usersSupabase";
@@ -56,8 +57,8 @@ export async function createLead(lead: Lead, scope?: LeadViewerScope) {
   return createLeadInDb(lead, scope);
 }
 
-export async function updateLead(lead: Lead, scope?: LeadViewerScope) {
-  await updateLeadInDb(applyNextContactSnapshotFromRecords(lead), scope);
+export async function updateLead(lead: Lead, scope?: LeadViewerScope, options?: UpdateLeadOptions) {
+  await updateLeadInDb(applyNextContactSnapshotFromRecords(lead), scope, options);
 }
 
 export async function deleteLeadById(leadId: string, scope?: LeadViewerScope) {

@@ -345,7 +345,7 @@ function LeadsCategoryView({
     await handleUpdateLead(next);
   }
 
-  async function handleUpdateLead(next: Lead) {
+  async function handleUpdateLead(next: Lead, options?: { syncConsultations?: boolean }) {
     const persistPayloadLog = {
       id: next.id,
       counselingStatus: next.counselingStatus,
@@ -385,7 +385,7 @@ function LeadsCategoryView({
       await updateLead(payload, {
         role: profile.role,
         userId: profile.userId,
-      });
+      }, options);
       const refreshed = await loadLeadsFromStorage({
         role: profile.role,
         userId: profile.userId,

@@ -248,7 +248,7 @@ export default function DashboardPage() {
           key={modalLead.id}
           lead={modalLead}
           onClose={() => setModalLead(null)}
-          onUpdate={async (next) => {
+          onUpdate={async (next, options) => {
             if (profile.role === "staff") {
               const myName = profile.name?.trim() ?? "";
               if (next.managerUserId != null && next.managerUserId !== profile.userId) {
@@ -264,7 +264,7 @@ export default function DashboardPage() {
               profile.role === "staff"
                 ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
                 : next;
-            await updateLead(payload, { role: profile.role, userId: profile.userId });
+            await updateLead(payload, { role: profile.role, userId: profile.userId }, options);
             const [refreshedLead, refreshedLeads] = await Promise.all([
               fetchLeadById(payload.id, { role: profile.role, userId: profile.userId }),
               loadLeadsFromStorage({ role: profile.role, userId: profile.userId }),
