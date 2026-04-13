@@ -1350,6 +1350,9 @@ export async function updateLead(lead: Lead, scope?: ViewerScope) {
   }
   const leadLocked = await prepareLeadForSupabaseWrite(lead, scope);
   const leadForUpdate = normalizeLeadForPersistence(leadLocked);
+  if (!coerceDbStringId(leadForUpdate.id)) {
+    throw new Error("leadId 없음");
+  }
 
   const payload = toLeadUpdateRow(leadForUpdate);
   devLog("[Supabase] leads update payload (계약 탭 필드는 포함되지 않음):", payload);
@@ -1512,10 +1515,11 @@ export async function fetchMaxConsultationCreatedAtByLeadIds(
 }
 
 async function replaceLeadRelations(lead: Lead) {
+  const leadId = coerceDbStringId(lead.id);
+  if (!leadId) throw new Error("leadId 없음");
   await Promise.all([
-    supabase.from("consultations").delete().eq("lead_id", lead.id),
-    supabase.from("contracts").delete().eq("lead_id", lead.id),
-    supabase.from("export_progress").delete().eq("lead_id", lead.id),
+    supabase.from("consultations").delete().eq("lead_id", leadId),
+    supabase.from("export_progress").delete().eq("lead_id", leadId),
   ]);
 
   const consultations = toConsultationRows(lead);
@@ -1536,27 +1540,57 @@ async function replaceLeadRelations(lead: Lead) {
   const contract = toContractRow(lead);
   if (contract) {
     logContractDeliveryDateResolution(lead);
-    devLog("[Supabase] contracts INSERT 의도 payload (toContractRow 전체)", contract);
+    const cleanPayload = Object.fromEntries(
+      Object.entries(contract).filter(([, v]) => v !== undefined && v !== null)
+    );
+    console.log("=== 계약고객 저장 시작 ===");
+    console.log("leadId:", leadId);
+    console.log("raw payload:", contract);
+    console.log("cleanPayload:", cleanPayload);
+    console.log("update payload:", cleanPayload);
+    devLog("[Supabase] contracts UPDATE 의도 payload (cleanPayload)", cleanPayload);
     try {
-      const { omitted, finalPayload } = await insertRowOmittingUnknownColumns(
-        "contracts",
-        contract
-      );
-      devLog("[Supabase] contracts INSERT 실제 적용된 body (전송·저장됨)", finalPayload);
-      if (omitted.length > 0) {
-        const 누락값요약 = Object.fromEntries(omitted.map((k) => [k, contract[k]]));
-        console.warn(
-          "[계약 저장] INSERT는 성공했으나 원격 DB에 없는 컬럼은 저장되지 않았습니다. 재조회 시 해당 값이 비거나 기본값으로 보일 수 있습니다.",
-          {
-            제외된_DB_컬럼: omitted,
-            CRM_필드_안내: omitted.map((k) => CONTRACT_DB_COLUMN_HINT[k] ?? k),
-            제외직전_의도값: 누락값요약,
-          }
-        );
+      const { data: existing, error: existingErr } = await supabase
+        .from("contracts")
+        .select("id")
+        .eq("lead_id", leadId)
+        .maybeSingle();
+      if (existingErr) throw existingErr;
+      if (existing) {
+        const { data: updateData, error: updateErr } = await supabase
+          .from("contracts")
+          .update(cleanPayload)
+          .eq("lead_id", leadId)
+          .select("id, lead_id, fee, contract_date, status")
+          .maybeSingle();
+        console.log("contract update result:", updateData);
+        if (updateErr) {
+          console.error("contract update error:", updateErr);
+          throw updateErr;
+        }
       } else {
-        devLog(
-          "[계약 저장] contracts: 의도한 컬럼이 스키마 제약 없이 모두 INSERT body에 포함되었습니다."
-        );
+        const { omitted, finalPayload } = await insertRowOmittingUnknownColumns("contracts", contract);
+        devLog("[Supabase] contracts INSERT 실제 적용된 body (전송·저장됨)", finalPayload);
+        if (omitted.length > 0) {
+          const 누락값요약 = Object.fromEntries(omitted.map((k) => [k, contract[k]]));
+          console.warn(
+            "[계약 저장] INSERT는 성공했으나 원격 DB에 없는 컬럼은 저장되지 않았습니다. 재조회 시 해당 값이 비거나 기본값으로 보일 수 있습니다.",
+            {
+              제외된_DB_컬럼: omitted,
+              CRM_필드_안내: omitted.map((k) => CONTRACT_DB_COLUMN_HINT[k] ?? k),
+              제외직전_의도값: 누락값요약,
+            }
+          );
+        }
+        const { data: insertedRow, error: insertedReadErr } = await supabase
+          .from("contracts")
+          .select("id, lead_id, fee, contract_date, status")
+          .eq("lead_id", leadId)
+          .maybeSingle();
+        if (insertedReadErr) {
+          console.error("contract update error:", insertedReadErr);
+        }
+        console.log("contract update result:", insertedRow);
       }
     } catch (kErr) {
       console.error("계약 저장 오류", kErr, contract);

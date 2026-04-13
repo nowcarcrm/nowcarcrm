@@ -92,6 +92,30 @@ export default function DashboardPage() {
     };
   }, [leads, metrics]);
 
+  useEffect(() => {
+    if (!leads || !metrics) return;
+    const now = new Date();
+    const dateRange = {
+      from: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-01`,
+      to: now.toISOString().slice(0, 10),
+    };
+    const statusFilter = {
+      expected: "취소 제외 + 계약/견적 수수료",
+      confirmed: "계약 파이프라인 + contract_date 이번달",
+    };
+    const sumColumn = {
+      expected: "contract.fee(or final_fee_amount)/quoteHistory.feeAmount",
+      confirmed: "contract.fee(or final_fee_amount)",
+    };
+    console.log("dashboard commission query params:", { dateRange, statusFilter, sumColumn });
+    console.log("dashboard commission result:", {
+      expectedCommissionWon: metrics.expectedCommissionTotal,
+      confirmedCommissionThisMonthWon: metrics.thisMonthConfirmedCommissionWon,
+      thisMonthRegisteredCount: metrics.thisMonthRegisteredCount,
+      leadCount: leads.length,
+    });
+  }, [leads, metrics]);
+
   const todayContactLeads = useMemo(() => {
     if (!leads) return [];
     return pickTodayContactLeads(leads, 6);

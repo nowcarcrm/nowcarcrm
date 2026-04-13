@@ -109,7 +109,9 @@ export async function POST(req: Request) {
         .from("leads")
         .select("id,name,car_model,status,next_contact_at,manager_user_id")
         .eq("id", leadId);
-      if (role !== "admin") leadQuery = leadQuery.eq("manager_user_id", requester.id);
+      if (role !== "admin") {
+        leadQuery = leadQuery.eq("manager_user_id", requester.id);
+      }
       const { data: lead, error: leadErr } = await leadQuery.maybeSingle();
       if (leadErr) {
         return NextResponse.json({ error: `고객 조회 실패: ${leadErr.message}` }, { status: 500 });
@@ -136,7 +138,9 @@ export async function POST(req: Request) {
     }
 
     const apiKey = process.env.OPENAI_API_KEY?.trim();
-    if (!apiKey) return NextResponse.json({ error: "OPENAI_API_KEY가 설정되지 않았습니다." }, { status: 503 });
+    if (!apiKey) {
+      return NextResponse.json({ error: "OPENAI_API_KEY가 설정되지 않았습니다." }, { status: 503 });
+    }
     const model = (process.env.AI_ASSIST_MODEL ?? "gpt-4o-mini").trim() || "gpt-4o-mini";
 
     const userPrompt = [
@@ -153,7 +157,10 @@ export async function POST(req: Request) {
     const timeout = setTimeout(() => controller.abort(), 1200);
     const aiRes = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
       signal: controller.signal,
       body: JSON.stringify({
         model,
@@ -209,7 +216,9 @@ export async function POST(req: Request) {
           status: leadStatus,
         })
         .eq("id", leadId);
-      if (upErr) console.error("[ai/assist] lead update failed", upErr);
+      if (upErr) {
+        console.error("[ai/assist] lead update failed", upErr);
+      }
     }
 
     return NextResponse.json({ ok: true, model, result });

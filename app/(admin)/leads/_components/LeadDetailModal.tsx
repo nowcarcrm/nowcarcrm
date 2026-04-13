@@ -51,7 +51,7 @@ import {
 } from "../../_lib/leaseCrmContractPersist";
 import { counselingStatusFromExportProgress } from "../../_lib/leaseCrmLogic";
 import { applyStaffLeadClientLocks } from "../../_lib/leaseCrmStorage";
-import { formatSupabaseError } from "../../_lib/leaseCrmSupabase";
+import { fetchLeadById, formatSupabaseError } from "../../_lib/leaseCrmSupabase";
 import { EMPLOYEES } from "../../_lib/leaseCrmSeed";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
@@ -669,11 +669,19 @@ export default function LeadDetailModal({
           extra = true;
         }
       }
-      if (!extra) toast.success("저장했습니다.");
+      if (!extra) toast.success("계약 고객 정보가 저장되었습니다.");
       setDraft(toSave);
+      if (profile) {
+        try {
+          const fresh = await fetchLeadById(toSave.id, { role: profile.role, userId: profile.userId });
+          if (fresh) setDraft(ensureLeadShape(fresh));
+        } catch (reloadErr) {
+          console.warn("[LeadDetailModal] 계약 저장 후 재조회 실패", reloadErr);
+        }
+      }
     } catch (error) {
       console.error("계약 저장 오류", error, payload);
-      toast.error("저장하지 못했습니다.");
+      toast.error("계약 고객 정보 저장 중 오류가 발생했습니다.");
     } finally {
       setSaving(false);
     }
