@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { LayoutGroup, motion } from "framer-motion";
+import { LayoutGroup, motion, useReducedMotion } from "framer-motion";
 import GlobalLeadSearch from "./GlobalLeadSearch";
+import CrmPageTransition from "../motion/CrmPageTransition";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -167,6 +168,7 @@ const PAGE_TITLE_ROUTES: { prefix: string; title: string }[] = [
   { prefix: "/leads/new-db", title: "신규 고객" },
   { prefix: "/leads/aftercare", title: "사후관리 고객" },
   { prefix: "/operations/staff-overview", title: "직원 현황" },
+  { prefix: "/operations/staff", title: "직원 담당 고객" },
   { prefix: "/operations/all-customers", title: "전체 상담 고객" },
   { prefix: "/dashboard", title: "대시보드" },
   { prefix: "/notices", title: "공지사항" },
@@ -253,24 +255,25 @@ function SidebarNavLink({
   active: boolean;
   onNavigate?: () => void;
 }) {
+  const reduce = useReducedMotion();
   return (
     <Link href={item.href} onClick={onNavigate} className="relative block rounded-xl outline-none">
       <motion.div
         className={cn(
-          "group relative overflow-hidden rounded-xl py-2.5 pl-3 pr-2.5 transition-colors",
+          "group relative overflow-hidden rounded-xl py-2.5 pl-3 pr-2.5 transition-colors duration-200 ease-out",
           active
             ? "bg-gradient-to-r from-sky-500/18 to-transparent text-white shadow-[inset_0_0_0_1px_rgba(56,189,248,0.22),0_1px_12px_rgba(15,23,42,0.25)]"
-            : "text-slate-300 hover:bg-white/[0.06]"
+            : "text-slate-300 hover:bg-white/[0.08] hover:text-white"
         )}
-        whileHover={{ x: active ? 0 : 4 }}
-        whileTap={{ scale: 0.985 }}
-        transition={{ type: "spring", stiffness: 420, damping: 28 }}
+        whileHover={reduce || active ? undefined : { x: 3 }}
+        whileTap={{ scale: 0.987 }}
+        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
       >
         {active ? (
           <motion.span
             layoutId="sidebar-active-bar"
             className="absolute left-0 top-1/2 h-7 w-[3px] -translate-y-1/2 rounded-r-full bg-gradient-to-b from-sky-300 to-sky-500 shadow-[0_0_12px_rgba(56,189,248,0.45)]"
-            transition={{ type: "spring", stiffness: 380, damping: 32 }}
+            transition={{ type: "tween", duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             aria-hidden
           />
         ) : (
@@ -608,7 +611,7 @@ export default function AdminShell({
 
             <main className="min-w-0 flex-1">
               <div className="mx-auto w-full max-w-[1760px] px-4 py-5 sm:px-6 sm:py-6 lg:px-10 lg:py-8">
-                {children}
+                <CrmPageTransition>{children}</CrmPageTransition>
               </div>
             </main>
           </div>

@@ -27,8 +27,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   if (loading || !profile) {
     return (
-      <div className="grid min-h-dvh place-items-center text-sm text-zinc-500">
-        인증 상태 확인 중...
+      <div className="grid min-h-dvh place-items-center px-4">
+        <div className="w-full max-w-[280px] space-y-4" aria-busy="true" aria-label="인증 상태 확인 중">
+          <div className="crm-skeleton mx-auto h-3 w-[45%] rounded-md" />
+          <div className="crm-skeleton h-28 w-full rounded-2xl" />
+          <div className="space-y-2">
+            <div className="crm-skeleton h-2.5 w-full rounded-md" />
+            <div className="crm-skeleton h-2.5 w-4/5 rounded-md" />
+          </div>
+          <p className="text-center text-[13px] text-zinc-500">인증 상태 확인 중…</p>
+        </div>
       </div>
     );
   }

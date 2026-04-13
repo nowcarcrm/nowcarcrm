@@ -1,114 +1,264 @@
 "use client";
 
 import Link from "next/link";
+import { motion, useReducedMotion } from "framer-motion";
+import { dashboardKpiItem, dashboardKpiStagger } from "@/app/_lib/crmMotion";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
 export type DashboardKpiValues = {
-  todayNew: number;
+  expectedCommissionWon: number;
+  confirmedCommissionThisMonthWon: number;
+  thisMonthRegisteredCount: number;
+  assignedCustomerCount: number;
+};
+
+/** `computePipelineStageCounts`와 동일 필드 */
+export type PipelineStageCounts = {
+  newDb: number;
   counseling: number;
   contract: number;
   exportProgress: number;
   deliveryComplete: number;
+  hold: number;
+  cancel: number;
+  unresponsive: number;
   total: number;
-  /**
-   * 예상 수수료(원): 취소 제외, 계약 탭 수수료(스냅샷 우선) 또는 견적 이력 최신 fee 합산
-   */
-  expectedCommissionWon: number;
 };
 
-type Item = {
+function formatWon(n: number): string {
+  return `${new Intl.NumberFormat("ko-KR").format(n)}원`;
+}
+
+function PrimarySkeleton({ tall }: { tall?: boolean }) {
+  return (
+    <span
+      className={cn("crm-skeleton block", tall ? "h-12 w-36" : "h-9 w-16")}
+      aria-hidden
+    />
+  );
+}
+
+function PipelineSkeleton() {
+  return <span className="crm-skeleton mx-auto block h-7 w-10" aria-hidden />;
+}
+
+const MotionLink = motion(Link);
+
+type PrimaryDef = {
   key: string;
   label: string;
+  hint: string;
   href: string;
-  valueKey: keyof DashboardKpiValues;
+  accent: string;
+  tier: 1 | 2;
+  format: (v: DashboardKpiValues) => string;
 };
 
-const ITEMS: Item[] = [
-  { key: "today", label: "오늘 신규 고객", href: "/leads/new-db?fromDash=todayNew", valueKey: "todayNew" },
-  { key: "counsel", label: "상담 중", href: "/leads/counseling-progress", valueKey: "counseling" },
-  { key: "contract", label: "계약 진행", href: "/leads/contract-progress", valueKey: "contract" },
-  { key: "export", label: "출고 진행", href: "/leads/export-progress", valueKey: "exportProgress" },
-  { key: "delivery", label: "인도 완료", href: "/leads/delivery-complete", valueKey: "deliveryComplete" },
-  { key: "total", label: "총 고객", href: "/leads/new-db", valueKey: "total" },
+const PRIMARY: PrimaryDef[] = [
+  {
+    key: "expected",
+    label: "이번달 예상 수수료",
+    hint: "입력된 수수료 기준 예상 합계",
+    href: "/leads/contract-progress",
+    accent: "bg-[#1a365d]",
+    tier: 1,
+    format: (v) => formatWon(v.expectedCommissionWon),
+  },
+  {
+    key: "confirmed",
+    label: "이번달 총 수수료",
+    hint: "이번달 확정 반영 수수료",
+    href: "/leads/delivery-complete",
+    accent: "bg-indigo-700",
+    tier: 1,
+    format: (v) => formatWon(v.confirmedCommissionThisMonthWon),
+  },
+  {
+    key: "monthReg",
+    label: "이번달 등록 고객 수",
+    hint: "이번달 새로 등록된 고객",
+    href: "/leads/new-db",
+    accent: "bg-slate-500",
+    tier: 2,
+    format: (v) => `${v.thisMonthRegisteredCount}건`,
+  },
+  {
+    key: "assigned",
+    label: "현재 담당 고객 수",
+    hint: "현재 내가 관리 중인 전체 고객",
+    href: "/leads/new-db",
+    accent: "bg-slate-400",
+    tier: 2,
+    format: (v) => `${v.assignedCustomerCount}건`,
+  },
 ];
+
+const PIPELINE: {
+  key: string;
+  label: string;
+  hint: string;
+  href: string;
+  accent: string;
+  valueKey: keyof PipelineStageCounts;
+  compact?: boolean;
+}[] = [
+  { key: "new", label: "신규", hint: "새로 유입된 고객", href: "/leads/new-db", accent: "bg-slate-500", valueKey: "newDb" },
+  {
+    key: "counsel",
+    label: "상담중",
+    hint: "현재 상담 진행 중",
+    href: "/leads/counseling-progress",
+    accent: "bg-sky-600",
+    valueKey: "counseling",
+  },
+  {
+    key: "contract",
+    label: "계약",
+    hint: "계약 진행 또는 확정 고객",
+    href: "/leads/contract-progress",
+    accent: "bg-indigo-600",
+    valueKey: "contract",
+  },
+  {
+    key: "export",
+    label: "출고",
+    hint: "출고 일정 진행 고객",
+    href: "/leads/export-progress",
+    accent: "bg-violet-600",
+    valueKey: "exportProgress",
+  },
+  {
+    key: "delivery",
+    label: "인도완료",
+    hint: "인도가 완료된 고객",
+    href: "/leads/delivery-complete",
+    accent: "bg-emerald-600",
+    valueKey: "deliveryComplete",
+  },
+  { key: "hold", label: "보류", hint: "보류 상태 고객", href: "/leads/hold", accent: "bg-amber-500", valueKey: "hold" },
+  {
+    key: "cancel",
+    label: "취소",
+    hint: "취소 처리 고객",
+    href: "/leads/cancel",
+    accent: "bg-rose-600/90",
+    valueKey: "cancel",
+  },
+  {
+    key: "away",
+    label: "부재",
+    hint: "미응답 · 부재 상태",
+    href: "/leads/unresponsive",
+    accent: "bg-amber-600/80",
+    valueKey: "unresponsive",
+    compact: true,
+  },
+];
+
+const cardBase =
+  "group flex h-full min-h-full flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-zinc-800 dark:bg-zinc-950";
 
 export default function DashboardKpiCards({
   loading,
   values,
+  pipeline,
 }: {
   loading: boolean;
   values: DashboardKpiValues | null;
+  pipeline: PipelineStageCounts | null;
 }) {
+  const reduceMotion = useReducedMotion();
+  const reduce = reduceMotion === true;
+  const kpiStagger = dashboardKpiStagger(reduce);
+  const kpiItem = dashboardKpiItem(reduce);
+
   return (
-    <section aria-label="핵심 지표">
-      <div className="mb-4 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end sm:justify-between">
-        <div className="min-w-0 flex-1">
+    <div className="space-y-10">
+      {/* 1단 — 핵심 돈·유입 */}
+      <section aria-label="핵심 성과 지표">
+        <div className="mb-4">
           <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">핵심 지표</h2>
           <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
-            로그인 직후 가장 먼저 보는 운영 숫자입니다. 카드를 누르면 해당 단계 목록으로 이동합니다.
+            매출 · 유입 · 담당 규모를 먼저 확인합니다.
           </p>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Link
-            href="/leads/new-db?create=1"
-            className="inline-flex items-center justify-center rounded-xl border border-[var(--crm-blue-deep)] bg-[var(--crm-blue-deep)] px-4 py-2.5 text-[14px] font-semibold text-white shadow-sm transition hover:opacity-95 dark:border-sky-600 dark:bg-sky-600"
-          >
-            고객 추가
-          </Link>
-          <Link
-            href="/leads/counseling-progress"
-            className="inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-[14px] font-semibold text-slate-800 shadow-[var(--crm-shadow-sm)] transition hover:border-[var(--crm-blue)]/35 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800/80"
-          >
-            상담 기록
-          </Link>
-        </div>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-7">
-        {ITEMS.map((item) => (
-          <Link
-            key={item.key}
-            href={item.href}
-            className={cn(
-              "group rounded-2xl border border-slate-200/90 bg-white p-5 shadow-[0_2px_8px_rgba(15,23,42,0.06)] transition-[transform,box-shadow,border-color] duration-200",
-              "hover:-translate-y-0.5 hover:border-[var(--crm-blue)]/25 hover:shadow-[0_8px_24px_rgba(15,40,71,0.1)]",
-              "dark:border-zinc-800 dark:bg-zinc-950 dark:hover:border-sky-500/25"
-            )}
-          >
-            <div className="text-[14px] font-medium text-slate-600 dark:text-zinc-400">{item.label}</div>
-            <div className="mt-3 tabular-nums text-[2rem] font-bold leading-none tracking-tight text-[var(--crm-blue-deep)] dark:text-sky-200 sm:text-[2.25rem]">
-              {loading || !values ? (
-                <span
-                  className="block h-10 w-20 animate-pulse rounded-lg bg-slate-100 dark:bg-zinc-800"
-                  aria-hidden
-                />
-              ) : (
-                values[item.valueKey]
-              )}
-            </div>
-          </Link>
-        ))}
-        <div
-          className={cn(
-            "rounded-2xl border border-slate-200/90 bg-white p-5 shadow-[0_2px_8px_rgba(15,23,42,0.06)] transition-[box-shadow,border-color] duration-200",
-            "ring-1 ring-[var(--crm-blue)]/12 dark:border-zinc-800 dark:bg-zinc-950 dark:ring-sky-500/15"
-          )}
+        <motion.div
+          className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 lg:items-stretch"
+          variants={kpiStagger}
+          initial="hidden"
+          animate="show"
         >
-          <div className="text-[14px] font-medium text-slate-600 dark:text-zinc-400">예상 수수료</div>
-          <p className="mt-1 text-[13px] leading-snug text-slate-500 dark:text-zinc-500">
-            취소 제외 · 계약 또는 최신 견적에 입력된 수수료 합계
+          {PRIMARY.map((p) => (
+            <MotionLink
+              key={p.key}
+              href={p.href}
+              variants={kpiItem}
+              className={cn(cardBase, "crm-card-interactive min-h-[158px] cursor-pointer")}
+            >
+              <div className={cn("h-1 w-full shrink-0", p.accent)} aria-hidden />
+              <div className="flex flex-1 flex-col p-5 pt-4">
+                <div className="text-[13px] font-semibold text-slate-600 dark:text-zinc-400">{p.label}</div>
+                <div
+                  className={cn(
+                    "mt-3 tabular-nums font-bold leading-none tracking-tight text-[var(--crm-blue-deep)] dark:text-sky-200",
+                    p.tier === 1 && p.key === "expected" && "text-[2.15rem] sm:text-[2.45rem]",
+                    p.tier === 1 && p.key === "confirmed" && "text-[1.85rem] sm:text-[2.1rem]",
+                    p.tier === 2 && "text-[1.5rem] sm:text-[1.65rem]"
+                  )}
+                >
+                  {loading || !values ? <PrimarySkeleton tall={p.tier === 1} /> : p.format(values)}
+                </div>
+                <p className="mt-auto pt-3 text-[12px] leading-snug text-slate-500 dark:text-zinc-500">{p.hint}</p>
+              </div>
+            </MotionLink>
+          ))}
+        </motion.div>
+      </section>
+
+      {/* 2단 — 파이프라인 */}
+      <section aria-label="고객 진행 단계">
+        <div className="mb-4">
+          <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">진행 현황</h2>
+          <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
+            단계별 병목을 왼쪽에서 오른쪽으로 빠르게 스캔합니다. 카드를 누르면 해당 목록으로 이동합니다.
           </p>
-          <div className="mt-2 min-h-[2.5rem] tabular-nums text-[1.35rem] font-bold leading-tight tracking-tight text-[var(--crm-blue-deep)] dark:text-sky-200 sm:text-[1.65rem] xl:text-[1.85rem]">
-            {loading || !values ? (
-              <span className="block h-10 w-28 animate-pulse rounded-lg bg-slate-100 dark:bg-zinc-800" aria-hidden />
-            ) : (
-              `${new Intl.NumberFormat("ko-KR").format(values.expectedCommissionWon)}원`
-            )}
-          </div>
         </div>
-      </div>
-    </section>
+        <motion.div
+          className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 xl:grid-cols-8"
+          variants={kpiStagger}
+          initial="hidden"
+          animate="show"
+        >
+          {PIPELINE.map((s) => (
+            <MotionLink
+              key={s.key}
+              href={s.href}
+              variants={kpiItem}
+              className={cn(
+                cardBase,
+                "crm-card-interactive min-h-[108px] cursor-pointer",
+                s.compact && "lg:col-span-1 xl:opacity-95"
+              )}
+            >
+              <div className={cn("h-0.5 w-full shrink-0", s.accent)} aria-hidden />
+              <div className="flex flex-1 flex-col px-3 py-3 sm:px-4 sm:py-4">
+                <div className="text-center text-[12px] font-semibold text-slate-600 dark:text-zinc-400 sm:text-[13px]">
+                  {s.label}
+                </div>
+                <div className="mt-2 text-center tabular-nums text-[1.35rem] font-bold leading-none text-[var(--crm-blue-deep)] dark:text-sky-200 sm:text-[1.5rem]">
+                  {loading || !pipeline ? <PipelineSkeleton /> : pipeline[s.valueKey]}
+                </div>
+                <p className="mt-2 text-center text-[10px] leading-snug text-slate-500 dark:text-zinc-500 sm:text-[11px]">
+                  {s.hint}
+                </p>
+              </div>
+            </MotionLink>
+          ))}
+        </motion.div>
+      </section>
+    </div>
   );
 }

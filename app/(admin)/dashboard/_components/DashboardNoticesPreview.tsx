@@ -20,7 +20,16 @@ function formatNoticeDate(iso: string) {
   }
 }
 
-export default function DashboardNoticesPreview({ profile }: { profile: AuthProfile | null }) {
+export default function DashboardNoticesPreview({
+  profile,
+  variant = "featured",
+  className,
+}: {
+  profile: AuthProfile | null;
+  /** featured: 그라데이션 강조 · panel: KPI 3단과 동일한 흰 카드 */
+  variant?: "featured" | "panel";
+  className?: string;
+}) {
   const [items, setItems] = useState<Notice[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -40,12 +49,25 @@ export default function DashboardNoticesPreview({ profile }: { profile: AuthProf
     if (profile) void load();
   }, [profile, load]);
 
+  const shell =
+    variant === "panel"
+      ? cn(
+          "overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-zinc-800 dark:bg-zinc-950"
+        )
+      : cn(
+          "overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/80 shadow-[0_4px_24px_rgba(15,40,71,0.08)] dark:border-zinc-800 dark:from-zinc-950 dark:to-zinc-950/95"
+        );
+
   return (
-    <section
-      className="overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/80 shadow-[0_4px_24px_rgba(15,40,71,0.08)] dark:border-zinc-800 dark:from-zinc-950 dark:to-zinc-950/95"
-      aria-label="공지사항"
-    >
-      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200/80 px-5 py-4 sm:px-6 dark:border-zinc-800/80">
+    <section className={cn(shell, variant === "panel" && "flex min-h-[320px] flex-col", className)} aria-label="공지사항">
+      <div
+        className={cn(
+          "flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 sm:px-6 dark:border-zinc-800/80",
+          variant === "panel"
+            ? "border-slate-100 dark:border-zinc-800/80"
+            : "border-slate-200/80 dark:border-zinc-800/80"
+        )}
+      >
         <div>
           <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">공지사항</h2>
           <p className="mt-0.5 text-[14px] text-slate-600 dark:text-zinc-400">회사 운영 소식 · 최신 3건</p>
@@ -58,7 +80,7 @@ export default function DashboardNoticesPreview({ profile }: { profile: AuthProf
         </Link>
       </div>
 
-      <div className="p-4 sm:p-5">
+      <div className={cn("p-4 sm:p-5", variant === "panel" && "flex flex-1 flex-col")}>
         {loading ? (
           <div className="space-y-3">
             {[1, 2, 3].map((k) => (

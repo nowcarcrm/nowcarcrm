@@ -4,12 +4,14 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { usePathname, useRouter } from "next/navigation";
+import { motion, useReducedMotion } from "framer-motion";
+import { dashboardPageStagger, dashboardSectionItem } from "@/app/_lib/crmMotion";
 import {
   computeDashboardMetrics,
   computePipelineStageCounts,
   pathnameAfterCounselingStatusChange,
+  pickRecentCounselingLeads,
   pickRecentLeads,
-  pickStaleUnresponsiveLeads,
   pickTodayContactLeads,
 } from "../_lib/leaseCrmLogic";
 import { fetchLeadById } from "../_lib/leaseCrmSupabase";
@@ -19,14 +21,16 @@ import { useAuth } from "@/app/_components/auth/AuthProvider";
 import LeadDetailModal from "../leads/_components/LeadDetailModal";
 import DashboardKpiCards, { type DashboardKpiValues } from "./_components/DashboardKpiCards";
 import DashboardNoticesPreview from "./_components/DashboardNoticesPreview";
-import DashboardPipeline from "./_components/DashboardPipeline";
 import DashboardTodoSection from "./_components/DashboardTodoSection";
-import DashboardRecentLeads from "./_components/DashboardRecentLeads";
 
 export default function DashboardPage() {
   const { profile, loading: authLoading } = useAuth();
   const pathname = usePathname();
   const router = useRouter();
+  const reduceMotion = useReducedMotion();
+  const reduce = !!reduceMotion;
+  const dashStagger = dashboardPageStagger(reduce);
+  const dashItem = dashboardSectionItem(reduce);
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [modalLead, setModalLead] = useState<Lead | null>(null);
@@ -79,36 +83,28 @@ export default function DashboardPage() {
   }, [leads]);
 
   const kpiValues = useMemo((): DashboardKpiValues | null => {
-    if (!leads || !metrics || !pipeline) return null;
+    if (!leads || !metrics) return null;
     return {
-      todayNew: metrics.todayNewDb,
-      counseling: pipeline.counseling,
-      contract: pipeline.contract,
-      exportProgress: pipeline.exportProgress,
-      deliveryComplete: pipeline.deliveryComplete,
-      total: leads.length,
       expectedCommissionWon: metrics.expectedCommissionTotal,
+      confirmedCommissionThisMonthWon: metrics.thisMonthConfirmedCommissionWon,
+      thisMonthRegisteredCount: metrics.thisMonthRegisteredCount,
+      assignedCustomerCount: leads.length,
     };
-  }, [leads, metrics, pipeline]);
+  }, [leads, metrics]);
 
   const todayContactLeads = useMemo(() => {
     if (!leads) return [];
     return pickTodayContactLeads(leads, 6);
   }, [leads]);
 
-  const staleUnresponsive = useMemo(() => {
-    if (!leads) return [];
-    return pickStaleUnresponsiveLeads(leads, 6);
-  }, [leads]);
-
-  const recentLeads = useMemo(() => {
-    if (!leads) return [];
-    return pickRecentLeads(leads, 8);
-  }, [leads]);
-
   const recentAddedForTodo = useMemo(() => {
     if (!leads) return [];
-    return pickRecentLeads(leads, 5);
+    return pickRecentLeads(leads, 6);
+  }, [leads]);
+
+  const recentCounselingLeads = useMemo(() => {
+    if (!leads) return [];
+    return pickRecentCounselingLeads(leads, 6);
   }, [leads]);
 
   const dataLoading = leads === null;
@@ -134,8 +130,16 @@ export default function DashboardPage() {
   );
 
   return (
-    <div className="space-y-10 pb-10">
-      <section className="rounded-2xl border border-slate-200/80 bg-white px-5 py-6 shadow-[var(--crm-shadow-sm)] sm:px-8 sm:py-8 dark:border-zinc-800 dark:bg-zinc-950">
+    <motion.div
+      className="space-y-10 pb-10"
+      variants={dashStagger}
+      initial="hidden"
+      animate="show"
+    >
+      <motion.section
+        variants={dashItem}
+        className="rounded-2xl border border-slate-200/80 bg-white px-5 py-6 shadow-[var(--crm-shadow-sm)] sm:px-8 sm:py-8 dark:border-zinc-800 dark:bg-zinc-950"
+      >
         <p className="text-[12px] font-semibold uppercase tracking-[0.12em] text-[var(--crm-accent-muted)]">
           내 담당 기준
         </p>
@@ -148,41 +152,35 @@ export default function DashboardPage() {
             : "본인에게 배정된 고객만 집계합니다. 오늘 연락·부재 정리·최근 유입을 우선 확인해 보세요."}
         </p>
         <div className="mt-5 flex flex-wrap gap-2">
-          <Link
-            href="/leads/new-db?create=1"
-            className="inline-flex items-center rounded-full border border-[var(--crm-blue-deep)] bg-[var(--crm-blue-deep)] px-4 py-2.5 text-[14px] font-semibold text-white shadow-sm transition hover:opacity-95 dark:bg-sky-600 dark:border-sky-600"
-          >
+          <Link href="/leads/new-db?create=1" className="crm-pill-primary">
             고객 추가
           </Link>
-          <Link
-            href="/leads/new-db"
-            className="inline-flex items-center rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[14px] font-semibold text-slate-800 shadow-sm transition hover:border-[var(--crm-blue)]/35 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          >
+          <Link href="/leads/new-db" className="crm-pill-secondary">
             고객 목록
           </Link>
-          <Link
-            href="/leads/counseling-progress?fromDash=todayFollow"
-            className="inline-flex items-center rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[14px] font-semibold text-slate-800 shadow-sm transition hover:border-[var(--crm-blue)]/35 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          >
+          <Link href="/leads/counseling-progress?fromDash=todayFollow" className="crm-pill-secondary">
             오늘 연락
           </Link>
-          <Link
-            href="/leads/counseling-progress"
-            className="inline-flex items-center rounded-full border border-slate-200 bg-white px-4 py-2.5 text-[14px] font-semibold text-slate-800 shadow-sm transition hover:border-[var(--crm-blue)]/35 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100"
-          >
+          <Link href="/leads/counseling-progress" className="crm-pill-secondary">
             상담 기록
           </Link>
         </div>
-      </section>
+      </motion.section>
 
       {loadError ? (
-        <section className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-[15px] text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
+        <motion.section
+          variants={dashItem}
+          className="rounded-2xl border border-rose-200 bg-rose-50 p-5 text-[15px] text-rose-900 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100"
+        >
           고객 데이터 조회에 실패했습니다. 원인: {loadError}
-        </section>
+        </motion.section>
       ) : null}
 
       {!loadError && leads && leads.length === 0 && !dataLoading ? (
-        <section className="rounded-2xl border border-dashed border-slate-200 bg-white p-10 text-center dark:border-zinc-700 dark:bg-zinc-950">
+        <motion.section
+          variants={dashItem}
+          className="rounded-2xl border border-dashed border-slate-200 bg-white p-10 text-center dark:border-zinc-700 dark:bg-zinc-950"
+        >
           <p className="text-[16px] font-semibold text-slate-800 dark:text-zinc-100">아직 표시할 고객이 없습니다.</p>
           <p className="mt-2 text-[15px] text-slate-600 dark:text-zinc-400">
             첫 고객을 등록하면 이 화면에 지표와 할 일이 채워집니다.
@@ -190,24 +188,30 @@ export default function DashboardPage() {
           <Link href="/leads/new-db?create=1" className="crm-btn-primary mt-6 inline-flex">
             고객 추가하기
           </Link>
-        </section>
+        </motion.section>
       ) : null}
 
-      <DashboardNoticesPreview profile={profile} />
+      <motion.div variants={dashItem}>
+        <DashboardKpiCards loading={dataLoading} values={kpiValues} pipeline={pipeline} />
+      </motion.div>
 
-      <DashboardKpiCards loading={dataLoading} values={kpiValues} />
-
-      <DashboardTodoSection
-        loading={dataLoading}
-        todayLeads={todayContactLeads}
-        staleUnresponsive={staleUnresponsive}
-        recentAdded={recentAddedForTodo}
-        onSelectLead={(id) => void openLead(id)}
-      />
-
-      <DashboardPipeline loading={dataLoading} pipeline={pipeline} />
-
-      <DashboardRecentLeads loading={dataLoading} leads={recentLeads} onSelect={(id) => void openLead(id)} />
+      <motion.div variants={dashItem}>
+        <div className="grid grid-cols-1 gap-5 xl:grid-cols-4 xl:items-stretch">
+          <div className="min-w-0 xl:col-span-3">
+            <DashboardTodoSection
+              loading={dataLoading}
+              todayLeads={todayContactLeads}
+              recentAdded={recentAddedForTodo}
+              recentCounseling={recentCounselingLeads}
+              unresponsiveCount={metrics?.unresponsive ?? 0}
+              onSelectLead={(id) => void openLead(id)}
+            />
+          </div>
+          <div className="min-w-0 xl:col-span-1">
+            <DashboardNoticesPreview profile={profile} variant="panel" className="h-full" />
+          </div>
+        </div>
+      </motion.div>
 
       {modalLoading ? (
         <div className="fixed inset-0 z-[55] grid place-items-center bg-black/20 text-[15px] font-medium text-slate-700 dark:text-zinc-200">
@@ -260,6 +264,6 @@ export default function DashboardPage() {
           }}
         />
       ) : null}
-    </div>
+    </motion.div>
   );
 }

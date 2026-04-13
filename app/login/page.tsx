@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import toast from "react-hot-toast";
 import { signInWithEmailAndResolveProfile } from "../(admin)/_lib/authSupabase";
 import { getSupabaseAuthTargetInfo } from "../(admin)/_lib/supabaseClient";
@@ -12,15 +12,17 @@ import { AuthFooterNote } from "../_components/auth/AuthMarketingLayout";
 import { NowcarLoginShell } from "../_components/auth/NowcarLoginLayout";
 import { useAuth } from "../_components/auth/AuthProvider";
 import { getPostLoginPath } from "../_lib/authPostLogin";
-
-const cardMotion = {
-  initial: { opacity: 0, y: 10 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.32, ease: [0.22, 1, 0.36, 1] as const },
-};
+import {
+  loginCardMotion,
+  loginFormItem,
+  loginFormStagger,
+  loginTitleMotion,
+} from "../_lib/crmMotion";
 
 export default function LoginPage() {
   const router = useRouter();
+  const reduceMotion = useReducedMotion();
+  const reduce = !!reduceMotion;
   const { profile, authError, applySignedInProfile } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -29,6 +31,11 @@ export default function LoginPage() {
   const [debugInfo, setDebugInfo] = useState<Record<string, unknown> | null>(null);
   const showDebugPanel = process.env.NODE_ENV !== "production";
   const target = getSupabaseAuthTargetInfo();
+
+  const cardM = loginCardMotion(reduce);
+  const titleM = loginTitleMotion(reduce);
+  const formStagger = loginFormStagger(reduce);
+  const formItem = loginFormItem(reduce);
 
   const clearFormError = useCallback(() => setError(null), []);
 
@@ -85,7 +92,7 @@ export default function LoginPage() {
       setDebugInfo(debug);
       const message = enhanceInvalidLoginWithDiagnose(raw, debug.authDiagnose);
       setError(message);
-      toast.error(message, { duration: 4800 });
+      toast.error("로그인에 실패했습니다. 이메일·비밀번호를 확인해 주세요.", { duration: 4000 });
     } finally {
       setLoading(false);
     }
@@ -97,26 +104,37 @@ export default function LoginPage() {
     <NowcarLoginShell>
       <motion.div
         className="crm-auth-card w-full"
-        initial={cardMotion.initial}
-        animate={cardMotion.animate}
-        transition={cardMotion.transition}
+        initial={cardM.initial}
+        animate={cardM.animate}
+        transition={cardM.transition}
       >
-        <div className="mb-8 text-center">
+        <motion.div
+          className="mb-8 text-center"
+          initial={titleM.initial}
+          animate={titleM.animate}
+          transition={titleM.transition}
+        >
           <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--nowcar-auth-text-muted)]">
             B2B Operations
           </p>
           <p className="mt-2 text-[1.65rem] font-bold tracking-tight text-[var(--nowcar-auth-navy-mid)] dark:text-slate-100">
             NOWCAR CRM
           </p>
-        </div>
+        </motion.div>
 
         <h1 className="crm-auth-title">로그인</h1>
         <p className="crm-auth-desc">계정으로 접속하세요</p>
 
         {error ? (
-          <div className="crm-auth-error-soft" role="alert">
+          <motion.div
+            className="crm-auth-error-soft"
+            role="alert"
+            initial={reduce ? false : { opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.22, ease: "easeOut" }}
+          >
             {error}
-          </div>
+          </motion.div>
         ) : null}
         {!error && displayAuthError ? (
           <div className="crm-auth-error-soft" role="alert">
@@ -138,8 +156,13 @@ export default function LoginPage() {
         ) : null}
 
         <form onSubmit={onSubmit} className="mt-8">
-          <div className="space-y-5">
-            <div>
+          <motion.div
+            className="space-y-5"
+            variants={formStagger}
+            initial="hidden"
+            animate="show"
+          >
+            <motion.div variants={formItem}>
               <label htmlFor="login-email" className="crm-auth-label">
                 이메일
               </label>
@@ -154,8 +177,8 @@ export default function LoginPage() {
                 required
                 disabled={loading}
               />
-            </div>
-            <div>
+            </motion.div>
+            <motion.div variants={formItem}>
               <label htmlFor="login-password" className="crm-auth-label">
                 비밀번호
               </label>
@@ -170,22 +193,23 @@ export default function LoginPage() {
                 required
                 disabled={loading}
               />
-            </div>
-          </div>
-
-          <button type="submit" className="crm-auth-btn-primary" disabled={loading}>
-            {loading ? (
-              <>
-                <span
-                  className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
-                  aria-hidden
-                />
-                로그인 중…
-              </>
-            ) : (
-              "로그인"
-            )}
-          </button>
+            </motion.div>
+            <motion.div variants={formItem}>
+              <button type="submit" className="crm-auth-btn-primary" disabled={loading}>
+                {loading ? (
+                  <>
+                    <span
+                      className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-white/35 border-t-white"
+                      aria-hidden
+                    />
+                    로그인 중…
+                  </>
+                ) : (
+                  "로그인"
+                )}
+              </button>
+            </motion.div>
+          </motion.div>
         </form>
 
         <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 border-t border-[var(--nowcar-auth-border)] pt-7">

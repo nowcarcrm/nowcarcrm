@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, LayoutGroup, motion } from "framer-motion";
+import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "framer-motion";
+import { modalBackdropMotion, modalPanelMotion } from "@/app/_lib/crmMotion";
 import { TapButton } from "@/app/_components/ui/crm-motion";
 import {
   BASE_CONTRACT_TERM_OPTIONS,
@@ -56,6 +57,7 @@ import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
+import AiCounselAssistPopup from "./AiCounselAssistPopup";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -340,6 +342,10 @@ export default function LeadDetailModal({
   >("");
   const prevLeadIdRef = useRef<string | null>(null);
   const { profile } = useAuth();
+  const reduceMotion = useReducedMotion();
+  const reduce = reduceMotion === true;
+  const backdropMotion = modalBackdropMotion(reduce);
+  const panelMotion = modalPanelMotion(reduce);
   const staffContractLocked = profile?.role === "staff";
   /** 담당 직원 변경은 Admin만 (staff·manager는 UI·저장 모두 본인/고정). */
   const canReassignLeadOwner = profile?.role === "admin";
@@ -689,18 +695,18 @@ export default function LeadDetailModal({
     <>
       <motion.div
         className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px]"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.2 }}
+        initial={backdropMotion.initial}
+        animate={backdropMotion.animate}
+        transition={backdropMotion.transition}
         onClick={onClose}
         aria-hidden="true"
       />
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
         <motion.div
           className="crm-modal-panel pointer-events-auto max-h-[min(90dvh,920px)] max-w-5xl overflow-y-auto overscroll-y-contain"
-          initial={{ opacity: 0, scale: 0.96, y: 18 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          transition={{ type: "spring", stiffness: 380, damping: 34 }}
+          initial={panelMotion.initial}
+          animate={panelMotion.animate}
+          transition={panelMotion.transition}
         >
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
@@ -789,7 +795,7 @@ export default function LeadDetailModal({
                         <motion.span
                           layoutId="lead-modal-tab-underline"
                           className="absolute inset-x-2 -bottom-px h-[3px] rounded-full bg-[var(--crm-blue-deep)] dark:bg-sky-400"
-                          transition={{ type: "spring", stiffness: 440, damping: 32 }}
+                          transition={{ type: "tween", duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
                         />
                       ) : null}
                       <span className="relative z-10">{t.label}</span>
@@ -1967,6 +1973,7 @@ export default function LeadDetailModal({
           </AnimatePresence>
         </motion.div>
       </div>
+      <AiCounselAssistPopup lead={draft} />
     </>
   );
 }

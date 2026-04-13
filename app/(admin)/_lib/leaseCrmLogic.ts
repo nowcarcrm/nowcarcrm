@@ -1,4 +1,4 @@
-import { calculateExpectedCommission } from "./leaseCrmCommissionMetrics";
+import { calculateExpectedCommission, expectedFeeWonForLead } from "./leaseCrmCommissionMetrics";
 import { effectiveContractFeeForMetrics } from "./leaseCrmContractPersist";
 import type {
   CounselingStatus,
@@ -299,6 +299,9 @@ export function computePipelineStageCounts(leads: Lead[]) {
     contract: computeCategory(leads, "contract-progress").length,
     exportProgress: computeCategory(leads, "export-progress").length,
     deliveryComplete: computeCategory(leads, "delivery-complete").length,
+    hold: computeCategory(leads, "hold").length,
+    cancel: computeCategory(leads, "cancel").length,
+    unresponsive: computeCategory(leads, "unresponsive").length,
     total: leads.length,
   };
 }
@@ -322,6 +325,13 @@ export function pickStaleUnresponsiveLeads(leads: Lead[], limit: number): Lead[]
 /** 최근 등록 */
 export function pickRecentLeads(leads: Lead[], limit: number): Lead[] {
   return [...leads].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)).slice(0, Math.max(0, limit));
+}
+
+/** 최근 상담 접점(기록·처리·연락일·등록일 기준 최신순) */
+export function pickRecentCounselingLeads(leads: Lead[], limit: number): Lead[] {
+  return [...leads]
+    .sort((a, b) => (lastContactReferenceIso(a) < lastContactReferenceIso(b) ? 1 : -1))
+    .slice(0, Math.max(0, limit));
 }
 
 function isAfterDays(iso: string, days: number) {
@@ -644,6 +654,24 @@ export function computeDashboardMetrics(leads: Lead[]) {
     })
     .reduce((sum, l) => sum + effectiveContractFeeForMetrics(l.contract!), 0);
 
+  /** 이번 달(로컬) 신규 등록 건수 */
+  const thisMonthRegisteredCount = leads.filter((l) =>
+    toLocalDateKey(l.createdAt).startsWith(thisMonthKeyPrefix)
+  ).length;
+
+  /**
+   * 이번 달 확정 반영 수수료: 인도완료이면서 인도/상태 기준일이 이번 달인 건의 수수료 합계
+   */
+  const thisMonthConfirmedCommissionWon = leads.reduce((sum, l) => {
+    if (l.counselingStatus !== "인도완료") return sum;
+    const refRaw =
+      (l.deliveredAt?.trim() || l.statusUpdatedAt?.trim() || l.contract?.contractDate?.trim() || "").trim();
+    if (!refRaw) return sum;
+    if (!toLocalDateKey(refRaw).startsWith(thisMonthKeyPrefix)) return sum;
+    const fee = l.contract ? effectiveContractFeeForMetrics(l.contract) : expectedFeeWonForLead(l);
+    return sum + fee;
+  }, 0);
+
   /** 취소 제외·계약 또는 최신 견적 수수료 합산 — 대시보드「예상 수수료」 */
   const expectedCommissionTotal = calculateExpectedCommission(leads);
 
@@ -678,6 +706,8 @@ export function computeDashboardMetrics(leads: Lead[]) {
     contractInProgress,
     thisMonthContractCompleted,
     thisMonthExpectedFee,
+    thisMonthRegisteredCount,
+    thisMonthConfirmedCommissionWon,
     expectedCommissionTotal,
     staff: Array.from(staff.values()).sort((a, b) => b.counselingCount - a.counselingCount),
     unprocessedNewDb: automation.unprocessedNewDb,

@@ -38,7 +38,6 @@ import LeadDetailModal from "./LeadDetailModal";
 import { useLeadListSearch } from "@/app/_components/admin/AdminShell";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { listActiveUsers } from "../../_lib/usersSupabase";
-import { motion } from "framer-motion";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
 import { AnimatedStatNumber, LeadTableSkeleton, TapButton } from "@/app/_components/ui/crm-motion";
@@ -635,16 +634,10 @@ function LeadsCategoryView({
                   const isDeliverySoon =
                     categoryKey === "export-progress" && isDeliveryDueSoon(row);
                   return (
-                    <motion.tr
+                    <tr
                       key={row.id}
-                      initial={false}
-                      whileHover={{
-                        y: -2,
-                        boxShadow: "0 10px 40px -18px rgba(15, 23, 42, 0.18)",
-                        transition: { type: "spring", stiffness: 420, damping: 30 },
-                      }}
                       className={cn(
-                        "border-b border-zinc-100 transition-colors last:border-0 hover:bg-zinc-50/80 dark:border-zinc-800/80 dark:hover:bg-zinc-900/40",
+                        "border-b border-zinc-100 transition-colors duration-150 ease-out last:border-0 hover:bg-slate-50/95 dark:border-zinc-800/80 dark:hover:bg-zinc-800/55",
                         isTodayFollowUp && "bg-zinc-50/90 dark:bg-zinc-900/35"
                       )}
                     >
@@ -798,7 +791,7 @@ function LeadsCategoryView({
                           </TapButton>
                         </div>
                       </td>
-                    </motion.tr>
+                    </tr>
                   );
                 })
               )}
