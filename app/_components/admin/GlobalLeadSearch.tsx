@@ -1,22 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
-import {
-  fetchLeadById,
-  searchLeads,
-  type LeadSearchHit,
-} from "@/app/(admin)/_lib/leaseCrmSupabase";
-import {
-  applyStaffLeadClientLocks,
-  deleteLeadById,
-  updateLead,
-} from "@/app/(admin)/_lib/leaseCrmStorage";
-import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
-import type { Lead } from "@/app/(admin)/_lib/leaseCrmTypes";
-import LeadDetailModal from "@/app/(admin)/leads/_components/LeadDetailModal";
+import { searchLeads, type LeadSearchHit } from "@/app/(admin)/_lib/leaseCrmSupabase";
 import toast from "react-hot-toast";
+import { useLeadDetailModal } from "./AdminShell";
 
 const RECENT_KEY = "crm.global_search_recent.v1";
 const MAX_RECENT = 5;
@@ -67,8 +55,7 @@ export default function GlobalLeadSearch({
   onChange: (next: string) => void;
 }) {
   const { profile } = useAuth();
-  const pathname = usePathname();
-  const router = useRouter();
+  const { openLeadById } = useLeadDetailModal();
   const scope = useMemo(
     () => (profile ? { role: profile.role, userId: profile.userId } : null),
     [profile]
@@ -80,8 +67,6 @@ export default function GlobalLeadSearch({
   const [open, setOpen] = useState(false);
   const [activeIdx, setActiveIdx] = useState(-1);
   const [recent, setRecent] = useState<string[]>([]);
-  const [modalLead, setModalLead] = useState<Lead | null>(null);
-  const [modalLoading, setModalLoading] = useState(false);
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -140,32 +125,19 @@ export default function GlobalLeadSearch({
   const listForKb = debounced.length >= 1 ? results : [];
 
   const openLead = useCallback(
-    async (id: string) => {
-      if (!scope) return;
-      setModalLoading(true);
+    (hit: LeadSearchHit) => {
       setOpen(false);
       setActiveIdx(-1);
-      try {
-        const lead = await fetchLeadById(id, scope);
-        if (!lead) {
-          toast.error("고객을 찾을 수 없거나 권한이 없습니다.");
-          return;
-        }
-        setModalLead(lead);
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "고객을 불러오지 못했습니다.");
-      } finally {
-        setModalLoading(false);
-      }
+      void openLeadById(hit.id);
     },
-    [scope]
+    [openLeadById]
   );
 
   const pickHit = useCallback(
     (hit: LeadSearchHit) => {
       pushRecentKeyword(debounced || value.trim());
       setRecent(loadRecent());
-      void openLead(hit.id);
+      openLead(hit);
     },
     [openLead, debounced, value]
   );
@@ -198,19 +170,19 @@ export default function GlobalLeadSearch({
   const applyRecent = (q: string) => {
     onChange(q);
     setOpen(true);
-    inputRef.current?.focus();
+    inputRef.current?.focus({ preventScroll: true });
   };
 
   const inputClass =
     variant === "sidebar"
       ? cn(
-          "w-full rounded-xl border py-2.5 pl-10 pr-3 text-[13px] outline-none transition-[border-color,box-shadow,background]",
-          "border-white/12 bg-white/[0.07] text-white placeholder:text-slate-500",
-          "focus:border-sky-400/50 focus:bg-white/[0.1] focus:shadow-[0_0_0_3px_rgba(56,189,248,0.12)]"
+          "w-full rounded-xl border py-3 pl-10 pr-3 text-[14px] font-medium outline-none transition-[border-color,box-shadow,background]",
+          "border-white/18 bg-white/[0.1] text-white placeholder:text-slate-400",
+          "focus:border-sky-400/60 focus:bg-white/[0.14] focus:shadow-[0_0_0_4px_rgba(56,189,248,0.16)]"
         )
       : cn(
-          "w-full rounded-xl border border-slate-200 bg-slate-50/90 py-2 pl-9 pr-3 text-[13px] text-slate-900 outline-none transition-[border-color,box-shadow,background]",
-          "placeholder:text-slate-400 focus:border-[var(--crm-blue)] focus:bg-white focus:shadow-[0_0_0_3px_rgba(37,99,235,0.12)]",
+          "w-full rounded-xl border border-slate-300/90 bg-white/95 py-2.5 pl-9 pr-3 text-[14px] font-medium text-slate-900 outline-none transition-[border-color,box-shadow,background]",
+          "placeholder:text-slate-400 focus:border-[var(--crm-blue)] focus:bg-white focus:shadow-[0_0_0_4px_rgba(37,99,235,0.14)]",
           "dark:border-zinc-700 dark:bg-zinc-900/80 dark:text-zinc-100 dark:placeholder:text-zinc-500 dark:focus:border-sky-500"
         );
 
@@ -280,7 +252,7 @@ export default function GlobalLeadSearch({
             id="global-lead-search-listbox"
             role="listbox"
             className={cn(
-              "absolute left-0 right-0 top-[calc(100%+8px)] max-h-[min(70vh,360px)] overflow-auto rounded-xl border py-1 shadow-xl",
+              "absolute left-0 right-0 top-[calc(100%+10px)] max-h-[min(70vh,380px)] overflow-auto rounded-xl border py-1 shadow-xl",
               variant === "sidebar"
                 ? "border-white/10 bg-[#0c1e36] text-slate-100 shadow-black/40"
                 : "border-slate-200 bg-white dark:border-zinc-700 dark:bg-zinc-950"
@@ -392,55 +364,6 @@ export default function GlobalLeadSearch({
         ) : null}
       </div>
 
-      {modalLoading ? (
-        <div className="fixed inset-0 z-[55] grid place-items-center bg-black/20 text-sm font-medium text-slate-600 dark:text-zinc-300">
-          불러오는 중…
-        </div>
-      ) : null}
-
-      {modalLead ? (
-        <LeadDetailModal
-          key={modalLead.id}
-          lead={modalLead}
-          onClose={() => setModalLead(null)}
-          onUpdate={async (next) => {
-            if (!profile) return;
-            if (profile.role === "staff") {
-              const myName = profile.name?.trim() ?? "";
-              if (next.managerUserId != null && next.managerUserId !== profile.userId) {
-                toast.error("담당 직원은 본인만 지정할 수 있습니다.");
-                return;
-              }
-              if (myName && next.base.ownerStaff?.trim() !== myName) {
-                toast.error("담당 직원은 본인만 지정할 수 있습니다.");
-                return;
-              }
-            }
-            const payload =
-              profile.role === "staff"
-                ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
-                : next;
-            await updateLead(payload, { role: profile.role, userId: profile.userId });
-            setModalLead(payload);
-            const nextPath = pathnameAfterCounselingStatusChange(payload.counselingStatus);
-            if (pathname !== nextPath) {
-              router.push(nextPath);
-            }
-          }}
-          onDelete={(id) => {
-            if (!profile) return;
-            void (async () => {
-              try {
-                await deleteLeadById(id, { role: profile.role, userId: profile.userId });
-                setModalLead(null);
-                toast.success("삭제되었습니다.");
-              } catch (e) {
-                toast.error(e instanceof Error ? e.message : "삭제에 실패했습니다.");
-              }
-            })();
-          }}
-        />
-      ) : null}
     </>
   );
 }

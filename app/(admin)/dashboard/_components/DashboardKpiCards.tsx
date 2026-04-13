@@ -72,6 +72,7 @@ type PrimaryDef = {
   accent: string;
   tier: 1 | 2;
   valueTone?: "up" | "risk" | "neutral";
+  featured?: boolean;
   suffix: string;
   value: (v: DashboardKpiValues) => number;
 };
@@ -85,6 +86,7 @@ const PRIMARY: PrimaryDef[] = [
     accent: "bg-[#1a365d]",
     tier: 1,
     valueTone: "up",
+    featured: true,
     suffix: "원",
     value: (v) => v.expectedCommissionWon,
   },
@@ -96,6 +98,7 @@ const PRIMARY: PrimaryDef[] = [
     accent: "bg-indigo-700",
     tier: 1,
     valueTone: "up",
+    featured: true,
     suffix: "원",
     value: (v) => v.confirmedCommissionThisMonthWon,
   },
@@ -193,7 +196,7 @@ const PIPELINE: {
 ];
 
 const cardBase =
-  "group flex h-full min-h-full flex-col overflow-hidden rounded-[20px] border border-slate-200/90 bg-white shadow-[0_10px_30px_rgba(15,23,42,0.06)] transition-all duration-200 leading-[1.65] hover:-translate-y-[3px] hover:shadow-[0_20px_40px_rgba(15,23,42,0.1)] dark:border-zinc-800 dark:bg-zinc-950";
+  "group crm-card crm-card-interactive flex h-full min-h-full flex-col overflow-hidden leading-[1.65]";
 
 function valueToneClass(tone: "up" | "risk" | "neutral" | undefined) {
   if (tone === "up") return "text-[#16a34a] dark:text-emerald-300";
@@ -220,7 +223,7 @@ export default function DashboardKpiCards({
       {/* 1단 — 핵심 돈·유입 */}
       <section aria-label="핵심 성과 지표">
         <div className="mb-4">
-          <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">핵심 지표</h2>
+          <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">핵심 지표</h2>
           <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
             매출 · 유입 · 담당 규모를 먼저 확인합니다.
           </p>
@@ -239,21 +242,31 @@ export default function DashboardKpiCards({
               whileHover={reduce ? undefined : { scale: 1.02 }}
               whileTap={reduce ? undefined : { scale: 0.99 }}
               transition={{ duration: 0.15, ease: "easeOut" }}
-              className={cn(cardBase, "crm-card-interactive min-h-[158px] cursor-pointer")}
+              className={cn(
+                cardBase,
+                "min-h-[184px] cursor-pointer",
+                p.featured && "border-[#dbe7fb] shadow-[0_14px_36px_rgba(37,99,235,0.16)]"
+              )}
             >
-              <div className="h-[3px] w-full shrink-0 bg-[linear-gradient(90deg,#2563eb,#60a5fa)]" aria-hidden />
-              <div className="flex flex-1 flex-col p-5 pt-4">
-                <div className="text-[15px] font-medium leading-[1.6] text-[#666] dark:text-zinc-400">{p.label}</div>
+              {p.featured ? (
+                <div className="h-[3px] w-full shrink-0 bg-[linear-gradient(90deg,#2563eb,#60a5fa)]" aria-hidden />
+              ) : (
+                <div className={cn("h-[3px] w-full shrink-0", p.accent)} aria-hidden />
+              )}
+              <div className="flex flex-1 flex-col p-6 pt-5">
+                <div className="text-[15px] font-semibold leading-[1.6] text-[#475569] dark:text-zinc-400">
+                  {p.label}
+                </div>
                 <AnimatedNumber
                   value={values ? p.value(values) : 0}
                   suffix={p.suffix}
                   loading={loading || !values}
                   className={cn(
-                    "mt-3 tabular-nums text-3xl font-bold leading-[1.6] tracking-tight sm:text-[34px]",
-                    valueToneClass(p.valueTone)
+                    "mt-3 tabular-nums text-3xl font-extrabold leading-[1.45] tracking-tight sm:text-[38px]",
+                    p.featured ? "text-[#0f172a] dark:text-zinc-100" : valueToneClass(p.valueTone)
                   )}
                 />
-                <p className="mt-auto pt-3 text-[12px] leading-[1.6] text-[#999] dark:text-zinc-500">{p.hint}</p>
+                <p className="mt-auto pt-3 text-[12px] leading-[1.6] text-[#64748b] dark:text-zinc-500">{p.hint}</p>
               </div>
             </MotionLink>
           ))}
@@ -263,7 +276,7 @@ export default function DashboardKpiCards({
       {/* 2단 — 파이프라인 */}
       <section aria-label="고객 진행 단계">
         <div className="mb-4">
-          <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">진행 현황</h2>
+          <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">진행 현황</h2>
           <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
             단계별 병목을 왼쪽에서 오른쪽으로 빠르게 스캔합니다. 카드를 누르면 해당 목록으로 이동합니다.
           </p>
@@ -284,18 +297,18 @@ export default function DashboardKpiCards({
               transition={{ duration: 0.15, ease: "easeOut" }}
               className={cn(
                 cardBase,
-                "crm-card-interactive min-h-[108px] cursor-pointer",
+                "min-h-[126px] cursor-pointer",
                 s.compact && "lg:col-span-1 xl:opacity-95"
               )}
             >
               <div className={cn("h-[3px] w-full shrink-0", s.accent)} aria-hidden />
-              <div className="flex flex-1 flex-col px-3 py-3 sm:px-4 sm:py-4">
-                <div className="text-center text-[15px] font-medium leading-[1.6] text-[#666] dark:text-zinc-400">
+              <div className="flex flex-1 flex-col px-4 py-4 sm:px-5 sm:py-5">
+                <div className="text-center text-[14px] font-semibold leading-[1.6] text-[#64748b] dark:text-zinc-400">
                   {s.label}
                 </div>
                 <div
                   className={cn(
-                    "mt-2 text-center tabular-nums text-3xl font-bold leading-[1.6]",
+                    "mt-2 text-center tabular-nums text-3xl font-extrabold leading-[1.5]",
                     valueToneClass(s.valueTone)
                   )}
                 >

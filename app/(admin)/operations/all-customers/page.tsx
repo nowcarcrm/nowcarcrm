@@ -6,14 +6,10 @@ import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import {
   fetchContractFeeSummaryByLeadIds,
-  fetchLeadById,
   fetchMaxConsultationCreatedAtByLeadIds,
 } from "../../_lib/leaseCrmSupabase";
 import {
-  applyStaffLeadClientLocks,
   loadLeadsFromStorage,
-  updateLead,
-  deleteLeadById,
 } from "../../_lib/leaseCrmStorage";
 import type { Lead } from "../../_lib/leaseCrmTypes";
 import { pipelineStageLabelForLead } from "../../_lib/staffOverviewMetrics";
@@ -24,10 +20,10 @@ import {
   formatWonForExcel,
   todayYmdKst,
 } from "../../_lib/excelExport";
-import LeadDetailModal from "../../leads/_components/LeadDetailModal";
 import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
 import { effectiveContractFeeForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
+import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -47,9 +43,8 @@ export default function AllCustomersOperationalPage() {
     () => new Map()
   );
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [modalLead, setModalLead] = useState<Lead | null>(null);
-  const [modalLoading, setModalLoading] = useState(false);
   const [search, setSearch] = useState("");
+  const { openLeadById } = useLeadDetailModal();
 
   const opScope = useMemo(() => {
     if (!profile || profile.role !== "admin") return null;
@@ -121,22 +116,9 @@ export default function AllCustomersOperationalPage() {
 
   const openLead = useCallback(
     async (id: string) => {
-      if (!opScope) return;
-      setModalLoading(true);
-      try {
-        const lead = await fetchLeadById(id, opScope);
-        if (!lead) {
-          toast.error("고객을 찾을 수 없습니다.");
-          return;
-        }
-        setModalLead(lead);
-      } catch (e) {
-        toast.error(e instanceof Error ? e.message : "불러오기 실패");
-      } finally {
-        setModalLoading(false);
-      }
+      await openLeadById(id);
     },
-    [opScope]
+    [openLeadById]
   );
 
   const onDownloadExcel = useCallback(() => {
@@ -327,55 +309,6 @@ export default function AllCustomersOperationalPage() {
         </div>
       </div>
 
-      {modalLoading ? (
-        <div className="fixed inset-0 z-[55] grid place-items-center bg-black/20 text-sm font-medium text-slate-700 dark:text-zinc-200">
-          불러오는 중…
-        </div>
-      ) : null}
-
-      {modalLead && profile && opScope ? (
-        <LeadDetailModal
-          key={modalLead.id}
-          lead={modalLead}
-          onClose={() => setModalLead(null)}
-          onUpdate={async (next, options) => {
-            const payload =
-              profile.role === "staff"
-                ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
-                : next;
-            await updateLead(payload, opScope, options);
-            setModalLead(payload);
-            setLeads((prev) => {
-              const nextList = prev ? prev.map((x) => (x.id === payload.id ? payload : x)) : prev;
-              if (nextList) {
-                const ids = nextList.map((x) => x.id);
-                void (async () => {
-                  const [cm, cfm] = await Promise.all([
-                    fetchMaxConsultationCreatedAtByLeadIds(ids, opScope),
-                    fetchContractFeeSummaryByLeadIds(ids, opScope),
-                  ]);
-                  setLastConsultByLead(cm);
-                  setContractByLead(cfm);
-                })();
-              }
-              return nextList;
-            });
-            toast.success("저장되었습니다.");
-          }}
-          onDelete={(id) => {
-            void (async () => {
-              try {
-                await deleteLeadById(id, opScope);
-                setModalLead(null);
-                setLeads((prev) => (prev ? prev.filter((x) => x.id !== id) : prev));
-                toast.success("삭제되었습니다.");
-              } catch (e) {
-                toast.error(e instanceof Error ? e.message : "삭제 실패");
-              }
-            })();
-          }}
-        />
-      ) : null}
     </div>
   );
 }

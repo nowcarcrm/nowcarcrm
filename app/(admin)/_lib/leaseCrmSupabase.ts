@@ -408,6 +408,7 @@ type LeadRow = {
   manager: string;
   manager_user_id: string | null;
   next_contact_at: string | null;
+  review_status?: string | null;
   summary_text?: string | null;
   next_action?: string | null;
   customer_intent?: string | null;
@@ -796,7 +797,7 @@ function mapRowToLead(
     leadPriority: coalescePriority(ext?.leadPriority),
     failureReason: typeof ext?.failureReason === "string" ? ext.failureReason : "",
     failureReasonNote: typeof ext?.failureReasonNote === "string" ? ext.failureReasonNote : "",
-    creditReviewStatus: coalesceCreditReview(ext?.creditReviewStatus),
+    creditReviewStatus: coalesceCreditReview(row.review_status ?? ext?.creditReviewStatus),
     quoteHistory: normalizeQuoteHistory(ext?.quoteHistory),
   };
   return lead;
@@ -820,6 +821,7 @@ function toLeadInsertRow(lead: Lead) {
     manager: lead.base.ownerStaff,
     manager_user_id: nullableDbStringId(lead.managerUserId),
     next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
+    review_status: lead.creditReviewStatus,
     created_at: lead.createdAt,
   };
 }
@@ -835,6 +837,7 @@ function toLeadUpdateRow(lead: Lead) {
     manager: lead.base.ownerStaff,
     manager_user_id: nullableDbStringId(lead.managerUserId),
     next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
+    review_status: lead.creditReviewStatus,
   };
 }
 
@@ -1414,6 +1417,30 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
     throw new Error(`고객 수정 실패: ${formatSupabaseError(error)}`);
   }
 
+  const { data: reviewLeadRow, error: reviewLeadErr } = await supabase
+    .from("leads")
+    .select("id,status,review_status")
+    .eq("id", leadForUpdate.id)
+    .maybeSingle();
+  console.log("review status refetch leads:", {
+    row: reviewLeadRow ?? null,
+    error: reviewLeadErr ? postgrestLikeFields(reviewLeadErr) : null,
+  });
+  if (reviewLeadErr) {
+    throw new Error(`심사상태 재조회 실패: ${formatSupabaseError(reviewLeadErr)}`);
+  }
+  if (reviewLeadRow) {
+    const savedReview = String(
+      (reviewLeadRow as { review_status?: string | null }).review_status ?? ""
+    ).trim();
+    const intendedReview = String(leadForUpdate.creditReviewStatus ?? "").trim();
+    if (intendedReview && savedReview !== intendedReview) {
+      throw new Error(
+        `심사상태 반영 확인 실패: 저장 요청='${intendedReview}', DB='${savedReview || "(빈값)"}'`
+      );
+    }
+  }
+
   const contractPayload = toContractRow(leadForUpdate);
   console.log("contract payload:", {
     lead_id: leadForUpdate.id,
@@ -1647,6 +1674,11 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
           `계약 저장 검증 실패: lead_id(${leadId}) row 개수가 1이 아닙니다. 현재 ${rows.length}건`
         );
       }
+      console.log("review status refetch contracts:", {
+        leadId,
+        status: rows[0]?.status ?? null,
+        review_status: (rows[0] as Record<string, unknown> | undefined)?.review_status ?? null,
+      });
     } catch (kErr) {
       console.error("계약 저장 오류", kErr, contract);
       throw kErr;

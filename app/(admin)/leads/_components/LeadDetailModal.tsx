@@ -1,8 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "framer-motion";
-import { modalBackdropMotion, modalPanelMotion } from "@/app/_lib/crmMotion";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { TapButton } from "@/app/_components/ui/crm-motion";
 import {
   BASE_CONTRACT_TERM_OPTIONS,
@@ -351,6 +349,7 @@ export default function LeadDetailModal({
   ) => void | Promise<void>;
   onDelete: (id: string) => void;
 }) {
+  const open = true;
   type TabKey = "basic" | "records" | "quotes" | "contract" | "export";
   const [activeTab, setActiveTab] = useState<TabKey>("basic");
   const [draft, setDraft] = useState<Lead>(lead);
@@ -359,12 +358,21 @@ export default function LeadDetailModal({
   const [recordCounselingStatusSideEffect, setRecordCounselingStatusSideEffect] = useState<
     "" | CounselingStatus
   >("");
-  const prevLeadIdRef = useRef<string | null>(null);
+  const initializedRef = useRef(false);
+  const initializedLeadIdRef = useRef<string | null>(null);
+  const renderRef = useRef(0);
+  const instanceIdRef = useRef<string | null>(null);
+  const usersLoadedForRoleRef = useRef<string>("");
   const { profile } = useAuth();
-  const reduceMotion = useReducedMotion();
-  const reduce = reduceMotion === true;
-  const backdropMotion = modalBackdropMotion(reduce);
-  const panelMotion = modalPanelMotion(reduce);
+  if (!instanceIdRef.current) {
+    instanceIdRef.current = `ldm-${Math.random().toString(36).slice(2, 9)}`;
+  }
+  renderRef.current += 1;
+  console.log("[LeadDetailModal render]", renderRef.current, {
+    instanceId: instanceIdRef.current,
+    open,
+    leadId: lead?.id,
+  });
   const staffContractLocked = profile?.role === "staff";
   /** 담당 직원 변경은 Admin만 (staff·manager는 UI·저장 모두 본인/고정). */
   const canReassignLeadOwner = profile?.role === "admin";
@@ -385,23 +393,39 @@ export default function LeadDetailModal({
   );
 
   useEffect(() => {
-    if (!canReassignLeadOwner) return;
+    const roleKey = `${profile?.role ?? "none"}:${canReassignLeadOwner ? "owner" : ""}:${canPickCounselor ? "counselor" : ""}`;
+    if (usersLoadedForRoleRef.current === roleKey) return;
+    if (!canReassignLeadOwner && !canPickCounselor) return;
     let cancelled = false;
     void listActiveUsers()
       .then((users) => {
         if (cancelled) return;
-        const options = users
-          .filter((u) => !!u.id && !!u.name?.trim())
-          .map((u) => ({ id: u.id, name: u.name.trim() }));
-        setLeadOwnerOptions(options);
+        if (canReassignLeadOwner) {
+          const options = users
+            .filter((u) => !!u.id && !!u.name?.trim())
+            .map((u) => ({ id: u.id, name: u.name.trim() }));
+          setLeadOwnerOptions(options);
+        }
+        if (canPickCounselor) {
+          const names = users.map((u) => u.name).filter(Boolean) as string[];
+          setCounselorOptions(names.length > 0 ? names : [...EMPLOYEES]);
+        }
+        usersLoadedForRoleRef.current = roleKey;
+        console.log("[LeadDetailModal] users loaded once", {
+          leadId: lead.id,
+          roleKey,
+          count: users.length,
+        });
       })
       .catch(() => {
-        if (!cancelled) setLeadOwnerOptions([]);
+        if (cancelled) return;
+        if (canReassignLeadOwner) setLeadOwnerOptions([]);
+        if (canPickCounselor) setCounselorOptions([...EMPLOYEES]);
       });
     return () => {
       cancelled = true;
     };
-  }, [canReassignLeadOwner]);
+  }, [canReassignLeadOwner, canPickCounselor, profile?.role]);
 
   const leadOwnerSelectChoices = useMemo(() => {
     const byId = new Map<string, string>(leadOwnerOptions.map((u) => [u.id, u.name]));
@@ -414,23 +438,6 @@ export default function LeadDetailModal({
   }, [leadOwnerOptions, draft.managerUserId, draft.base.ownerStaff]);
 
   const [counselorOptions, setCounselorOptions] = useState<string[]>(() => [...EMPLOYEES]);
-
-  useEffect(() => {
-    if (!canPickCounselor) return;
-    let cancelled = false;
-    void listActiveUsers()
-      .then((users) => {
-        if (cancelled) return;
-        const names = users.map((u) => u.name).filter(Boolean) as string[];
-        setCounselorOptions(names.length > 0 ? names : [...EMPLOYEES]);
-      })
-      .catch(() => {
-        if (!cancelled) setCounselorOptions([...EMPLOYEES]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [canPickCounselor]);
 
   const base = draft.base;
 
@@ -471,33 +478,71 @@ export default function LeadDetailModal({
 
   const [quoteDraft, setQuoteDraft] = useState<QuoteFormDraft>(() => emptyQuoteForm());
 
-  useLayoutEffect(() => {
-    console.log("LeadDetailModal incoming lead:", lead);
-    setDraft({
-      ...lead,
-      counselingRecords: Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [],
+  useEffect(() => {
+    const incomingLeadId = String(lead.id ?? "");
+    const firstInit = !initializedRef.current;
+    const leadChanged =
+      initializedLeadIdRef.current !== null && initializedLeadIdRef.current !== incomingLeadId;
+    if (!firstInit && !leadChanged) return;
+    console.log("[LeadDetailModal] incoming lead -> form init", {
+      incomingLeadId,
+      firstInit,
+      leadChanged,
+      creditReviewStatus: lead.creditReviewStatus ?? null,
     });
-    const prev = prevLeadIdRef.current;
-    if (prev !== null && prev !== lead.id) {
-      setActiveTab("basic");
-      setQuoteDraft(emptyQuoteForm());
-      setRecordDraft({
-        occurredAt: new Date().toISOString(),
-        counselor:
-          profile?.role === "staff"
-            ? profile?.name?.trim() || lead.base.ownerStaff
-            : lead.base.ownerStaff,
-        method: "전화",
-        content: "",
-        reaction: "",
-        desiredProgressAt: new Date().toISOString(),
-        nextContactAt: new Date().toISOString(),
-        nextContactMemo: "",
-        importance: "보통",
-      });
-    }
-    prevLeadIdRef.current = lead.id;
-  }, [lead, profile?.role, profile?.name]);
+    setDraft(ensureLeadShape(lead));
+    setActiveTab("basic");
+    setQuoteDraft(emptyQuoteForm());
+    setRecordDraft({
+      occurredAt: new Date().toISOString(),
+      counselor:
+        profile?.role === "staff" ? profile?.name?.trim() || lead.base.ownerStaff : lead.base.ownerStaff,
+      method: "전화",
+      content: "",
+      reaction: "",
+      desiredProgressAt: new Date().toISOString(),
+      nextContactAt: new Date().toISOString(),
+      nextContactMemo: "",
+      importance: "보통",
+    });
+    initializedRef.current = true;
+    initializedLeadIdRef.current = incomingLeadId;
+  }, [lead.id]);
+
+  useEffect(() => {
+    console.log("[effect] init form", { open, leadId: lead?.id });
+  }, [open, lead?.id]);
+
+  useEffect(() => {
+    console.log("[LeadDetailModal] mounted", { leadId: lead.id });
+    return () => {
+      console.log("[LeadDetailModal] unmounted", { leadId: lead.id });
+      initializedRef.current = false;
+      initializedLeadIdRef.current = null;
+      usersLoadedForRoleRef.current = "";
+    };
+  }, [lead.id]);
+
+  useEffect(() => {
+    const prev = {
+      htmlOverflow: document.documentElement.style.overflow,
+      bodyOverflow: document.body.style.overflow,
+    };
+    document.documentElement.style.overflow = "hidden";
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.documentElement.style.overflow = prev.htmlOverflow;
+      document.body.style.overflow = prev.bodyOverflow;
+    };
+  }, []);
+
+  useEffect(() => {
+    console.log("[effect] users changed", leadOwnerOptions?.length);
+  }, [leadOwnerOptions]);
+
+  useEffect(() => {
+    console.log("[effect] form changed");
+  }, [draft]);
 
   const sortedQuotes = useMemo(
     () => [...(draft.quoteHistory ?? [])].sort((a, b) => b.quotedAt.localeCompare(a.quotedAt)),
@@ -534,6 +579,7 @@ export default function LeadDetailModal({
   }
 
   async function saveBase() {
+    console.log("review status ui value:", draft.creditReviewStatus);
     console.log("selectedUserId:", draft.managerUserId ?? null);
     console.log("saveBase payload:", draft);
     console.log("saveBase should sync contracts?:", false);
@@ -601,6 +647,12 @@ export default function LeadDetailModal({
   }
 
   async function saveContract(nextContract: ContractInfo | null, nextCounselingStatus?: CounselingStatus) {
+    console.log("review status ui value:", draft.creditReviewStatus);
+    console.log("saveContract payload:", {
+      nextContract,
+      nextCounselingStatus,
+      reviewStatus: draft.creditReviewStatus,
+    });
     if (profile?.role === "staff") {
       toast.error("직원 권한에서는 계약을 저장할 수 없습니다.");
       return;
@@ -768,22 +820,15 @@ export default function LeadDetailModal({
 
   return (
     <>
-      <motion.div
-        className="fixed inset-0 z-50 bg-black/40 backdrop-blur-[1px]"
-        initial={backdropMotion.initial}
-        animate={backdropMotion.animate}
-        transition={backdropMotion.transition}
-        onClick={onClose}
-        aria-hidden="true"
-      />
-      <div className="fixed inset-0 z-50 flex items-center justify-center p-4 pointer-events-none">
-        <motion.div
-          className="crm-modal-panel pointer-events-auto max-h-[min(90dvh,920px)] max-w-5xl overflow-y-auto overscroll-y-contain"
-          initial={panelMotion.initial}
-          animate={panelMotion.animate}
-          transition={panelMotion.transition}
-        >
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="fixed inset-0 z-50 overflow-y-auto bg-[rgba(7,18,38,0.55)] backdrop-blur-[2px]" onClick={onClose}>
+        <div className="flex min-h-full justify-center px-4 pb-6 pt-12">
+          <div
+            className="pointer-events-auto relative w-full max-w-5xl overflow-hidden rounded-[26px] border border-[var(--crm-border)] bg-white/98 shadow-[0_32px_80px_rgba(8,20,38,0.3)] dark:border-zinc-800 dark:bg-zinc-950"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="max-h-[calc(100dvh-72px)] overflow-y-auto">
+              <div className="shrink-0 p-6 pb-0">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
@@ -847,11 +892,10 @@ export default function LeadDetailModal({
                 ✕
               </TapButton>
             </div>
-          </div>
+              </div>
 
-          <div className="mt-5 border-b border-zinc-200 dark:border-zinc-800">
-            <LayoutGroup id="lead-detail-modal-tabs">
-              <div className="-mb-px flex flex-wrap gap-0.5">
+            <div className="mt-6 shrink-0 border-b border-zinc-200/90 bg-[linear-gradient(180deg,#f8fbff,#eef4fb)] px-2 dark:border-zinc-800 dark:bg-zinc-900/30">
+              <div className="-mb-px flex flex-wrap gap-1 py-2">
                 {tabs.map((t) => {
                   const on = activeTab === t.key;
                   return (
@@ -860,36 +904,24 @@ export default function LeadDetailModal({
                       type="button"
                       onClick={() => setActiveTab(t.key as TabKey)}
                       className={cn(
-                        "relative rounded-t-lg px-3 py-2.5 text-sm transition-colors",
+                        "relative rounded-xl px-4 py-2.5 text-sm",
                         on
-                          ? "font-semibold text-zinc-900 dark:text-zinc-50"
-                          : "font-medium text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+                          ? "bg-white font-semibold text-zinc-900 shadow-[0_8px_22px_rgba(15,23,42,0.12)] dark:bg-zinc-800 dark:text-zinc-50"
+                          : "font-medium text-zinc-500 hover:bg-white hover:text-zinc-800 hover:shadow-[0_8px_20px_rgba(15,23,42,0.08)] dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-200"
                       )}
                     >
                       {on ? (
-                        <motion.span
-                          layoutId="lead-modal-tab-underline"
-                          className="absolute inset-x-2 -bottom-px h-[3px] rounded-full bg-[var(--crm-blue-deep)] dark:bg-sky-400"
-                          transition={{ type: "tween", duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                        />
+                        <span className="absolute inset-x-2 -bottom-px h-[3px] rounded-full bg-[var(--crm-blue-deep)] dark:bg-sky-400" />
                       ) : null}
                       <span className="relative z-10">{t.label}</span>
                     </button>
                   );
                 })}
               </div>
-            </LayoutGroup>
+            </div>
           </div>
-
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={activeTab}
-              initial={{ opacity: 0, y: 6 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -4 }}
-              transition={{ duration: 0.14, ease: [0.22, 1, 0.36, 1] }}
-              className="mt-6"
-            >
+            <section className="px-6 pb-6 pt-6">
+              <div>
             {activeTab === "basic" ? (
               <div className="space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
@@ -2057,9 +2089,11 @@ export default function LeadDetailModal({
                 onSave={(nextExport, nextStatus) => void saveExport(nextExport, nextStatus)}
               />
             ) : null}
-            </motion.div>
-          </AnimatePresence>
-        </motion.div>
+              </div>
+            </section>
+            </div>
+          </div>
+        </div>
       </div>
       <AiCounselAssistPopup lead={draft} />
     </>

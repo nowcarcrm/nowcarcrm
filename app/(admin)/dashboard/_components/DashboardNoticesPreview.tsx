@@ -52,10 +52,10 @@ export default function DashboardNoticesPreview({
   const shell =
     variant === "panel"
       ? cn(
-          "overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-zinc-800 dark:bg-zinc-950"
+          "crm-card overflow-hidden"
         )
       : cn(
-          "overflow-hidden rounded-2xl border border-slate-200/80 bg-gradient-to-b from-white to-slate-50/80 shadow-[0_4px_24px_rgba(15,40,71,0.08)] dark:border-zinc-800 dark:from-zinc-950 dark:to-zinc-950/95"
+          "overflow-hidden rounded-2xl border border-[var(--crm-border)] bg-gradient-to-b from-white to-slate-50/80 shadow-[var(--crm-shadow-md)] dark:border-zinc-800 dark:from-zinc-950 dark:to-zinc-950/95"
         );
 
   return (
@@ -69,7 +69,7 @@ export default function DashboardNoticesPreview({
         )}
       >
         <div>
-          <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">공지사항</h2>
+          <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">공지사항</h2>
           <p className="mt-0.5 text-[14px] text-slate-600 dark:text-zinc-400">회사 운영 소식 · 최신 3건</p>
         </div>
         <Link
@@ -96,8 +96,9 @@ export default function DashboardNoticesPreview({
                 <Link
                   href={`/notices/${n.id}`}
                   className={cn(
-                    "block rounded-xl border border-slate-200/90 bg-white p-4 transition-[transform,box-shadow,border-color] duration-200",
+                    "block rounded-xl border border-slate-200/90 bg-white p-4 transition-[transform,box-shadow,border-color,background-color] duration-220",
                     "hover:-translate-y-[3px] hover:border-[var(--crm-blue)]/25 hover:shadow-[0_20px_40px_rgba(15,23,42,0.1)]",
+                    "hover:bg-[#eff5ff]",
                     "dark:border-zinc-800 dark:bg-zinc-900/60 dark:hover:border-sky-500/30",
                     n.isPinned && "border-[var(--crm-blue)]/35 bg-[#f4f7fc] dark:border-sky-500/40 dark:bg-sky-950/20",
                     n.isImportant && !n.isPinned && "border-amber-200/80 bg-amber-50/50 dark:border-amber-500/25 dark:bg-amber-500/5"

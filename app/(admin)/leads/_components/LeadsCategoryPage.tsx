@@ -34,8 +34,7 @@ import {
 } from "../../_lib/leaseCrmStorage";
 import { getSupabaseConfigStatus } from "../../_lib/supabaseClient";
 import LeadCreateModal from "./LeadCreateModal";
-import LeadDetailModal from "./LeadDetailModal";
-import { useLeadListSearch } from "@/app/_components/admin/AdminShell";
+import { useLeadDetailModal, useLeadListSearch } from "@/app/_components/admin/AdminShell";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import toast from "react-hot-toast";
@@ -153,7 +152,8 @@ function LeadsCategoryView({
   const searchParams = useSearchParams();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [activeLeadId, setActiveLeadId] = useState<string | null>(null);
+  const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
+  const { openLeadById } = useLeadDetailModal();
   const { query: searchInput, setQuery: setSearchInput } = useLeadListSearch();
   const [sortBy, setSortBy] = useState<SortKey>("lastContactOldest");
   const [createOwnerOptions, setCreateOwnerOptions] = useState<Array<{ id: string; name: string }>>([]);
@@ -244,7 +244,12 @@ function LeadsCategoryView({
     }
   }, [searchParams, pathname, router]);
 
-  const selectedLead = useMemo(() => leads?.find((l) => l.id === activeLeadId) ?? null, [leads, activeLeadId]);
+  useEffect(() => {
+    const leadIdFromQuery = searchParams.get("leadId");
+    if (!leadIdFromQuery || selectedLeadId === leadIdFromQuery) return;
+    setSelectedLeadId(leadIdFromQuery);
+    void openLeadById(leadIdFromQuery);
+  }, [searchParams, selectedLeadId, openLeadById]);
 
   const byCategory = useMemo(() => {
     if (!leads) return [];
@@ -339,6 +344,11 @@ function LeadsCategoryView({
     setLeads(next);
   }
 
+  function handleOpenLeadDetail(lead: Lead) {
+    setSelectedLeadId(lead.id);
+    void openLeadById(lead.id);
+  }
+
   async function commitCounselingStatus(row: Lead, nextStatus: CounselingStatus, fr?: string, note?: string) {
     const nextIso = new Date().toISOString();
     const next: Lead = {
@@ -427,7 +437,7 @@ function LeadsCategoryView({
         userId: profile.userId,
       });
       commitLeads((leads ?? []).filter((l) => l.id !== id));
-      setActiveLeadId(null);
+      setSelectedLeadId(null);
       toast.success("고객을 삭제했습니다.");
     } catch (err) {
       const message =
@@ -484,13 +494,13 @@ function LeadsCategoryView({
 
   return (
     <div className="crm-card">
-      <div className="space-y-5 p-5 sm:p-6 lg:p-8">
+      <div className="space-y-6 p-6 sm:p-7 lg:p-9">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0">
           <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
             고객 단계
           </div>
-          <h1 className="mt-1 text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
+          <h1 className="mt-1 text-2xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
             {categoryLabel}
           </h1>
           <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
@@ -549,7 +559,7 @@ function LeadsCategoryView({
         </TapButton>
       </div>
 
-      <div className="flex flex-col gap-3 rounded-lg border border-zinc-200/90 bg-zinc-50/60 p-4 sm:flex-row sm:items-end sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/25">
+      <div className="flex flex-col gap-3 rounded-2xl border border-zinc-200/90 bg-[linear-gradient(180deg,#f8fbff,#f1f6fc)] p-5 sm:flex-row sm:items-end sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/25">
         <div>
           <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
             정렬
@@ -605,7 +615,7 @@ function LeadsCategoryView({
               <li key={l.id}>
                 <button
                   type="button"
-                  onClick={() => setActiveLeadId(l.id)}
+                  onClick={() => handleOpenLeadDetail(l)}
                   className="rounded-md underline-offset-2 hover:underline"
                 >
                   {l.base.name}
@@ -629,10 +639,10 @@ function LeadsCategoryView({
         </div>
       ) : null}
 
-      <div className="overflow-hidden rounded-lg border border-zinc-200/90 dark:border-zinc-800">
+      <div className="overflow-hidden rounded-2xl border border-zinc-200/90 shadow-[0_14px_32px_rgba(15,23,42,0.08)] dark:border-zinc-800">
         <div className="overflow-x-auto">
           <table className="min-w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 bg-zinc-50/90 text-[11px] font-medium uppercase tracking-wider text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-400">
+            <thead className="border-b border-zinc-200 bg-slate-50/95 text-[11px] font-semibold uppercase tracking-wider text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-400">
               <tr>
                 <th className="px-4 py-3 font-medium">고객</th>
                 <th className="px-4 py-3 font-medium">원하는 차종</th>
@@ -669,7 +679,7 @@ function LeadsCategoryView({
                     <tr
                       key={row.id}
                       className={cn(
-                        "border-b border-zinc-100 transition-colors duration-150 ease-out last:border-0 hover:bg-slate-50/95 dark:border-zinc-800/80 dark:hover:bg-zinc-800/55",
+                        "border-b border-zinc-100 transition-all duration-180 ease-out last:border-0 hover:bg-[#edf3ff] hover:shadow-[inset_0_0_0_1px_rgba(59,130,246,0.08)] dark:border-zinc-800/80 dark:hover:bg-zinc-800/55",
                         isTodayFollowUp && "bg-zinc-50/90 dark:bg-zinc-900/35"
                       )}
                     >
@@ -805,7 +815,7 @@ function LeadsCategoryView({
                         <div className="flex items-center justify-end gap-2">
                           <TapButton
                             type="button"
-                            onClick={() => setActiveLeadId(row.id)}
+                            onClick={() => handleOpenLeadDetail(row)}
                             className="rounded-md px-2.5 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
                           >
                             상세
@@ -928,15 +938,6 @@ function LeadsCategoryView({
         />
       ) : null}
 
-      {selectedLead ? (
-        <LeadDetailModal
-          key={selectedLead.id}
-          lead={selectedLead}
-          onClose={() => setActiveLeadId(null)}
-          onUpdate={handleUpdateLead}
-          onDelete={(id) => void handleDeleteLead(id)}
-        />
-      ) : null}
     </div>
   );
 }

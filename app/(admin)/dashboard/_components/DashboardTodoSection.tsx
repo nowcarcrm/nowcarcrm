@@ -39,11 +39,11 @@ function TodoCard({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex h-full min-h-[280px] flex-col rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-zinc-800 dark:bg-zinc-950">
-      <div className="border-b border-slate-100 px-5 py-4 dark:border-zinc-800/80">
+    <div className="crm-card flex h-full min-h-[312px] flex-col">
+      <div className="border-b border-slate-200/90 px-6 py-5 dark:border-zinc-800/80">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <div>
-            <h3 className="text-[15px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">{title}</h3>
+            <h3 className="text-[16px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">{title}</h3>
             <p className="mt-1 text-[13px] leading-snug text-slate-600 dark:text-zinc-400">{subtitle}</p>
           </div>
           <Link
@@ -54,7 +54,7 @@ function TodoCard({
           </Link>
         </div>
       </div>
-      <div className="flex flex-1 flex-col px-2 pb-2 pt-1 sm:px-3">
+      <div className="flex flex-1 flex-col px-3 pb-3 pt-2 sm:px-4">
         {loading ? <ListSkeleton /> : null}
         {!loading && empty ? (
           <div className="flex flex-1 items-center justify-center px-3 py-10">
@@ -92,12 +92,12 @@ function LeadTodoRow({
     <motion.button
       type="button"
       onClick={() => onSelect(lead.id!)}
-      whileHover={{ scale: 1.01 }}
+      whileHover={{ scale: 1.01, y: -1 }}
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15, ease: "easeOut" }}
       className={cn(
-        "flex w-full cursor-pointer items-start gap-3 rounded-xl border-l-[3px] border-l-[#2563eb] px-3 py-3 text-left transition-colors duration-150 ease-out",
-        "hover:bg-[#f1f5f9] dark:hover:bg-zinc-900/70"
+        "flex w-full cursor-pointer items-start gap-3 rounded-xl border border-slate-200/90 border-l-[3px] border-l-[#2563eb] bg-white/80 px-3 py-3 text-left transition-all duration-200 ease-out dark:border-zinc-700/70 dark:bg-zinc-900/30",
+        "hover:bg-[#eef4ff] hover:shadow-[0_12px_22px_rgba(15,23,42,0.09)] dark:hover:bg-zinc-900/70"
       )}
     >
       <div className="min-w-0 flex-1">
@@ -135,7 +135,7 @@ export default function DashboardTodoSection({
   return (
     <section aria-label="오늘 할 일과 최근 활동">
       <div className="mb-4">
-        <h2 className="text-[16px] font-semibold text-[var(--crm-accent)] dark:text-zinc-100">오늘 할 일 · 최근 활동</h2>
+        <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">오늘 할 일 · 최근 활동</h2>
         <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
           오늘 연락, 막 등록된 고객, 최근 상담 접점을 빠르게 이어갑니다.
         </p>

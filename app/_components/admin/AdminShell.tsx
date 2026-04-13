@@ -1,11 +1,21 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { LayoutGroup, motion, useReducedMotion } from "framer-motion";
 import GlobalLeadSearch from "./GlobalLeadSearch";
 import CrmPageTransition from "../motion/CrmPageTransition";
+import toast from "react-hot-toast";
+import LeadDetailModal from "@/app/(admin)/leads/_components/LeadDetailModal";
+import type { Lead } from "@/app/(admin)/_lib/leaseCrmTypes";
+import { fetchLeadById } from "@/app/(admin)/_lib/leaseCrmSupabase";
+import {
+  applyStaffLeadClientLocks,
+  deleteLeadById,
+  updateLead,
+} from "@/app/(admin)/_lib/leaseCrmStorage";
+import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -13,11 +23,29 @@ type LeadListSearchContextValue = {
 };
 
 const LeadListSearchContext = createContext<LeadListSearchContextValue | null>(null);
+type LeadDetailModalContextValue = {
+  openLeadById: (leadId: string) => Promise<void>;
+  openLead: (lead: Lead) => void;
+  closeLead: () => void;
+};
+const LeadDetailModalContext = createContext<LeadDetailModalContextValue | null>(null);
 
 export function useLeadListSearch() {
   const ctx = useContext(LeadListSearchContext);
   if (!ctx) {
     return { query: "", setQuery: () => {} };
+  }
+  return ctx;
+}
+
+export function useLeadDetailModal() {
+  const ctx = useContext(LeadDetailModalContext);
+  if (!ctx) {
+    return {
+      openLeadById: async () => {},
+      openLead: () => {},
+      closeLead: () => {},
+    };
   }
   return ctx;
 }
@@ -260,19 +288,19 @@ function SidebarNavLink({
     <Link href={item.href} onClick={onNavigate} className="relative block rounded-xl outline-none">
       <motion.div
         className={cn(
-          "group relative overflow-hidden rounded-xl py-2.5 pl-3 pr-2.5 transition-colors duration-200 ease-out",
+          "group relative overflow-hidden rounded-2xl py-4 pl-4 pr-3.5 transition-all duration-250 ease-out",
           active
-            ? "bg-gradient-to-r from-sky-500/18 to-transparent text-white shadow-[inset_0_0_0_1px_rgba(56,189,248,0.22),0_1px_12px_rgba(15,23,42,0.25)]"
-            : "text-slate-300 hover:bg-white/[0.08] hover:text-white"
+            ? "bg-white/[0.12] text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.16),0_12px_28px_rgba(2,6,23,0.4)]"
+            : "text-slate-300 hover:bg-white/[0.08] hover:text-white hover:shadow-[0_10px_20px_rgba(2,6,23,0.2)]"
         )}
-        whileHover={reduce || active ? undefined : { x: 3 }}
-        whileTap={{ scale: 0.987 }}
-        transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+        whileHover={reduce || active ? undefined : { x: 5, y: -1 }}
+        whileTap={{ scale: 0.986 }}
+        transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
       >
         {active ? (
           <motion.span
             layoutId="sidebar-active-bar"
-            className="absolute left-0 top-1/2 h-7 w-[3px] -translate-y-1/2 rounded-r-full bg-gradient-to-b from-sky-300 to-sky-500 shadow-[0_0_12px_rgba(56,189,248,0.45)]"
+              className="absolute left-0 top-1/2 h-8 w-[3px] -translate-y-1/2 rounded-r-full bg-gradient-to-b from-sky-300 to-sky-500 shadow-[0_0_14px_rgba(56,189,248,0.45)]"
             transition={{ type: "tween", duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             aria-hidden
           />
@@ -286,8 +314,8 @@ function SidebarNavLink({
           <div className="flex items-center gap-2">
             <span
               className={cn(
-                "truncate text-[13px] leading-snug tracking-tight",
-                active ? "font-semibold text-white" : "font-medium text-slate-200"
+                "truncate text-[15px] leading-snug tracking-tight",
+                active ? "font-semibold text-white" : "font-semibold text-slate-200"
               )}
             >
               {item.label}
@@ -300,8 +328,8 @@ function SidebarNavLink({
           </div>
           <p
             className={cn(
-              "mt-0.5 truncate text-[11px] leading-snug",
-              active ? "text-slate-200/90" : "text-slate-500 group-hover:text-slate-400"
+              "mt-1 truncate text-[12px] leading-snug",
+              active ? "text-slate-200/95" : "text-slate-500 group-hover:text-slate-300"
             )}
           >
             {item.description}
@@ -367,22 +395,22 @@ function SidebarContents({
   }, [currentUser?.userId, currentUser?.role, currentUser?.name, currentUser?.email]);
 
   return (
-    <div className="flex h-full flex-col">
-      <div className="border-b border-white/10 px-5 pb-4 pt-5">
+    <div className="relative z-10 flex h-full flex-col">
+      <div className="border-b border-white/10 px-5 pb-4 pt-6">
         <div className="flex items-center gap-3.5">
-          <div className="grid size-10 shrink-0 place-items-center rounded-xl bg-gradient-to-br from-[#2563eb] to-[#1e3a5f] text-[10px] font-extrabold tracking-tight text-white shadow-lg ring-1 ring-white/10">
+          <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-[#2f7cff] to-[#1f4e9b] text-[10px] font-extrabold tracking-tight text-white shadow-[0_10px_20px_rgba(3,13,34,0.35)] ring-1 ring-white/20">
             NC
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[15px] font-bold tracking-tight text-white">{APP_NAME}</div>
-            <div className="mt-0.5 truncate text-[11px] font-medium text-slate-400">
+            <div className="truncate text-[17px] font-extrabold tracking-tight text-white">{APP_NAME}</div>
+            <div className="mt-0.5 truncate text-[12px] font-medium text-slate-300">
               {APP_SUBTITLE} · 리스·렌트 운영 콘솔
             </div>
           </div>
         </div>
       </div>
 
-      <div className="px-4 pt-4">
+      <div className="px-4 pt-5">
         <GlobalLeadSearch
           variant="sidebar"
           value={searchValue}
@@ -391,23 +419,23 @@ function SidebarContents({
         />
       </div>
 
-      <nav className="flex-1 overflow-y-auto overscroll-contain px-3 pb-3 pt-4">
+      <nav className="flex-1 overflow-y-auto overscroll-contain px-3 pb-4 pt-5">
         <LayoutGroup id="crm-sidebar-nav">
           {visibleNavSections.map((section, sIdx) => (
             <motion.div
               key={section.key}
-              className="pt-6 first:pt-2"
+              className="pt-7 first:pt-1"
               initial={{ opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: sIdx * 0.04, duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
             >
               {section.title ? (
-                <div className="px-2.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+                <div className="px-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
                   {section.title}
                 </div>
               ) : null}
               {section.subtitle ? (
-                <div className="mt-1 px-2.5 text-[10px] leading-snug text-slate-500">
+                <div className="mt-1 px-2.5 text-[11px] leading-snug text-slate-500/95">
                   {section.subtitle}
                 </div>
               ) : null}
@@ -427,7 +455,7 @@ function SidebarContents({
       </nav>
 
       <div className="mt-auto border-t border-white/10 p-4">
-        <div className="rounded-xl border border-white/10 bg-white/[0.04] p-3.5 backdrop-blur-sm">
+        <div className="rounded-2xl border border-white/20 bg-white/[0.08] p-4 backdrop-blur-sm shadow-[0_12px_30px_rgba(2,6,23,0.35)]">
           <div className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500">
             세션
           </div>
@@ -459,21 +487,61 @@ export default function AdminShell({
   currentUser?: ShellUser;
   onLogout?: () => void;
 }) {
+  const router = useRouter();
   const pathname = usePathname();
   const pageTitle = titleForPathname(pathname);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [leadSearchQuery, setLeadSearchQuery] = useState("");
+  const [modalLead, setModalLead] = useState<Lead | null>(null);
+  const [modalLoading, setModalLoading] = useState(false);
   const leadSearchValue = useMemo(
     () => ({ query: leadSearchQuery, setQuery: setLeadSearchQuery }),
     [leadSearchQuery]
   );
+  const modalScope = useMemo(() => {
+    if (!currentUser) return null;
+    if (currentUser.role === "admin" && pathname?.startsWith("/operations")) {
+      return {
+        role: "admin" as const,
+        userId: currentUser.userId,
+        operationalFullAccess: true,
+      };
+    }
+    return { role: currentUser.role, userId: currentUser.userId };
+  }, [currentUser, pathname]);
+
+  const modalValue = useMemo<LeadDetailModalContextValue>(
+    () => ({
+      openLeadById: async (leadId: string) => {
+        if (!modalScope) return;
+        setModalLoading(true);
+        try {
+          const lead = await fetchLeadById(leadId, modalScope);
+          if (!lead) {
+            toast.error("고객을 찾을 수 없거나 권한이 없습니다.");
+            return;
+          }
+          setModalLead(lead);
+        } catch (e) {
+          toast.error(e instanceof Error ? e.message : "고객 정보를 불러오지 못했습니다.");
+        } finally {
+          setModalLoading(false);
+        }
+      },
+      openLead: (lead: Lead) => setModalLead(lead),
+      closeLead: () => setModalLead(null),
+    }),
+    [modalScope]
+  );
 
   return (
     <LeadListSearchContext.Provider value={leadSearchValue}>
-      <div className="min-h-dvh bg-[var(--crm-canvas)] dark:bg-zinc-950">
+      <LeadDetailModalContext.Provider value={modalValue}>
+        <div className="min-h-dvh bg-[var(--crm-canvas)] dark:bg-zinc-950">
         <div className="mx-auto flex min-h-dvh w-full max-w-[1920px]">
           {/* Desktop sidebar */}
-          <aside className="hidden w-[288px] shrink-0 border-r border-[var(--crm-border-strong)] bg-[#0f2847] shadow-[4px_0_24px_-8px_rgba(15,23,42,0.12)] dark:border-zinc-800 dark:bg-[#0a1628] dark:shadow-none lg:block">
+          <aside className="relative hidden w-[316px] shrink-0 border-r border-[var(--crm-border-strong)] bg-[linear-gradient(180deg,#0a1f3f_0%,#0d2b56_50%,#081a33_100%)] shadow-[12px_0_36px_-14px_rgba(15,23,42,0.35)] dark:border-zinc-800 dark:bg-[#081426] dark:shadow-none lg:block">
+            <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(147,197,253,0.18),transparent_45%)]" aria-hidden />
             <SidebarContents
               currentUser={currentUser}
               onLogout={onLogout}
@@ -515,8 +583,8 @@ export default function AdminShell({
 
           {/* Main column */}
           <div className="flex min-w-0 flex-1 flex-col">
-            <header className="sticky top-0 z-30 border-b border-slate-200/90 bg-white shadow-[0_1px_2px_rgba(15,23,42,0.06)] dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="px-4 py-3 sm:px-6 lg:px-8">
+            <header className="sticky top-0 z-30 border-b border-slate-200/85 bg-white/92 shadow-[0_8px_26px_rgba(15,23,42,0.08)] backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/90">
+              <div className="px-4 py-3.5 sm:px-6 lg:px-8">
                 <div className="relative flex flex-wrap items-center gap-3 sm:gap-4 lg:flex-nowrap">
                   <button
                     type="button"
@@ -548,7 +616,7 @@ export default function AdminShell({
                   </Link>
 
                   <div className="order-last hidden w-full flex-1 justify-center lg:order-none lg:flex">
-                    <h1 className="text-[18px] font-semibold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">
+                    <h1 className="text-[21px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">
                       {pageTitle}
                     </h1>
                   </div>
@@ -562,7 +630,7 @@ export default function AdminShell({
                     </Link>
                     <Link
                       href="/leads/counseling-progress"
-                      className="hidden whitespace-nowrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-[14px] font-semibold text-slate-800 shadow-[var(--crm-shadow-sm)] transition-[border-color,background] hover:border-[var(--crm-blue)]/40 hover:bg-slate-50 sm:inline-flex dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800/80"
+                      className="hidden whitespace-nowrap rounded-xl border border-slate-300/90 bg-white px-3.5 py-2.5 text-[14px] font-semibold text-slate-800 shadow-[var(--crm-shadow-sm)] transition-[border-color,background,box-shadow,transform] hover:-translate-y-[1px] hover:border-[var(--crm-blue)]/40 hover:bg-slate-50 hover:shadow-[0_12px_24px_rgba(15,23,42,0.1)] sm:inline-flex dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:hover:bg-zinc-800/80"
                     >
                       상담 기록
                     </Link>
@@ -616,7 +684,45 @@ export default function AdminShell({
             </main>
           </div>
         </div>
-      </div>
+          {modalLoading ? (
+            <div className="fixed inset-0 z-[55] grid place-items-center bg-black/20 text-sm font-medium text-slate-700 dark:text-zinc-200">
+              불러오는 중…
+            </div>
+          ) : null}
+          {modalLead && modalScope ? (
+            <LeadDetailModal
+              lead={modalLead}
+              onClose={() => setModalLead(null)}
+              onUpdate={async (next, options) => {
+                const payload =
+                  modalScope.role === "staff"
+                    ? applyStaffLeadClientLocks(next, {
+                        userId: modalScope.userId,
+                        name: currentUser?.name ?? "",
+                      })
+                    : next;
+                await updateLead(payload, modalScope, options);
+                setModalLead(payload);
+                const nextPath = pathnameAfterCounselingStatusChange(payload.counselingStatus);
+                if (pathname !== nextPath) router.push(nextPath);
+                router.refresh();
+              }}
+              onDelete={(id) => {
+                void (async () => {
+                  try {
+                    await deleteLeadById(id, modalScope);
+                    setModalLead(null);
+                    router.refresh();
+                    toast.success("삭제되었습니다.");
+                  } catch (e) {
+                    toast.error(e instanceof Error ? e.message : "삭제에 실패했습니다.");
+                  }
+                })();
+              }}
+            />
+          ) : null}
+        </div>
+      </LeadDetailModalContext.Provider>
     </LeadListSearchContext.Provider>
   );
 }
