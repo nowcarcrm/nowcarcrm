@@ -54,6 +54,7 @@ type PrimaryDef = {
   href: string;
   accent: string;
   tier: 1 | 2;
+  valueTone?: "up" | "risk" | "neutral";
   format: (v: DashboardKpiValues) => string;
 };
 
@@ -65,6 +66,7 @@ const PRIMARY: PrimaryDef[] = [
     href: "/leads/contract-progress",
     accent: "bg-[#1a365d]",
     tier: 1,
+    valueTone: "up",
     format: (v) => formatWon(v.expectedCommissionWon),
   },
   {
@@ -74,6 +76,7 @@ const PRIMARY: PrimaryDef[] = [
     href: "/leads/delivery-complete",
     accent: "bg-indigo-700",
     tier: 1,
+    valueTone: "up",
     format: (v) => formatWon(v.confirmedCommissionThisMonthWon),
   },
   {
@@ -83,6 +86,7 @@ const PRIMARY: PrimaryDef[] = [
     href: "/leads/new-db",
     accent: "bg-slate-500",
     tier: 2,
+    valueTone: "up",
     format: (v) => `${v.thisMonthRegisteredCount}건`,
   },
   {
@@ -92,6 +96,7 @@ const PRIMARY: PrimaryDef[] = [
     href: "/leads/new-db",
     accent: "bg-slate-400",
     tier: 2,
+    valueTone: "neutral",
     format: (v) => `${v.assignedCustomerCount}건`,
   },
 ];
@@ -103,9 +108,10 @@ const PIPELINE: {
   href: string;
   accent: string;
   valueKey: keyof PipelineStageCounts;
+  valueTone?: "up" | "risk" | "neutral";
   compact?: boolean;
 }[] = [
-  { key: "new", label: "신규", hint: "새로 유입된 고객", href: "/leads/new-db", accent: "bg-slate-500", valueKey: "newDb" },
+  { key: "new", label: "신규", hint: "새로 유입된 고객", href: "/leads/new-db", accent: "bg-slate-500", valueKey: "newDb", valueTone: "up" },
   {
     key: "counsel",
     label: "상담중",
@@ -113,6 +119,7 @@ const PIPELINE: {
     href: "/leads/counseling-progress",
     accent: "bg-sky-600",
     valueKey: "counseling",
+    valueTone: "neutral",
   },
   {
     key: "contract",
@@ -121,6 +128,7 @@ const PIPELINE: {
     href: "/leads/contract-progress",
     accent: "bg-indigo-600",
     valueKey: "contract",
+    valueTone: "up",
   },
   {
     key: "export",
@@ -129,6 +137,7 @@ const PIPELINE: {
     href: "/leads/export-progress",
     accent: "bg-violet-600",
     valueKey: "exportProgress",
+    valueTone: "neutral",
   },
   {
     key: "delivery",
@@ -137,8 +146,9 @@ const PIPELINE: {
     href: "/leads/delivery-complete",
     accent: "bg-emerald-600",
     valueKey: "deliveryComplete",
+    valueTone: "up",
   },
-  { key: "hold", label: "보류", hint: "보류 상태 고객", href: "/leads/hold", accent: "bg-amber-500", valueKey: "hold" },
+  { key: "hold", label: "보류", hint: "보류 상태 고객", href: "/leads/hold", accent: "bg-amber-500", valueKey: "hold", valueTone: "risk" },
   {
     key: "cancel",
     label: "취소",
@@ -146,6 +156,7 @@ const PIPELINE: {
     href: "/leads/cancel",
     accent: "bg-rose-600/90",
     valueKey: "cancel",
+    valueTone: "risk",
   },
   {
     key: "away",
@@ -154,12 +165,19 @@ const PIPELINE: {
     href: "/leads/unresponsive",
     accent: "bg-amber-600/80",
     valueKey: "unresponsive",
+    valueTone: "risk",
     compact: true,
   },
 ];
 
 const cardBase =
-  "group flex h-full min-h-full flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] dark:border-zinc-800 dark:bg-zinc-950";
+  "group flex h-full min-h-full flex-col overflow-hidden rounded-2xl border border-slate-200/90 bg-white shadow-[0_2px_10px_rgba(15,23,42,0.05)] leading-[1.65] dark:border-zinc-800 dark:bg-zinc-950";
+
+function valueToneClass(tone: "up" | "risk" | "neutral" | undefined) {
+  if (tone === "up") return "text-[#16a34a] dark:text-emerald-300";
+  if (tone === "risk") return "text-[#dc2626] dark:text-rose-300";
+  return "text-[#111] dark:text-zinc-100";
+}
 
 export default function DashboardKpiCards({
   loading,
@@ -200,18 +218,16 @@ export default function DashboardKpiCards({
             >
               <div className={cn("h-1 w-full shrink-0", p.accent)} aria-hidden />
               <div className="flex flex-1 flex-col p-5 pt-4">
-                <div className="text-[13px] font-semibold text-slate-600 dark:text-zinc-400">{p.label}</div>
+                <div className="text-[15px] font-medium leading-[1.6] text-[#666] dark:text-zinc-400">{p.label}</div>
                 <div
                   className={cn(
-                    "mt-3 tabular-nums font-bold leading-none tracking-tight text-[var(--crm-blue-deep)] dark:text-sky-200",
-                    p.tier === 1 && p.key === "expected" && "text-[2.15rem] sm:text-[2.45rem]",
-                    p.tier === 1 && p.key === "confirmed" && "text-[1.85rem] sm:text-[2.1rem]",
-                    p.tier === 2 && "text-[1.5rem] sm:text-[1.65rem]"
+                    "mt-3 tabular-nums text-[30px] font-extrabold leading-[1.6] tracking-tight",
+                    valueToneClass(p.valueTone)
                   )}
                 >
                   {loading || !values ? <PrimarySkeleton tall={p.tier === 1} /> : p.format(values)}
                 </div>
-                <p className="mt-auto pt-3 text-[12px] leading-snug text-slate-500 dark:text-zinc-500">{p.hint}</p>
+                <p className="mt-auto pt-3 text-[12px] leading-[1.6] text-[#999] dark:text-zinc-500">{p.hint}</p>
               </div>
             </MotionLink>
           ))}
@@ -245,13 +261,18 @@ export default function DashboardKpiCards({
             >
               <div className={cn("h-0.5 w-full shrink-0", s.accent)} aria-hidden />
               <div className="flex flex-1 flex-col px-3 py-3 sm:px-4 sm:py-4">
-                <div className="text-center text-[12px] font-semibold text-slate-600 dark:text-zinc-400 sm:text-[13px]">
+                <div className="text-center text-[15px] font-medium leading-[1.6] text-[#666] dark:text-zinc-400">
                   {s.label}
                 </div>
-                <div className="mt-2 text-center tabular-nums text-[1.35rem] font-bold leading-none text-[var(--crm-blue-deep)] dark:text-sky-200 sm:text-[1.5rem]">
+                <div
+                  className={cn(
+                    "mt-2 text-center tabular-nums text-[30px] font-extrabold leading-[1.6]",
+                    valueToneClass(s.valueTone)
+                  )}
+                >
                   {loading || !pipeline ? <PipelineSkeleton /> : pipeline[s.valueKey]}
                 </div>
-                <p className="mt-2 text-center text-[10px] leading-snug text-slate-500 dark:text-zinc-500 sm:text-[11px]">
+                <p className="mt-2 text-center text-[12px] leading-[1.6] text-[#999] dark:text-zinc-500">
                   {s.hint}
                 </p>
               </div>
