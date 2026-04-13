@@ -453,6 +453,7 @@ export default function LeadDetailModal({
   const [quoteDraft, setQuoteDraft] = useState<QuoteFormDraft>(() => emptyQuoteForm());
 
   useLayoutEffect(() => {
+    console.log("LeadDetailModal incoming lead:", lead);
     setDraft({
       ...lead,
       counselingRecords: Array.isArray(lead.counselingRecords) ? lead.counselingRecords : [],
@@ -2072,11 +2073,14 @@ function ContractTab({
     const c = draft.contract;
     const term = draft.base.contractTerm || "36개월";
     window.setTimeout(() => {
-      if (c) setLocal(sanitizeContractForSave(c, term));
+      if (c) {
+        const normalized = sanitizeContractForSave(c, term);
+        console.log("normalized contract form:", normalized);
+        setLocal(normalized);
+      }
       else {
         const today = new Date().toISOString().slice(0, 10);
-        setLocal(
-          sanitizeContractForSave(
+        const normalized = sanitizeContractForSave(
             {
               contractDate: today,
               customerCommitmentDate: today,
@@ -2100,8 +2104,9 @@ function ContractTab({
               deliveryType: "",
             },
             term
-          )
-        );
+          );
+        console.log("normalized contract form:", normalized);
+        setLocal(normalized);
       }
     }, 0);
   }, [draft.contract, draft.base.contractTerm]);

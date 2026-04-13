@@ -676,6 +676,23 @@ export function computeDashboardMetrics(leads: Lead[]) {
   /** 취소 제외·계약 또는 최신 견적 수수료 합산 — 대시보드「예상 수수료」 */
   const expectedCommissionTotal = calculateExpectedCommission(leads);
 
+  const commissionSourceRows = leads
+    .filter((l) => !!l.contract)
+    .map((l) => ({
+      leadId: l.id,
+      status: l.counselingStatus,
+      contractDate: l.contract?.contractDate ?? "",
+      fee: l.contract?.fee ?? 0,
+      finalFeeAmount: l.contract?.finalFeeAmount ?? null,
+    }));
+  console.log("dashboard commission source rows:", commissionSourceRows);
+  console.log("dashboard commission sum column:", "effectiveContractFeeForMetrics(contract)");
+  console.log("dashboard date column:", "contract.contractDate (YYYY-MM)");
+  console.log("dashboard computed result:", {
+    expectedCommissionTotal,
+    thisMonthConfirmedCommissionWon,
+  });
+
   const staff = new Map<
     string,
     { staff: string; counselingCount: number; contractCount: number }

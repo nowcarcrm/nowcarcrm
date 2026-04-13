@@ -484,6 +484,8 @@ type ContractRow = {
   final_deposit_amount?: number | string | null;
   final_fee_amount?: number | string | null;
   final_delivery_type?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 type ExportProgressRow = {
@@ -1062,7 +1064,12 @@ async function fetchLeadRelationsByIds(leadIds: string[]): Promise<{
 
   const [consultationsRes, contractsRes, exportRes] = await Promise.all([
     supabase.from("consultations").select("*").in("lead_id", ids),
-    supabase.from("contracts").select("*").in("lead_id", ids),
+    supabase
+      .from("contracts")
+      .select("*")
+      .in("lead_id", ids)
+      .order("updated_at", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false, nullsFirst: false }),
     supabase.from("export_progress").select("*").in("lead_id", ids),
   ]);
 
@@ -1094,13 +1101,29 @@ async function fetchLeadRelationsByIds(leadIds: string[]): Promise<{
     }
   }
 
+  const contractRows = ((contractsRes.data ?? []) as ContractRow[]).filter((r) =>
+    ids.includes(coerceDbStringId(r.lead_id))
+  );
+  const latestContractByLead = new Map<string, ContractRow>();
+  for (const row of contractRows) {
+    const lid = coerceDbStringId(row.lead_id);
+    if (!lid) continue;
+    if (!latestContractByLead.has(lid)) latestContractByLead.set(lid, row);
+  }
+  const dedupedContracts = Array.from(latestContractByLead.values());
+  const duplicateCount = contractRows.length - dedupedContracts.length;
+  if (duplicateCount > 0) {
+    console.warn("[fetchLeadRelationsByIds] duplicate contracts rows detected", {
+      duplicateCount,
+      leadIdsWithDuplicates: ids.filter((lid) => contractRows.filter((r) => coerceDbStringId(r.lead_id) === lid).length > 1),
+    });
+  }
+
   return {
     consultations: ((consultationsRes.data ?? []) as ConsultationRow[]).filter((r) =>
       ids.includes(coerceDbStringId(r.lead_id))
     ),
-    contracts: ((contractsRes.data ?? []) as ContractRow[]).filter((r) =>
-      ids.includes(coerceDbStringId(r.lead_id))
-    ),
+    contracts: dedupedContracts,
     exportRows: ((exportRes.data ?? []) as ExportProgressRow[]).filter((r) =>
       ids.includes(coerceDbStringId(r.lead_id))
     ),
@@ -1260,8 +1283,10 @@ export async function fetchLeadById(
   }
   const row = rowData as LeadRow | null;
   if (!row) return null;
+  console.log("fetchLeadById raw row:", row);
   const rowLeadId = coerceDbStringId(row.id);
   const { consultations, contracts, exportRows } = await fetchLeadRelationsByIds([rowLeadId]);
+  console.log("fetchLeadById contracts relation:", contracts[0] ?? null);
   return mapRowToLead(row, consultations, contracts[0] ?? null, exportRows[0] ?? null);
 }
 
@@ -1550,17 +1575,23 @@ async function replaceLeadRelations(lead: Lead) {
     console.log("update payload:", cleanPayload);
     devLog("[Supabase] contracts UPDATE 의도 payload (cleanPayload)", cleanPayload);
     try {
-      const { data: existing, error: existingErr } = await supabase
+      const { data: existingRows, error: existingErr } = await supabase
         .from("contracts")
-        .select("id")
+        .select("id, created_at, updated_at")
         .eq("lead_id", leadId)
-        .maybeSingle();
+        .order("updated_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false, nullsFirst: false });
       if (existingErr) throw existingErr;
-      if (existing) {
+      const rows = (existingRows ?? []) as Array<{ id: string; created_at?: string | null; updated_at?: string | null }>;
+      if (rows.length > 1) {
+        console.warn("[contracts] duplicate rows for lead_id", { leadId, rowCount: rows.length, rowIds: rows.map((r) => r.id) });
+      }
+      const target = rows[0] ?? null;
+      if (target) {
         const { data: updateData, error: updateErr } = await supabase
           .from("contracts")
           .update(cleanPayload)
-          .eq("lead_id", leadId)
+          .eq("id", target.id)
           .select("id, lead_id, fee, contract_date, status")
           .maybeSingle();
         console.log("contract update result:", updateData);
@@ -1568,7 +1599,8 @@ async function replaceLeadRelations(lead: Lead) {
           console.error("contract update error:", updateErr);
           throw updateErr;
         }
-      } else {
+      }
+      else {
         const { omitted, finalPayload } = await insertRowOmittingUnknownColumns("contracts", contract);
         devLog("[Supabase] contracts INSERT 실제 적용된 body (전송·저장됨)", finalPayload);
         if (omitted.length > 0) {
@@ -1591,6 +1623,21 @@ async function replaceLeadRelations(lead: Lead) {
           console.error("contract update error:", insertedReadErr);
         }
         console.log("contract update result:", insertedRow);
+      }
+      const { data: contractsRowsAfterWrite, error: contractsRowsAfterWriteErr } = await supabase
+        .from("contracts")
+        .select("*")
+        .eq("lead_id", leadId)
+        .order("updated_at", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false, nullsFirst: false });
+      if (contractsRowsAfterWriteErr) {
+        console.error("contract update error:", contractsRowsAfterWriteErr);
+        throw contractsRowsAfterWriteErr;
+      }
+      const afterRows = (contractsRowsAfterWrite ?? []) as ContractRow[];
+      console.log("contracts direct refetch after save:", afterRows);
+      if (afterRows.length === 0) {
+        throw new Error("계약 저장 검증 실패: 저장 후 contracts row가 없습니다.");
       }
     } catch (kErr) {
       console.error("계약 저장 오류", kErr, contract);
