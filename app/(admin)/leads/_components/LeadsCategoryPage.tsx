@@ -46,6 +46,18 @@ function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
+function isMissingRelationTableError(error: unknown): boolean {
+  const msg = formatSupabaseError(error).toLowerCase();
+  return (
+    msg.includes("pgrst205") ||
+    msg.includes("not found") ||
+    msg.includes("could not find the table") ||
+    msg.includes("public.consultations") ||
+    msg.includes("public.contracts") ||
+    msg.includes("public.export_progress")
+  );
+}
+
 /** 상담결과 + DB 레거시 문자열 뱃지 색 */
 function statusPillClass(status: string) {
   switch (status) {
@@ -398,9 +410,11 @@ function LeadsCategoryView({
       }
     } catch (error) {
       console.error("[handleUpdateLead] 저장 오류", formatSupabaseError(error), error, next);
-      toast.error(
-        error instanceof Error ? error.message : "저장하지 못했습니다."
-      );
+      if (isMissingRelationTableError(error)) {
+        toast.error("운영 DB 테이블이 준비되지 않아 저장할 수 없습니다.");
+      } else {
+        toast.error(error instanceof Error ? error.message : "저장하지 못했습니다.");
+      }
       throw error;
     }
   }

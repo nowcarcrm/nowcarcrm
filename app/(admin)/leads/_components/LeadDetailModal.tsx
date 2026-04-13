@@ -63,6 +63,18 @@ function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
 
+function isMissingRelationTableError(error: unknown): boolean {
+  const msg = formatSupabaseError(error).toLowerCase();
+  return (
+    msg.includes("pgrst205") ||
+    msg.includes("not found") ||
+    msg.includes("could not find the table") ||
+    msg.includes("public.consultations") ||
+    msg.includes("public.contracts") ||
+    msg.includes("public.export_progress")
+  );
+}
+
 function toDateInputValue(iso: string | null | undefined) {
   if (!iso) return "";
   return iso.slice(0, 10);
@@ -685,7 +697,11 @@ export default function LeadDetailModal({
       }
     } catch (error) {
       console.error("계약 저장 오류", error, payload);
-      toast.error("계약 고객 정보 저장 중 오류가 발생했습니다.");
+      if (isMissingRelationTableError(error)) {
+        toast.error("운영 DB 테이블이 준비되지 않아 저장할 수 없습니다.");
+      } else {
+        toast.error("계약 고객 정보 저장 중 오류가 발생했습니다.");
+      }
     } finally {
       setSaving(false);
     }
