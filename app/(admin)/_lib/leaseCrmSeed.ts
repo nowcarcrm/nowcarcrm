@@ -97,6 +97,7 @@ function makeContract(partial: Partial<ContractInfo>): ContractInfo {
     pickupPlannedAt: formatDateOnly(isoDaysFromNow(25)),
     deliveryType: "대리점 출고",
     ...partial,
+    dealerAllowance: partial.dealerAllowance ?? 0,
   };
   const vp = merged.vehiclePrice;
   if (vp > 0) {

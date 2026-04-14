@@ -80,8 +80,8 @@ type PrimaryDef = {
 const PRIMARY: PrimaryDef[] = [
   {
     key: "expected",
-    label: "이번달 예상 수수료",
-    hint: "입력된 수수료 기준 예상 합계",
+    label: "이번달 예상 총수익",
+    hint: "수수료 + 대리점 수당 - 총 지원 비용",
     href: "/leads/contract-progress",
     accent: "bg-[#1a365d]",
     tier: 1,
@@ -92,8 +92,8 @@ const PRIMARY: PrimaryDef[] = [
   },
   {
     key: "confirmed",
-    label: "이번달 총 수수료",
-    hint: "이번달 확정 반영 수수료",
+    label: "이번달 확정 총수익",
+    hint: "계약일 기준 확정 수익 합계",
     href: "/leads/delivery-complete",
     accent: "bg-indigo-700",
     tier: 1,

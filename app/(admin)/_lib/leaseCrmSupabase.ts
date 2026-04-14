@@ -33,6 +33,28 @@ import {
   shouldPersistContractExtra,
   splitContractNote,
 } from "./leaseCrmContractPersist";
+import {
+  canAccessLeadDetail,
+  canViewLead,
+  getVisibleTeamScope,
+  isExecutive,
+  isSuperAdmin,
+  normalizeUserTeam,
+} from "./rolePermissions";
+
+export class LeadNotFoundError extends Error {
+  constructor() {
+    super("고객 정보를 찾을 수 없습니다.");
+    this.name = "LeadNotFoundError";
+  }
+}
+
+export class LeadPermissionDeniedError extends Error {
+  constructor() {
+    super("이 고객 상세를 볼 권한이 없습니다.");
+    this.name = "LeadPermissionDeniedError";
+  }
+}
 function ensureSupabaseConfigured() {
   const status = getSupabaseConfigStatus();
   if (!status.ok) {
@@ -421,6 +443,11 @@ type LeadRow = {
 export type LeadSupabaseScope = {
   role: UserRole;
   userId: string;
+  email?: string | null;
+  rank?: string | null;
+  teamName?: string | null;
+  /** Optional explicit manager_user_id scope for screen-specific visibility */
+  visibleUserIds?: string[];
   /**
    * 관리자 운영 전용 화면에서만 true. 담당(`manager_user_id`) 필터 없이 전체 고객 조회·수정·삭제.
    * `role === "admin"` 일 때만 실제로 적용됩니다(다른 역할의 위조 방지).
@@ -440,7 +467,15 @@ export type UpdateLeadOptions = {
 
 /** 운영 화면 전체 접근: 관리자 + 명시 플래그만 인정 */
 export function hasOperationalFullAccess(scope?: ViewerScope): boolean {
-  return scope?.role === "admin" && scope.operationalFullAccess === true;
+  if (!scope || scope.operationalFullAccess !== true) return false;
+  if (scope.role === "super_admin") return true;
+  if (scope.role !== "admin") return false;
+  return (
+    scope.rank === "본부장" ||
+    scope.rank === "대표" ||
+    scope.rank === "총괄대표" ||
+    (scope.rank === "팀장" && !!normalizeUserTeam(scope.teamName))
+  );
 }
 
 /** 전사 데이터·수수료·상담일 집계 등: 클라이언트 위조 방지 + 명시적 가드 */
@@ -455,6 +490,85 @@ export function assertAdminOperationalScope(
 
 function shouldFilterLeadsByManager(scope?: ViewerScope): boolean {
   return !hasOperationalFullAccess(scope);
+}
+
+type ScopeUserRow = {
+  id: string;
+  email: string | null;
+  role: string | null;
+  rank: string | null;
+  team_name: string | null;
+};
+
+async function getViewerUserRow(scope?: ViewerScope): Promise<ScopeUserRow | null> {
+  const uid = nonEmptyUserId(scope?.userId);
+  if (!uid) return null;
+  const { data, error } = await supabase
+    .from("users")
+    .select("id,email,role,rank,team_name")
+    .eq("id", uid)
+    .maybeSingle();
+  if (error) throw new Error(`권한 사용자 조회 실패: ${formatSupabaseError(error)}`);
+  if (!data) return null;
+  return data as ScopeUserRow;
+}
+
+async function getLeadOwnerRowsByIds(leadOwnerIds: string[]): Promise<Map<string, ScopeUserRow>> {
+  const ids = leadOwnerIds.filter(Boolean);
+  if (!ids.length) return new Map();
+  const { data, error } = await supabase
+    .from("users")
+    .select("id,email,role,rank,team_name")
+    .in("id", ids);
+  if (error) throw new Error(`담당자 권한 조회 실패: ${formatSupabaseError(error)}`);
+  const map = new Map<string, ScopeUserRow>();
+  for (const row of (data ?? []) as ScopeUserRow[]) map.set(row.id, row);
+  return map;
+}
+
+function toViewerLike(scope?: ViewerScope, row?: ScopeUserRow | null) {
+  return {
+    id: scope?.userId ?? row?.id ?? null,
+    email: scope?.email ?? row?.email ?? null,
+    role: scope?.role ?? row?.role ?? null,
+    rank: scope?.rank ?? row?.rank ?? null,
+    team_name: scope?.teamName ?? row?.team_name ?? null,
+  };
+}
+
+async function getVisibleUserIds(viewer: ReturnType<typeof toViewerLike>): Promise<string[] | null> {
+  if (!viewer?.id) return [];
+  if (isSuperAdmin(viewer) || isExecutive(viewer)) return null;
+  const scope = getVisibleTeamScope(viewer);
+  if (scope === "self") return [viewer.id];
+
+  const { data, error } = await supabase.from("users").select("id,email,role,rank,team_name");
+  if (error) throw new Error(`가시 사용자 조회 실패: ${formatSupabaseError(error)}`);
+
+  const viewerTeam = normalizeUserTeam(viewer.team_name);
+  if (scope === "team" && !viewerTeam) return [viewer.id];
+
+  const visible: string[] = [];
+  const allRows = (data ?? []) as ScopeUserRow[];
+  const teamRows =
+    scope === "team"
+      ? allRows.filter((r) => normalizeUserTeam(r.team_name) === viewerTeam)
+      : allRows;
+  for (const row of teamRows) {
+    if (canViewLead(viewer, row)) visible.push(row.id);
+  }
+  if (!visible.includes(viewer.id)) visible.push(viewer.id);
+  console.log("[scope] visibleUserIds computed", {
+    viewerId: viewer.id,
+    viewerRole: viewer.role,
+    viewerRank: viewer.rank,
+    viewerTeam,
+    scope,
+    totalUsers: allRows.length,
+    teamUsers: teamRows.length,
+    visibleCount: visible.length,
+  });
+  return visible;
 }
 
 type ConsultationRow = {
@@ -713,6 +827,7 @@ function mapRowToLead(
           note: userNote,
           fee,
           feePercent: 0,
+          dealerAllowance: 0,
           profitMemo: contractRow.profit_memo ?? "",
           pickupPlannedAt: contractRow.delivery_date ?? row.created_at.slice(0, 10),
           deliveryType: "",
@@ -1215,6 +1330,16 @@ async function fetchLeadRelationsByIds(leadIds: string[]): Promise<{
 /** 일반 영업: 본인 `manager_user_id` 만. 관리자 운영 화면(`operationalFullAccess`)만 전체. */
 export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
   ensureSupabaseConfigured();
+  const viewerRow = await getViewerUserRow(scope);
+  const viewer = toViewerLike(scope, viewerRow);
+  const scopedIds =
+    scope?.visibleUserIds?.map((id) => String(id).trim()).filter(Boolean) ?? [];
+  const visibleUserIds =
+    scope && shouldFilterLeadsByManager(scope)
+      ? scopedIds.length > 0
+        ? scopedIds
+        : await getVisibleUserIds(viewer)
+      : null;
   const queryMeta = {
     table: "leads",
     order: "created_at desc",
@@ -1227,12 +1352,8 @@ export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
     .select("*")
     .order("created_at", { ascending: false });
   if (scope && shouldFilterLeadsByManager(scope)) {
-    const uid = nonEmptyUserId(scope.userId);
-    if (!uid) {
-      console.warn("[fetchLeads] scope without userId — returning no rows");
-      return [];
-    }
-    query = query.eq("manager_user_id", uid);
+    if (!visibleUserIds || visibleUserIds.length === 0) return [];
+    query = query.in("manager_user_id", visibleUserIds);
   }
   const { data: leadsData, error: leadsError } = await query;
   console.log("[fetchLeads] query result", {
@@ -1305,18 +1426,25 @@ export async function searchLeads(
   const pattern = `%${q}%`;
   let query = supabase
     .from("leads")
-    .select("id,name,phone,status,manager,source")
+    .select("id,name,phone,status,manager,source,manager_user_id")
     .or(`name.ilike.${pattern},phone.ilike.${pattern}`)
     .order("created_at", { ascending: false })
     .limit(20);
 
+  const viewerRow = await getViewerUserRow(scope);
+  const viewer = toViewerLike(scope, viewerRow);
+  const scopedIds =
+    scope?.visibleUserIds?.map((id) => String(id).trim()).filter(Boolean) ?? [];
+  const visibleUserIds =
+    scope && shouldFilterLeadsByManager(scope)
+      ? scopedIds.length > 0
+        ? scopedIds
+        : await getVisibleUserIds(viewer)
+      : null;
+
   if (scope && shouldFilterLeadsByManager(scope)) {
-    const uid = nonEmptyUserId(scope.userId);
-    if (!uid) {
-      console.warn("[searchLeads] scope without userId — returning no hits");
-      return [];
-    }
-    query = query.eq("manager_user_id", uid);
+    if (!visibleUserIds || visibleUserIds.length === 0) return [];
+    query = query.in("manager_user_id", visibleUserIds);
   }
 
   const { data, error } = await query;
@@ -1325,13 +1453,14 @@ export async function searchLeads(
     throw new Error(`고객 검색 실패: ${formatSupabaseError(error)}`);
   }
 
-  const rows = (data ?? []) as Array<{
+  let rows = (data ?? []) as Array<{
     id: string;
     name: string;
     phone: string;
     status: string;
     manager: string;
     source: string;
+    manager_user_id?: string | null;
   }>;
   return rows.map((r) => ({
     id: coerceDbStringId(r.id),
@@ -1344,27 +1473,30 @@ export async function searchLeads(
 }
 
 /** 단일 고객 조회. 일반: 본인 담당이 아니면 null. 관리자 운영 스코프만 제한 없음. */
-export async function fetchLeadById(
-  leadId: string,
-  scope?: LeadSupabaseScope
-): Promise<Lead | null> {
+export async function fetchLeadById(leadId: string, scope?: LeadSupabaseScope): Promise<Lead> {
   ensureSupabaseConfigured();
   const idForQuery = coerceDbStringId(leadId);
-  let q = supabase.from("leads").select("*").eq("id", idForQuery);
-  if (scope && shouldFilterLeadsByManager(scope)) {
-    const uid = nonEmptyUserId(scope.userId);
-    if (!uid) {
-      console.warn("[fetchLeadById] scope without userId — denying access");
-      return null;
-    }
-    q = q.eq("manager_user_id", uid);
-  }
-  const { data: rowData, error: rowError } = await q.maybeSingle();
+  const viewerRow = await getViewerUserRow(scope);
+  const viewer = toViewerLike(scope, viewerRow);
+  const { data: rowData, error: rowError } = await supabase
+    .from("leads")
+    .select("*")
+    .eq("id", idForQuery)
+    .maybeSingle();
   if (rowError) {
     throw new Error(`고객 조회 실패: ${formatSupabaseError(rowError)}`);
   }
   const row = rowData as LeadRow | null;
-  if (!row) return null;
+  if (!row) throw new LeadNotFoundError();
+  if (
+    !canAccessLeadDetail(
+      viewer,
+      nonEmptyUserId(viewer.id),
+      nullableDbStringId(row.manager_user_id)
+    )
+  ) {
+    throw new LeadPermissionDeniedError();
+  }
   const rowLeadId = coerceDbStringId(row.id);
   const { consultations, contracts, exportRows } = await fetchLeadRelationsByIds([rowLeadId]);
   return mapRowToLead(row, consultations, contracts[0] ?? null, exportRows[0] ?? null);
@@ -1436,22 +1568,22 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
 
 export async function updateLead(lead: Lead, scope?: ViewerScope, options?: UpdateLeadOptions) {
   ensureSupabaseConfigured();
-  const filterByManager = shouldFilterLeadsByManager(scope);
+  const viewerRow = await getViewerUserRow(scope);
+  const viewer = toViewerLike(scope, viewerRow);
   const scopeUid = nonEmptyUserId(scope?.userId) ?? "";
-  if (filterByManager) {
-    if (!scopeUid) {
-      throw new Error("계정 식별 정보가 없습니다. 다시 로그인해 주세요.");
-    }
-    const { data: ownerRow, error: ownerErr } = await supabase
-      .from("leads")
-      .select("manager_user_id")
-      .eq("id", coerceDbStringId(lead.id))
-      .maybeSingle();
-    if (ownerErr) throw new Error(`담당 권한 확인 실패: ${formatSupabaseError(ownerErr)}`);
-    const dbManager = (ownerRow as { manager_user_id: string | null } | null)?.manager_user_id;
-    if (dbManager != null && dbManager !== scopeUid) {
-      throw new Error("본인 담당 고객만 수정할 수 있습니다.");
-    }
+  if (!scopeUid) {
+    throw new Error("계정 식별 정보가 없습니다. 다시 로그인해 주세요.");
+  }
+  const { data: ownerRow, error: ownerErr } = await supabase
+    .from("leads")
+    .select("manager_user_id")
+    .eq("id", coerceDbStringId(lead.id))
+    .maybeSingle();
+  if (ownerErr) throw new Error(`담당 권한 확인 실패: ${formatSupabaseError(ownerErr)}`);
+  if (!ownerRow) throw new LeadNotFoundError();
+  const dbManager = (ownerRow as { manager_user_id: string | null }).manager_user_id;
+  if (!canAccessLeadDetail(viewer, scopeUid, nullableDbStringId(dbManager))) {
+    throw new LeadPermissionDeniedError();
   }
   const leadLocked = await prepareLeadForSupabaseWrite(lead, scope);
   const leadForUpdate = normalizeLeadForPersistence(leadLocked);
@@ -1461,11 +1593,7 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
 
   const payload = toLeadUpdateRow(leadForUpdate);
   devLog("[Supabase] leads update payload (계약 탭 필드는 포함되지 않음):", payload);
-  let updateQuery = supabase.from("leads").update(payload).eq("id", leadForUpdate.id);
-  if (filterByManager && scopeUid) {
-    updateQuery = updateQuery.eq("manager_user_id", scopeUid);
-  }
-  const { error } = await updateQuery;
+  const { error } = await supabase.from("leads").update(payload).eq("id", leadForUpdate.id);
   if (error) {
     console.error("[Supabase] leads update error:", error, {
       leadId: leadForUpdate.id,
@@ -1529,19 +1657,22 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
 export async function deleteLead(leadId: string, scope?: ViewerScope) {
   ensureSupabaseConfigured();
   const idForDelete = coerceDbStringId(leadId);
-  if (shouldFilterLeadsByManager(scope)) {
-    const uid = nonEmptyUserId(scope?.userId);
-    if (!uid) {
-      throw new Error("계정 식별 정보가 없습니다. 다시 로그인해 주세요.");
-    }
-    const { data, error } = await supabase
-      .from("leads")
-      .select("id")
-      .eq("id", idForDelete)
-      .eq("manager_user_id", uid)
-      .maybeSingle();
-    if (error) throw new Error(`삭제 권한 확인 실패: ${formatSupabaseError(error)}`);
-    if (!data) throw new Error("본인 담당 고객만 삭제할 수 있습니다.");
+  const viewerRow = await getViewerUserRow(scope);
+  const viewer = toViewerLike(scope, viewerRow);
+  const scopeUid = nonEmptyUserId(scope?.userId) ?? "";
+  if (!scopeUid) {
+    throw new Error("계정 식별 정보가 없습니다. 다시 로그인해 주세요.");
+  }
+  const { data, error: ownerError } = await supabase
+    .from("leads")
+    .select("id,manager_user_id")
+    .eq("id", idForDelete)
+    .maybeSingle();
+  if (ownerError) throw new Error(`삭제 권한 확인 실패: ${formatSupabaseError(ownerError)}`);
+  if (!data) throw new LeadNotFoundError();
+  const ownerId = nullableDbStringId((data as { manager_user_id?: string | null }).manager_user_id ?? null);
+  if (!canAccessLeadDetail(viewer, scopeUid, ownerId)) {
+    throw new LeadPermissionDeniedError();
   }
   await Promise.all([
     supabase.from("consultations").delete().eq("lead_id", idForDelete),
@@ -1566,8 +1697,28 @@ function parseFeeWonFromDb(feeRaw: unknown, finalRaw: unknown): number {
   return Number.isFinite(fromFee) ? fromFee : 0;
 }
 
+function parseContractNetProfitWonFromDb(row: {
+  fee?: unknown;
+  final_fee_amount?: unknown;
+  total_support_cost?: unknown;
+  note?: unknown;
+  final_delivery_type?: unknown;
+}): number {
+  const feeWon = parseFeeWonFromDb(row.fee, row.final_fee_amount);
+  const supportCost = coerceNumericForDb(row.total_support_cost) ?? 0;
+  const note = typeof row.note === "string" ? row.note : "";
+  const extra = splitContractNote(note).extra;
+  const allowance = coerceNumericForDb(extra?.al ?? 0) ?? 0;
+  const deliveryType =
+    row.final_delivery_type === "대리점 출고" || row.final_delivery_type === "대리점출고"
+      ? "대리점 출고"
+      : extra?.dt;
+  const dealerAllowance = deliveryType === "대리점 출고" ? allowance : 0;
+  return Math.max(0, feeWon + dealerAllowance - supportCost);
+}
+
 /**
- * 직원 현황·엑셀용: lead_id별 계약 수수료·계약일(스냅샷 수수료 우선).
+ * 직원 현황·엑셀용: lead_id별 계약 총수익·계약일.
  * contracts 테이블이 없거나 오류 시 빈 Map.
  */
 export async function fetchContractFeeSummaryByLeadIds(
@@ -1584,7 +1735,7 @@ export async function fetchContractFeeSummaryByLeadIds(
     const chunk = ids.slice(i, i + chunkSize);
     const { data, error } = await supabase
       .from("contracts")
-      .select("lead_id,fee,final_fee_amount,contract_date")
+      .select("lead_id,fee,final_fee_amount,total_support_cost,note,final_delivery_type,contract_date")
       .in("lead_id", chunk);
     if (error) {
       console.warn("[fetchContractFeeSummaryByLeadIds] skip chunk", formatSupabaseError(error));
@@ -1595,11 +1746,14 @@ export async function fetchContractFeeSummaryByLeadIds(
         lead_id: string;
         fee?: unknown;
         final_fee_amount?: unknown;
+        total_support_cost?: unknown;
+        note?: unknown;
+        final_delivery_type?: unknown;
         contract_date?: string | null;
       };
       const lid = coerceDbStringId(r.lead_id);
       if (!lid) continue;
-      const feeWon = parseFeeWonFromDb(r.fee, r.final_fee_amount);
+      const feeWon = parseContractNetProfitWonFromDb(r);
       const contractDate = String(r.contract_date ?? "").trim().slice(0, 10);
       out.set(lid, { feeWon, contractDate });
     }

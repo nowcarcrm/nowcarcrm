@@ -1,5 +1,5 @@
 import { calculateExpectedCommission, expectedFeeWonForLead } from "./leaseCrmCommissionMetrics";
-import { effectiveContractFeeForMetrics } from "./leaseCrmContractPersist";
+import { effectiveContractNetProfitForMetrics } from "./leaseCrmContractPersist";
 import type {
   CounselingStatus,
   ExportProgress,
@@ -652,7 +652,7 @@ export function computeDashboardMetrics(leads: Lead[]) {
       if (!l.contract) return false;
       return l.contract.contractDate.startsWith(thisMonthKeyPrefix);
     })
-    .reduce((sum, l) => sum + effectiveContractFeeForMetrics(l.contract!), 0);
+    .reduce((sum, l) => sum + effectiveContractNetProfitForMetrics(l.contract!), 0);
 
   /** 이번 달(로컬) 신규 등록 건수 */
   const thisMonthRegisteredCount = leads.filter((l) =>
@@ -669,7 +669,7 @@ export function computeDashboardMetrics(leads: Lead[]) {
     const contractDate = String(l.contract.contractDate ?? "").trim();
     if (!contractDate) return sum;
     if (!toLocalDateKey(contractDate).startsWith(thisMonthKeyPrefix)) return sum;
-    const fee = effectiveContractFeeForMetrics(l.contract);
+    const fee = effectiveContractNetProfitForMetrics(l.contract);
     return sum + fee;
   }, 0);
 
@@ -686,7 +686,7 @@ export function computeDashboardMetrics(leads: Lead[]) {
       finalFeeAmount: l.contract?.finalFeeAmount ?? null,
     }));
   console.log("dashboard commission source rows:", commissionSourceRows);
-  console.log("dashboard commission sum column:", "effectiveContractFeeForMetrics(contract)");
+  console.log("dashboard commission sum column:", "effectiveContractNetProfitForMetrics(contract)");
   console.log("dashboard date column:", "contract.contractDate (YYYY-MM)");
   console.log("dashboard computed result:", {
     expectedCommissionTotal,

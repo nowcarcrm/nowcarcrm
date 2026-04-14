@@ -47,6 +47,7 @@ import {
   crmSlicePage,
   crmTotalPages,
 } from "@/app/_components/ui/CrmListPagination";
+import { getPersonalPipelineScope } from "../../_lib/screenScopes";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -194,7 +195,13 @@ function LeadsCategoryView({
     (async () => {
       try {
         await ensureSeedLeads();
-        const users = await listActiveUsers();
+        const users = await listActiveUsers({
+          id: profile.userId,
+          role: profile.role,
+          rank: profile.rank,
+          email: profile.email,
+          team_name: profile.teamName,
+        });
         const ownerOptions = users
           .filter((u) => !!u.id && !!u.name?.trim())
           .map((u) => ({ id: u.id, name: u.name.trim() }));
@@ -214,9 +221,31 @@ function LeadsCategoryView({
             ),
           0
         );
-        const loaded = await loadLeadsFromStorage({
+        const selfId = (profile.userId ?? "").trim();
+        const loadedRaw = await loadLeadsFromStorage({
           role: profile.role,
-          userId: profile.userId,
+          userId: selfId,
+          // Pipeline tabs are always self scope, regardless of rank/team.
+          visibleUserIds: selfId ? [selfId] : [],
+        });
+        const loaded =
+          getPersonalPipelineScope({
+            id: selfId,
+            role: profile.role,
+            rank: profile.rank,
+            team_name: profile.teamName,
+          }) === "self"
+            ? loadedRaw.filter((l) => (l.managerUserId ?? "").trim() === selfId)
+            : loadedRaw;
+        console.log("[pipeline self scope]", {
+          viewerId: selfId,
+          viewerRole: profile.role,
+          viewerRank: profile.rank ?? null,
+          viewerTeam: profile.teamName ?? null,
+          categoryKey,
+          finalManagerUserIdFilter: selfId,
+          loadedCount: loadedRaw.length,
+          visibleCount: loaded.length,
         });
         if (!mounted) return;
         window.setTimeout(() => setLeads(loaded), 0);
@@ -572,14 +601,15 @@ function LeadsCategoryView({
           ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
           : next;
       await updateLead(payload, {
-        role: profile.role,
+        role: "staff",
         userId: profile.userId,
       }, options);
       const refreshed = await loadLeadsFromStorage({
         role: profile.role,
         userId: profile.userId,
+        visibleUserIds: profile.userId ? [profile.userId] : [],
       });
-      commitLeads(refreshed);
+      commitLeads(refreshed.filter((l) => (l.managerUserId ?? "").trim() === (profile.userId ?? "")));
       toast.success("저장 완료되었습니다.");
       const nextPath = pathnameAfterCounselingStatusChange(next.counselingStatus, categoryKey);
       if (pathname !== nextPath) {
@@ -600,7 +630,7 @@ function LeadsCategoryView({
     try {
       if (!profile) return;
       await deleteLeadById(id, {
-        role: profile.role,
+        role: "staff",
         userId: profile.userId,
       });
       commitLeads((leads ?? []).filter((l) => l.id !== id));
@@ -626,7 +656,7 @@ function LeadsCategoryView({
     let created: Lead;
     try {
       created = await createLead(normalized, {
-        role: profile.role,
+        role: "staff",
         userId: profile.userId,
       });
     } catch (err) {
@@ -650,8 +680,9 @@ function LeadsCategoryView({
         const refreshed = await loadLeadsFromStorage({
           role: profile.role,
           userId: profile.userId,
+          visibleUserIds: profile.userId ? [profile.userId] : [],
         });
-        commitLeads(refreshed);
+        commitLeads(refreshed.filter((l) => (l.managerUserId ?? "").trim() === (profile.userId ?? "")));
       } catch (refreshErr) {
         console.error("[LeadsCategoryPage] post-create refresh failed (non-blocking)", refreshErr);
       }

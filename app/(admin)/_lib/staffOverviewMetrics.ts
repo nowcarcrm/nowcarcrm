@@ -6,7 +6,7 @@ import {
 } from "./leaseCrmLogic";
 import type { Lead } from "./leaseCrmTypes";
 import type { UserRow, UserRole } from "./usersSupabase";
-import { positionLabelKo, roleLabelKo } from "./usersSupabase";
+import { rankLabelKo, roleLabelKo } from "./usersSupabase";
 
 /** 목록·엑셀·운영 화면 공통: 파이프라인 stage 한글 (computeCategory 기준 1버킷) */
 export function pipelineStageLabelForLead(lead: Lead): string {
@@ -198,7 +198,7 @@ export function buildStaffOverviewRows(
       email: (u.email ?? "").trim(),
       role: u.role,
       roleLabel: roleLabelKo(u.role),
-      positionLabel: positionLabelKo(u),
+      positionLabel: rankLabelKo(u),
       assignedTotal: list.length,
       ...cts,
     });

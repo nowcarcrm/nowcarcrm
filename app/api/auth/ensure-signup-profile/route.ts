@@ -67,7 +67,6 @@ export async function POST(req: Request) {
       email,
       name: name || email.split("@")[0] || "staff",
       role: "staff" as const,
-      position: "주임",
       approval_status: "pending" as const,
       is_active: true,
     };

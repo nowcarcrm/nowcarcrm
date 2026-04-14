@@ -12,6 +12,7 @@ import {
   type CounselAssistResult,
 } from "@/app/(admin)/_lib/counselAssistShared";
 import { saveAiCounselAnalysisDraft } from "@/app/(admin)/_lib/aiCounselAnalysisService";
+import { getDataAccessScopeByRank, normalizeUserTeam } from "@/app/(admin)/_lib/rolePermissions";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
 
 function getBearerToken(req: Request) {
@@ -23,14 +24,14 @@ function getBearerToken(req: Request) {
 async function getRequester(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status")
+    .select("id, role, rank, team_name, approval_status")
     .eq("id", authUserId)
     .maybeSingle();
   if (e1) return { row: null, error: e1 };
   if (byId) return { row: byId, error: null };
   const { data: legacy, error: e2 } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status")
+    .select("id, role, rank, team_name, approval_status")
     .eq("auth_user_id", authUserId)
     .maybeSingle();
   return { row: legacy, error: e2 };
@@ -266,6 +267,8 @@ async function assertLeadAccess(params: {
   leadId: string;
   requesterId: string;
   role: string;
+  rank: string | null;
+  teamName: string | null;
 }) {
   const { data: leadRow, error: leadErr } = await supabaseAdmin
     .from("leads")
@@ -298,9 +301,64 @@ async function assertLeadAccess(params: {
         error: "본인 담당 리드만 AI 분석할 수 있습니다.",
       };
     }
+    return { ok: true, status: 200 as const, managerId };
   }
 
-  // admin/manager: staff보다 넓게 허용. super_admin 역할이 추가되면 별도 정책으로 확장 가능.
+  const accessScope = getDataAccessScopeByRank({
+    rank: params.rank,
+    team_name: params.teamName,
+    role: params.role,
+  });
+  if (accessScope === "all") {
+    return { ok: true, status: 200 as const, managerId };
+  }
+
+  if (!managerId) {
+    if (accessScope === "team") {
+      return {
+        ok: false,
+        status: 403 as const,
+        error: "팀장 권한에서는 미배정 리드를 AI 분석할 수 없습니다.",
+      };
+    }
+    return { ok: true, status: 200 as const, managerId };
+  }
+
+  const { data: ownerRow, error: ownerErr } = await supabaseAdmin
+    .from("users")
+    .select("id, rank, team_name")
+    .eq("id", managerId)
+    .maybeSingle();
+  if (ownerErr) {
+    console.error("[counsel-assist] owner lookup", ownerErr);
+    return { ok: false, status: 500 as const, error: "담당자 정보 조회에 실패했습니다." };
+  }
+
+  if (accessScope === "all_except_executive") {
+    const ownerRank = (ownerRow?.rank ?? "").trim();
+    if (ownerRank === "대표" || ownerRank === "총괄대표") {
+      return {
+        ok: false,
+        status: 403 as const,
+        error: "본부장 권한에서는 대표/총괄대표 담당 리드 분석이 제한됩니다.",
+      };
+    }
+    return { ok: true, status: 200 as const, managerId };
+  }
+
+  if (accessScope === "team") {
+    const viewerTeam = normalizeUserTeam(params.teamName);
+    const ownerTeam = normalizeUserTeam(ownerRow?.team_name ?? null);
+    if (!viewerTeam || !ownerTeam || viewerTeam !== ownerTeam) {
+      return {
+        ok: false,
+        status: 403 as const,
+        error: "팀장 권한에서는 같은 팀 리드만 AI 분석할 수 있습니다.",
+      };
+    }
+    return { ok: true, status: 200 as const, managerId };
+  }
+
   return { ok: true, status: 200 as const, managerId };
 }
 
@@ -320,6 +378,8 @@ export async function POST(req: Request) {
     }
 
     const role = (requester.role ?? "") as string;
+    const rank = (requester.rank ?? null) as string | null;
+    const teamName = (requester.team_name ?? null) as string | null;
     const approved = requester.approval_status === "approved";
     if (!approved || !["staff", "admin", "super_admin"].includes(role)) {
       return NextResponse.json({ error: "AI 상담 어시스트 접근 권한이 없습니다." }, { status: 403 });
@@ -340,6 +400,8 @@ export async function POST(req: Request) {
       leadId: context.leadId,
       requesterId: requester.id,
       role,
+      rank,
+      teamName,
     });
     if (!access.ok) {
       return NextResponse.json({ error: access.error }, { status: access.status });

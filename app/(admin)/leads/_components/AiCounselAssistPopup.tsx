@@ -17,6 +17,7 @@ import {
   type CounselAssistResult,
   type CounselAssistUiTone,
 } from "../../_lib/counselAssistShared";
+import { getDataAccessScopeByRank } from "../../_lib/rolePermissions";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import toast from "react-hot-toast";
 
@@ -94,16 +95,20 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
   const [manualInput, setManualInput] = useState<CounselAssistManualInput>(defaultCounselAssistManualInput(lead));
 
   const hasLead = !!lead?.id;
-  const isStaff = profile?.role === "staff";
+  const accessScope = getDataAccessScopeByRank({
+    role: profile?.role,
+    rank: profile?.rank,
+    team_name: profile?.teamName,
+  });
   const deniedByUi =
     !!hasLead &&
-    isStaff &&
+    accessScope === "self" &&
     (!lead?.managerUserId || (profile?.userId ? lead.managerUserId !== profile.userId : true));
 
   const denyReason = deniedByUi
     ? !lead?.managerUserId
-      ? "미배정 리드는 staff 권한으로 AI 분석할 수 없습니다."
-      : "본인 담당 리드에서만 AI 상담 어시스트를 사용할 수 있습니다."
+      ? "현재 권한 범위에서는 미배정 리드를 AI 분석할 수 없습니다."
+      : "현재 권한 범위에서는 본인 담당 리드에서만 AI 상담 어시스트를 사용할 수 있습니다."
     : "";
 
   useEffect(() => {

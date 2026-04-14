@@ -1,61 +1,44 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  addHoliday,
-  approveHolidayWork,
   checkIn,
   checkOut,
-  deleteHoliday,
-  getActivitySummaryByUserDate,
-  getActivitySummaryMapByDate,
   getLocalDateKey,
   getTodayAttendance,
-  isHoliday,
-  listAttendanceByMonth,
-  listHolidays,
-  listTodayAttendance,
   listAttendance,
-  markAttendanceStatus,
-  normalizeAttendanceRow,
   type AttendanceRow,
-  type ActivitySummary,
-  type HolidayRow,
 } from "../_lib/attendanceSupabase";
 import {
-  ensureDefaultUsers,
-  listActiveUsers,
-  type UserRow,
-} from "../_lib/usersSupabase";
+  approveLeaveRequest,
+  createLeaveRequest,
+  listLeaveRequests,
+  rejectLeaveRequest,
+  type LeaveRequestItem,
+} from "../_lib/leaveRequestService";
+import { ensureDefaultUsers, listActiveUsers, type UserRow } from "../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
+import { filterUsersByScreenScope, getAttendanceScope } from "../_lib/screenScopes";
+import AttendanceStatusCard from "./_components/AttendanceStatusCard";
+import LeaveRequestCard from "./_components/LeaveRequestCard";
+import LeaveApprovalList from "./_components/LeaveApprovalList";
+import LeaveRequestModal from "./_components/LeaveRequestModal";
+import TodayAttendanceList from "./_components/TodayAttendanceList";
+import AttendanceRuleCard from "./_components/AttendanceRuleCard";
 import toast from "react-hot-toast";
-import {
-  AnimatedStatNumber,
-  HoverCard,
-  ShimmerBlock,
-  TapButton,
-} from "@/app/_components/ui/crm-motion";
 
 const CURRENT_USER_KEY = "crm.current_user_id.v2";
 
-const ACTIVITY_SUMMARY_FALLBACK: ActivitySummary = {
-  consultations: 0,
-  leadCreated: 0,
-  statusChanged: 0,
-  contractProgress: 0,
-  total: 0,
-  activityLogsUnavailable: true,
-};
+function canApproveLeaveByRank(rank: string | null | undefined) {
+  return rank === "본부장" || rank === "대표" || rank === "총괄대표";
+}
 
-function pickInitialAttendanceUserId(scoped: UserRow[], profileUserId: string): string {
+function pickInitialAttendanceUserId(scoped: UserRow[], profileUserId: string) {
   if (scoped.length === 0) return "";
   try {
-    const stored =
-      typeof window !== "undefined" ? window.localStorage.getItem(CURRENT_USER_KEY) : null;
+    const stored = typeof window !== "undefined" ? window.localStorage.getItem(CURRENT_USER_KEY) : null;
     if (stored && scoped.some((u) => u.id === stored)) return stored;
-  } catch {
-    /* ignore */
-  }
+  } catch {}
   if (profileUserId && scoped.some((u) => u.id === profileUserId)) return profileUserId;
   return scoped[0].id;
 }
@@ -63,250 +46,98 @@ function pickInitialAttendanceUserId(scoped: UserRow[], profileUserId: string): 
 function dt(iso: string | null | undefined) {
   if (!iso) return "-";
   const d = new Date(iso);
-  return `${d.toLocaleDateString("ko-KR")} ${d.toLocaleTimeString("ko-KR", {
-    hour: "2-digit",
-    minute: "2-digit",
-  })}`;
+  return `${d.toLocaleDateString("ko-KR")} ${d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+async function readGps(): Promise<{ latitude: number; longitude: number }> {
+  if (!("geolocation" in navigator)) throw new Error("이 브라우저는 위치 정보를 지원하지 않습니다.");
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ latitude: p.coords.latitude, longitude: p.coords.longitude }),
+      () => reject(new Error("GPS 위치를 가져오지 못했습니다.")),
+      { enableHighAccuracy: true, timeout: 10000 }
+    );
+  });
 }
 
 export default function AttendancePage() {
   const { profile } = useAuth();
-  const canViewAll = profile?.role === "admin";
-  const [currentUserId, setCurrentUserId] = useState<string>("");
+  const attendanceScope = getAttendanceScope({ id: profile?.userId, role: profile?.role, rank: profile?.rank, team_name: profile?.teamName });
+  const canViewAll = attendanceScope === "all" || attendanceScope === "all_except_executive";
+  const canViewTeam = attendanceScope === "team";
+  const canApproveLeave = canApproveLeaveByRank(profile?.rank);
+  const todayDate = getLocalDateKey();
+
+  const [currentUserId, setCurrentUserId] = useState("");
   const [userOptions, setUserOptions] = useState<UserRow[]>([]);
   const [today, setToday] = useState<AttendanceRow | null>(null);
   const [rows, setRows] = useState<AttendanceRow[]>([]);
-  const [memo, setMemo] = useState("");
-  const [externalReason, setExternalReason] = useState("");
-  const [visitPlace, setVisitPlace] = useState("");
   const [loading, setLoading] = useState(false);
-  const [pageFetching, setPageFetching] = useState(false);
-  const [holidays, setHolidays] = useState<HolidayRow[]>([]);
-  const [todayActivity, setTodayActivity] = useState<ActivitySummary | null>(null);
-  const [activityMap, setActivityMap] = useState<Map<string, ActivitySummary>>(new Map());
-  const [month, setMonth] = useState(() => getLocalDateKey().slice(0, 7));
-  const [monthRows, setMonthRows] = useState<AttendanceRow[]>([]);
-  const [todayRows, setTodayRows] = useState<AttendanceRow[]>([]);
-  const [newHolidayDate, setNewHolidayDate] = useState("");
-  const [newHolidayName, setNewHolidayName] = useState("");
-  const [isWeekend, setIsWeekend] = useState(false);
-  const [isHolidayToday, setIsHolidayToday] = useState(false);
-  const [currentPositionLabel, setCurrentPositionLabel] = useState("-");
-  const userNameMap = useMemo(
-    () => new Map(userOptions.map((u) => [u.id, u.name])),
+  const [leaveModalOpen, setLeaveModalOpen] = useState(false);
+  const [leaveFromDate, setLeaveFromDate] = useState(getLocalDateKey());
+  const [leaveToDate, setLeaveToDate] = useState(getLocalDateKey());
+  const [leaveReason, setLeaveReason] = useState("");
+  const [leaveSaving, setLeaveSaving] = useState(false);
+  const [myLeaveRequests, setMyLeaveRequests] = useState<LeaveRequestItem[]>([]);
+  const [pendingLeaveRequests, setPendingLeaveRequests] = useState<LeaveRequestItem[]>([]);
+
+  const isCheckedIn = !!today?.check_in;
+  const isCheckedOut = !!today?.check_out;
+  const approvedLeaveToday = myLeaveRequests.some((r) => r.status === "approved" && r.fromDate <= todayDate && r.toDate >= todayDate);
+  const statusText = approvedLeaveToday ? "승인된 연차" : isCheckedOut ? "근무 완료" : isCheckedIn ? "출근 완료" : "미출근";
+  const userMetaMap = useMemo(
+    () =>
+      new Map(
+        userOptions.map((u) => [u.id, { name: u.name || "-", rank: u.rank ?? null, teamName: u.team_name ?? null }])
+      ),
     [userOptions]
   );
 
-  const todayDate = getLocalDateKey();
-
-  async function readGps(): Promise<{ latitude: number; longitude: number }> {
-    if (!("geolocation" in navigator)) {
-      throw new Error("이 브라우저는 위치 정보를 지원하지 않습니다.");
-    }
-    return new Promise((resolve, reject) => {
-      navigator.geolocation.getCurrentPosition(
-        (p) =>
-          resolve({
-            latitude: p.coords.latitude,
-            longitude: p.coords.longitude,
-          }),
-        () => reject(new Error("GPS 위치를 가져오지 못했습니다.")),
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    });
+  async function refreshLeaveRequests() {
+    const payload = await listLeaveRequests();
+    setMyLeaveRequests(payload.myRequests);
+    setPendingLeaveRequests(payload.pendingRequests);
   }
 
   async function refresh() {
     if (!currentUserId) return;
-
-    setPageFetching(true);
-    try {
-      const t = await getTodayAttendance(currentUserId, todayDate);
-      setToday(t);
-
-      const [list, h, monthList, todayList, holidayFlag] = await Promise.all([
-        canViewAll ? listAttendance(300) : Promise.resolve([]),
-        listHolidays(),
-        canViewAll ? listAttendanceByMonth(month) : Promise.resolve([]),
-        canViewAll ? listTodayAttendance() : Promise.resolve([]),
-        isHoliday(todayDate),
-      ]);
-
-      setRows(list);
-      setHolidays(h);
-      setMonthRows(monthList);
-      setTodayRows(todayList);
-      setIsHolidayToday(holidayFlag);
-
-      const wk = new Date().getDay();
-      setIsWeekend(wk === 0 || wk === 6);
-
-      let act: ActivitySummary = { ...ACTIVITY_SUMMARY_FALLBACK };
-      try {
-        act = await getActivitySummaryByUserDate(currentUserId, todayDate);
-      } catch (e) {
-        console.warn("[refresh] activity summary skipped:", e);
-      }
-      setTodayActivity(act);
-
-      let m = new Map<string, ActivitySummary>();
-      if (canViewAll) {
-        try {
-          m = await getActivitySummaryMapByDate(todayDate);
-        } catch (e) {
-          console.warn("[refresh] activity map skipped:", e);
-        }
-      }
-      setActivityMap(m);
-    } catch (e) {
-      console.error("[refresh error]", e);
-    } finally {
-      setPageFetching(false);
-    }
+    const allowedIds = userOptions.map((u) => u.id);
+    const [t, list] = await Promise.all([
+      getTodayAttendance(currentUserId, todayDate),
+      canViewAll || canViewTeam ? listAttendance(200, allowedIds) : Promise.resolve([]),
+    ]);
+    setToday(t);
+    setRows(list);
   }
 
   useEffect(() => {
     if (!profile) return;
     void (async () => {
-      try {
-        await ensureDefaultUsers();
-        const users = await listActiveUsers();
-        const scoped =
-          profile.role === "staff"
-            ? users.filter((u) => u.id === profile.userId)
-            : users;
-        if (scoped.length > 0) {
-          setUserOptions(scoped);
-          setCurrentUserId(pickInitialAttendanceUserId(scoped, profile.userId));
-        } else if (profile.userId) {
-          setUserOptions([]);
-          setCurrentUserId(profile.userId);
-        }
-      } catch {
-        setUserOptions([]);
-        setCurrentUserId(profile.userId ?? "");
-      }
+      await ensureDefaultUsers();
+      const users = await listActiveUsers();
+      const scoped = filterUsersByScreenScope(users, { id: profile.userId, role: profile.role, rank: profile.rank, team_name: profile.teamName, name: profile.name }, attendanceScope);
+      setUserOptions(scoped);
+      setCurrentUserId(pickInitialAttendanceUserId(scoped, profile.userId));
+      await refreshLeaveRequests();
     })();
-  }, [profile]);
+  }, [profile, attendanceScope]);
 
   useEffect(() => {
-    if (!currentUserId) {
-      setPageFetching(false);
-      return;
-    }
+    if (!currentUserId) return;
     window.localStorage.setItem(CURRENT_USER_KEY, currentUserId);
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId, month, canViewAll]);
-
-  const todayNorm = useMemo(() => normalizeAttendanceRow(today), [today]);
-
-  const isCheckedIn = !!todayNorm?.normalized_check_in;
-  const isCheckedOut = !!todayNorm?.normalized_check_out;
-
-  const statusType: "ABSENT" | "LATE" | "WORKING" | "DONE" = isCheckedOut
-    ? "DONE"
-    : !isCheckedIn
-      ? "ABSENT"
-      : today?.status === "지각"
-        ? "LATE"
-        : "WORKING";
-
-  const lateList = useMemo(
-    () => todayRows.filter((r) => r.checkin_status === "지각"),
-    [todayRows]
-  );
-  const earlyLeaveList = useMemo(
-    () => todayRows.filter((r) => r.checkout_status === "조기 퇴근"),
-    [todayRows]
-  );
-  const noRecordList = useMemo(() => {
-    if (isWeekend || isHolidayToday) return [];
-    return userOptions
-      .filter((u) => {
-        if (todayRows.some((r) => r.user_id === u.id)) return false;
-        const inFullListToday = rows.some((r) => {
-          if (r.user_id !== u.id) return false;
-          const n = normalizeAttendanceRow(r);
-          return n?.normalized_date === todayDate;
-        });
-        if (inFullListToday) return false;
-        return true;
-      })
-      .map((u) => u.name);
-  }, [todayRows, isWeekend, isHolidayToday, userOptions, rows, todayDate]);
-
-  const monthStats = useMemo(() => {
-    const map = new Map<
-      string,
-      {
-        user: string;
-        lateCount: number;
-        earlyLeaveCount: number;
-        holidayWorkCount: number;
-        workDays: number;
-      }
-    >();
-    for (const e of userOptions) {
-      map.set(e.id, {
-        user: e.name,
-        lateCount: 0,
-        earlyLeaveCount: 0,
-        holidayWorkCount: 0,
-        workDays: 0,
-      });
-    }
-    for (const r of monthRows) {
-      if (!map.has(r.user_id)) continue;
-      const row = map.get(r.user_id)!;
-      if (r.checkin_status === "지각") row.lateCount += 1;
-      if (r.checkout_status === "조기 퇴근") row.earlyLeaveCount += 1;
-      if (r.status === "휴무일 근무") row.holidayWorkCount += 1;
-      if (r.status !== "휴무" && r.status !== "결근") row.workDays += 1;
-    }
-    return Array.from(map.values());
-  }, [monthRows, userOptions]);
+  }, [currentUserId, canViewAll, canViewTeam]);
 
   async function onCheckIn() {
-    if (!currentUserId.trim()) {
-      toast.error("출근할 직원을 선택해 주세요.");
-      return;
-    }
     setLoading(true);
     try {
-      const preToday = await getTodayAttendance(currentUserId, todayDate);
-      setToday(preToday);
-
       const pos = await readGps();
-      setCurrentPositionLabel(`${pos.latitude.toFixed(5)}, ${pos.longitude.toFixed(5)}`);
-      const saved = await checkIn(currentUserId, pos, { memo: memo || undefined });
-      setToday(saved);
+      await checkIn(currentUserId, pos);
       await refresh();
       toast.success("출근 처리되었습니다.");
-      try {
-        const act = await getActivitySummaryByUserDate(currentUserId, todayDate);
-        if (!act.activityLogsUnavailable && act.total === 0) {
-          toast("오늘 CRM 활동이 없습니다. 기록을 확인해 주세요.", { icon: "⚠️" });
-        }
-      } catch (e) {
-        console.warn("[attendance] activity summary skipped:", e);
-      }
     } catch (e) {
-      console.error(e);
-      const msg =
-        e instanceof Error
-          ? e.message
-          : e && typeof e === "object" && "message" in e
-            ? String((e as { message: unknown }).message)
-            : "출근 처리 중 오류가 발생했습니다.";
-
-      if (msg.includes("이미 출근 기록")) {
-        const t = await getTodayAttendance(currentUserId, todayDate);
-        setToday(t);
-        await refresh();
-      }
-
-      toast.error(msg);
+      toast.error(e instanceof Error ? e.message : "출근 처리 실패");
     } finally {
       setLoading(false);
     }
@@ -316,530 +147,86 @@ export default function AttendancePage() {
     setLoading(true);
     try {
       const pos = await readGps();
-      setCurrentPositionLabel(`${pos.latitude.toFixed(5)}, ${pos.longitude.toFixed(5)}`);
-      await checkOut(currentUserId, pos, memo || undefined);
+      await checkOut(currentUserId, pos);
       await refresh();
       toast.success("퇴근 처리되었습니다.");
-      try {
-        const actOut = await getActivitySummaryByUserDate(currentUserId, todayDate);
-        if (!actOut.activityLogsUnavailable && actOut.total === 0) {
-          toast("오늘 CRM 활동 수가 0건입니다. 근태 검증 대상입니다.", { icon: "⚠️" });
-        }
-      } catch (e) {
-        console.warn("[attendance] activity summary skipped:", e);
-      }
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "퇴근 처리 중 오류가 발생했습니다.");
+      toast.error(e instanceof Error ? e.message : "퇴근 처리 실패");
     } finally {
       setLoading(false);
     }
   }
 
-  async function onMark(status: "외근" | "휴가") {
-    setLoading(true);
+  async function submitLeaveRequest() {
+    if (!leaveFromDate || !leaveToDate) return toast.error("시작일과 종료일은 필수입니다.");
+    if (leaveToDate < leaveFromDate) return toast.error("종료일은 시작일보다 빠를 수 없습니다.");
+    setLeaveSaving(true);
     try {
-      const pos = await readGps();
-      setCurrentPositionLabel(`${pos.latitude.toFixed(5)}, ${pos.longitude.toFixed(5)}`);
-      if (status === "외근" && (!externalReason.trim() || !visitPlace.trim())) {
-        throw new Error("외근 시 외근 사유와 방문처를 입력해야 합니다.");
-      }
-      await markAttendanceStatus(currentUserId, status, pos, {
-        memo: [visitPlace.trim(), memo.trim()].filter(Boolean).join(" / ") || undefined,
-        externalReason: externalReason || undefined,
-      });
-      await refresh();
-      toast.success(status === "외근" ? "외근으로 등록되었습니다." : "휴가로 등록되었습니다.");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "상태 처리 중 오류가 발생했습니다.");
+      await createLeaveRequest({ fromDate: leaveFromDate, toDate: leaveToDate, reason: leaveReason.trim() });
+      toast.success("연차요청이 접수되었습니다.");
+      setLeaveModalOpen(false);
+      setLeaveReason("");
+      await refreshLeaveRequests();
     } finally {
-      setLoading(false);
+      setLeaveSaving(false);
     }
   }
-
-  const statusUi = {
-    ABSENT: {
-      badge: "미출근",
-      badgeClass:
-        "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300",
-      title: "미출근",
-      titleClass: "text-zinc-500 dark:text-zinc-400",
-    },
-    LATE: {
-      badge: "지각",
-      badgeClass: "bg-red-100 text-red-600 dark:bg-red-950/70 dark:text-red-400",
-      title: "지각 출근",
-      titleClass: "text-red-600 dark:text-red-400",
-    },
-    WORKING: {
-      badge: "출근",
-      badgeClass:
-        "bg-emerald-100 text-emerald-700 dark:bg-emerald-950/70 dark:text-emerald-400",
-      title: "출근 완료",
-      titleClass: "text-emerald-600 dark:text-emerald-400",
-    },
-    DONE: {
-      badge: "완료",
-      badgeClass: "bg-blue-100 text-blue-700 dark:bg-blue-950/70 dark:text-blue-400",
-      title: "근무 완료",
-      titleClass: "text-blue-600 dark:text-blue-400",
-    },
-  }[statusType];
-
-  const checkInDisabled =
-    loading || pageFetching || !currentUserId.trim() || statusType !== "ABSENT";
-  const checkOutDisabled =
-    loading || pageFetching || !isCheckedIn || isCheckedOut;
-  const secondaryActionsDisabled = loading || pageFetching || isCheckedOut;
 
   return (
     <div className="crm-card">
-      <div className="space-y-6 p-5 sm:p-7 lg:p-8">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">근태 관리</h1>
-          <p className="mt-1 text-sm text-zinc-600 dark:text-zinc-400">
-            GPS + 활동로그 기반으로 근태 신뢰성을 확인합니다.
-          </p>
-        </div>
-        <div className="w-full sm:w-[220px]">
-          <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-            현재 사용자
-          </label>
-          <select
-            value={currentUserId}
-            onChange={(e) => setCurrentUserId(e.target.value)}
-            disabled={!canViewAll}
-            className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm font-semibold text-zinc-900 outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
-          >
-            {userOptions.map((u) => (
-              <option key={u.id} value={u.id}>
-                {u.name}
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <div className="space-y-4 lg:col-span-2">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 내 근태 상태</div>
-
-          <div className="flex min-h-[272px] flex-col rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:min-h-[248px]">
-            <div className="mb-3">
-              <span
-                className={`inline-flex items-center rounded-lg px-3 py-1.5 text-sm font-bold ${statusUi.badgeClass}`}
-              >
-                {statusUi.badge}
-              </span>
-            </div>
-            <div className={`text-3xl font-bold leading-tight tracking-tight ${statusUi.titleClass}`}>
-              {statusUi.title}
-            </div>
-            <div className="mt-5 space-y-2 border-t border-zinc-100 pt-4 dark:border-zinc-800">
-              <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-4">
-                <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-                  출근
-                </span>
-                <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                  {dt(todayNorm?.normalized_check_in ?? null)}
-                </span>
-              </div>
-              <div className="flex flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-4">
-                <span className="shrink-0 text-[11px] font-bold uppercase tracking-wider text-zinc-400 dark:text-zinc-500">
-                  퇴근
-                </span>
-                <span className="text-sm font-semibold text-zinc-800 dark:text-zinc-100">
-                  {dt(todayNorm?.normalized_check_out ?? null)}
-                </span>
-              </div>
-            </div>
-            <div className="mt-auto flex flex-wrap gap-2 border-t border-zinc-100 pt-5 dark:border-zinc-800">
-              <TapButton
-                onClick={() => void onCheckIn()}
-                disabled={checkInDisabled}
-                className={`rounded-xl px-5 py-2.5 text-sm font-semibold disabled:opacity-50 ${
-                  statusType === "ABSENT"
-                    ? "bg-indigo-600 text-white hover:bg-indigo-500"
-                    : "border border-zinc-200 bg-zinc-100 text-zinc-500 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-400"
-                }`}
-              >
-                출근
-              </TapButton>
-              <TapButton
-                onClick={() => void onCheckOut()}
-                disabled={checkOutDisabled}
-                className="rounded-xl bg-zinc-900 px-5 py-2.5 text-sm font-semibold text-white hover:bg-zinc-800 disabled:opacity-50 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200"
-              >
-                퇴근
-              </TapButton>
-            </div>
+      <div className="grid gap-5 p-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-xl font-semibold tracking-tight text-zinc-900">근태 관리</h1>
+            <select value={currentUserId} onChange={(e) => setCurrentUserId(e.target.value)} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm">
+              {userOptions.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+            </select>
           </div>
 
-          <div className="mt-1 grid gap-2 sm:grid-cols-3 sm:gap-3">
-            <div className="rounded-lg border border-zinc-200/90 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
-                근무일 여부
-              </div>
-              <div className="mt-1 text-xs font-semibold text-zinc-900 dark:text-zinc-50">
-                {isWeekend || isHolidayToday ? "휴무일" : "근무일"}
-              </div>
-            </div>
-            <div className="rounded-lg border border-zinc-200/90 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
-                오늘 활동 수
-              </div>
-              <div className="mt-1 text-xs font-semibold text-zinc-900 dark:text-zinc-50">
-                {todayActivity?.activityLogsUnavailable ? (
-                  <span className="font-medium text-zinc-400 dark:text-zinc-500">집계 불가</span>
-                ) : (
-                  <>
-                    {todayActivity?.total ?? 0}
-                    {(todayActivity?.total ?? 0) === 0 ? (
-                      <span className="ml-1 text-amber-600 dark:text-amber-400">· 경고</span>
-                    ) : null}
-                  </>
-                )}
-              </div>
-            </div>
-            <div className="rounded-lg border border-zinc-200/90 bg-white px-3 py-2.5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:min-w-0">
-              <div className="text-[10px] font-bold uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
-                마지막 GPS
-              </div>
-              <div className="mt-1 break-all text-xs font-semibold text-zinc-900 dark:text-zinc-50">
-                {currentPositionLabel}
-              </div>
-            </div>
-          </div>
+          <AttendanceStatusCard
+            statusText={statusText}
+            checkInText={dt(today?.check_in)}
+            checkOutText={dt(today?.check_out)}
+            loading={loading}
+            canCheckIn={!approvedLeaveToday && !isCheckedIn}
+            canCheckOut={!approvedLeaveToday && isCheckedIn && !isCheckedOut}
+            onCheckIn={() => void onCheckIn()}
+            onCheckOut={() => void onCheckOut()}
+            onOpenLeaveModal={() => setLeaveModalOpen(true)}
+          />
 
-          <div>
-            <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">메모</label>
-            <input
-              value={memo}
-              onChange={(e) => setMemo(e.target.value)}
-              placeholder="예: 외근 일정, 지각 사유 등"
-              className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none placeholder:text-zinc-400 focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
+          <LeaveRequestCard requests={myLeaveRequests} />
+
+          {canApproveLeave ? (
+            <LeaveApprovalList
+              requests={pendingLeaveRequests}
+              onApprove={(id) => void approveLeaveRequest(id).then(refreshLeaveRequests)}
+              onReject={(id) => void rejectLeaveRequest(id, (window.prompt("반려 사유", "") ?? "").trim()).then(refreshLeaveRequests)}
             />
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                외근 사유(외근 시 필수)
-              </label>
-              <input
-                value={externalReason}
-                onChange={(e) => setExternalReason(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">
-                방문처(외근 시 필수)
-              </label>
-              <input
-                value={visitPlace}
-                onChange={(e) => setVisitPlace(e.target.value)}
-                className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 outline-none focus:border-indigo-400 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50"
-              />
-            </div>
-          </div>
+          ) : null}
 
-          <div className="mt-4 flex flex-wrap gap-2">
-            <TapButton
-              onClick={() => void onMark("외근")}
-              disabled={secondaryActionsDisabled}
-              className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900/60"
-            >
-              외근
-            </TapButton>
-            <TapButton
-              onClick={() => void onMark("휴가")}
-              disabled={secondaryActionsDisabled}
-              className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-900 hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-50 dark:hover:bg-zinc-900/60"
-            >
-              휴가
-            </TapButton>
-          </div>
+          {(canViewAll || canViewTeam) ? (
+            <TodayAttendanceList rows={rows} users={userMetaMap} formatDateTime={dt} />
+          ) : null}
         </div>
 
-        <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">자동 판단 기준</div>
-          <ul className="mt-3 space-y-2 text-sm text-zinc-700 dark:text-zinc-200">
-            <li>월~금 근무 / 토·일·공휴일 휴무</li>
-            <li>09:30 이후 출근 시 자동 `지각`</li>
-            <li>월~목 17:45, 금요일 17:30 이전 퇴근 시 `조기 퇴근`</li>
-            <li>퇴근은 출근 기록이 있어야 가능</li>
-            <li>외근은 사유/방문처/GPS 필수</li>
-          </ul>
-        </HoverCard>
-      </div>
-
-      {canViewAll ? (
-      <div className="grid gap-4 lg:grid-cols-3">
-        <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 지각자</div>
-          <ul className="mt-2 space-y-1 text-sm text-zinc-700 dark:text-zinc-200">
-            {lateList.length === 0 ? <li>- 없음</li> : lateList.map((r) => <li key={r.id}>{userNameMap.get(r.user_id) ?? r.user_id}</li>)}
-          </ul>
-        </HoverCard>
-        <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 조기퇴근자</div>
-          <ul className="mt-2 space-y-1 text-sm text-zinc-700 dark:text-zinc-200">
-            {earlyLeaveList.length === 0 ? <li>- 없음</li> : earlyLeaveList.map((r) => <li key={r.id}>{userNameMap.get(r.user_id) ?? r.user_id}</li>)}
-          </ul>
-        </HoverCard>
-        <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">오늘 무기록자</div>
-          <ul className="mt-2 space-y-1 text-sm text-zinc-700 dark:text-zinc-200">
-            {noRecordList.length === 0 ? <li>- 없음</li> : noRecordList.map((u) => <li key={u}>{u}</li>)}
-          </ul>
-        </HoverCard>
-      </div>
-      ) : null}
-
-      {canViewAll ? (
-      <div className="relative overflow-hidden rounded-2xl border border-zinc-200 dark:border-zinc-800">
-        {pageFetching ? (
-          <div className="absolute inset-0 z-10 flex flex-col gap-2 bg-white/85 p-6 backdrop-blur-[2px] dark:bg-zinc-950/85">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <ShimmerBlock key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        ) : null}
-        <div className="border-b border-zinc-200 px-4 py-3 text-sm font-semibold text-zinc-900 dark:border-zinc-800 dark:text-zinc-50">
-          관리자용 전체 직원 근태 리스트
-        </div>
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead className="border-b border-zinc-200 bg-zinc-50 text-xs font-semibold uppercase tracking-wider text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900/30 dark:text-zinc-400">
-              <tr>
-                <th className="px-4 py-3">직원</th>
-                <th className="px-4 py-3">날짜</th>
-                <th className="px-4 py-3">출근</th>
-                <th className="px-4 py-3">퇴근</th>
-                <th className="px-4 py-3">출근판정</th>
-                <th className="px-4 py-3">퇴근판정</th>
-                <th className="px-4 py-3">휴무</th>
-                <th className="px-4 py-3">휴무일근무</th>
-                <th className="px-4 py-3">위치기록</th>
-                <th className="px-4 py-3">외근</th>
-                <th className="px-4 py-3">활동수</th>
-                <th className="px-4 py-3">메모</th>
-                <th className="px-4 py-3">승인</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && todayNorm ? (
-                <tr
-                  key={todayNorm.id}
-                  className="border-b border-zinc-200 last:border-0 dark:border-zinc-800"
-                >
-                  <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
-                    {userNameMap.get(todayNorm.user_id) ?? todayNorm.user_id}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                    {todayNorm.normalized_date ?? "-"}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                    {dt(todayNorm.normalized_check_in)}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                    {dt(todayNorm.normalized_check_out)}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                    {todayNorm.checkin_status ?? "-"}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                    {todayNorm.checkout_status ?? "-"}
-                  </td>
-                  <td className="px-4 py-3">{todayNorm.is_holiday || todayNorm.is_weekend ? "Y" : "-"}</td>
-                  <td className="px-4 py-3">{todayNorm.status === "휴무일 근무" ? "Y" : "-"}</td>
-                  <td className="px-4 py-3">{todayNorm.latitude && todayNorm.longitude ? "Y" : "-"}</td>
-                  <td className="px-4 py-3">{todayNorm.status === "외근" ? "Y" : "-"}</td>
-                  <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
-                    {activityMap.get(todayNorm.user_id)?.total ?? 0}
-                  </td>
-                  <td className="px-4 py-3 text-zinc-600 dark:text-zinc-300">{todayNorm.memo || "-"}</td>
-                  <td className="px-4 py-3">
-                    {todayNorm.status === "휴무일 근무" ? (
-                      <TapButton
-                        type="button"
-                        onClick={async () => {
-                          await approveHolidayWork(todayNorm.id, !todayNorm.holiday_work_approved);
-                          await refresh();
-                          toast.success(
-                            todayNorm.holiday_work_approved ? "승인을 취소했습니다." : "휴무일 근무를 승인했습니다."
-                          );
-                        }}
-                        className="rounded-lg border border-zinc-200 px-2 py-1 text-xs font-semibold dark:border-zinc-700"
-                      >
-                        {todayNorm.holiday_work_approved ? "승인취소" : "승인"}
-                      </TapButton>
-                    ) : (
-                      "-"
-                    )}
-                  </td>
-                </tr>
-              ) : rows.length === 0 ? (
-                <tr>
-                  <td colSpan={13} className="px-4 py-10 text-center text-sm text-zinc-500">
-                    근태 데이터가 없습니다.
-                  </td>
-                </tr>
-              ) : (
-                rows.map((r) => {
-                  const rn = normalizeAttendanceRow(r)!;
-                  return (
-                  <tr key={r.id} className="border-b border-zinc-200 last:border-0 dark:border-zinc-800">
-                    <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
-                      {userNameMap.get(r.user_id) ?? r.user_id}
-                    </td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                      {rn.normalized_date ?? "-"}
-                    </td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                      {dt(rn.normalized_check_in)}
-                    </td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">
-                      {dt(rn.normalized_check_out)}
-                    </td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{r.checkin_status ?? "-"}</td>
-                    <td className="px-4 py-3 text-zinc-700 dark:text-zinc-200">{r.checkout_status ?? "-"}</td>
-                    <td className="px-4 py-3">{r.is_holiday || r.is_weekend ? "Y" : "-"}</td>
-                    <td className="px-4 py-3">{r.status === "휴무일 근무" ? "Y" : "-"}</td>
-                    <td className="px-4 py-3">{r.latitude && r.longitude ? "Y" : "-"}</td>
-                    <td className="px-4 py-3">{r.status === "외근" ? "Y" : "-"}</td>
-                    <td className="px-4 py-3 font-semibold text-zinc-900 dark:text-zinc-50">
-                      {activityMap.get(r.user_id)?.total ?? 0}
-                    </td>
-                    <td className="px-4 py-3 text-zinc-600 dark:text-zinc-300">{r.memo || "-"}</td>
-                    <td className="px-4 py-3">
-                      {r.status === "휴무일 근무" ? (
-                        <TapButton
-                          type="button"
-                          onClick={async () => {
-                            await approveHolidayWork(r.id, !r.holiday_work_approved);
-                            await refresh();
-                            toast.success(r.holiday_work_approved ? "승인을 취소했습니다." : "휴무일 근무를 승인했습니다.");
-                          }}
-                          className="rounded-lg border border-zinc-200 px-2 py-1 text-xs font-semibold dark:border-zinc-700"
-                        >
-                          {r.holiday_work_approved ? "승인취소" : "승인"}
-                        </TapButton>
-                      ) : (
-                        "-"
-                      )}
-                    </td>
-                  </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+        <div className="space-y-5">
+          <AttendanceRuleCard />
         </div>
       </div>
-      ) : null}
 
-      {canViewAll ? (
-      <div className="grid gap-4 lg:grid-cols-2">
-        <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="flex items-center justify-between">
-            <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">월별 통계</div>
-            <input
-              type="month"
-              value={month}
-              onChange={(e) => setMonth(e.target.value)}
-              className="rounded-lg border border-zinc-200 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-          </div>
-          <div className="mt-3 overflow-x-auto">
-            <table className="min-w-full text-left text-sm">
-              <thead className="border-b border-zinc-200 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
-                <tr>
-                  <th className="px-3 py-2">직원</th>
-                  <th className="px-3 py-2">지각</th>
-                  <th className="px-3 py-2">조기퇴근</th>
-                  <th className="px-3 py-2">휴무일근무</th>
-                  <th className="px-3 py-2">총 근무일</th>
-                </tr>
-              </thead>
-              <tbody>
-                {monthStats.map((s) => (
-                  <tr key={s.user} className="border-b border-zinc-200 last:border-0 dark:border-zinc-800">
-                    <td className="px-3 py-2 font-semibold">{s.user}</td>
-                    <td className="px-3 py-2">
-                      <AnimatedStatNumber value={s.lateCount} duration={0.35} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <AnimatedStatNumber value={s.earlyLeaveCount} duration={0.35} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <AnimatedStatNumber value={s.holidayWorkCount} duration={0.35} />
-                    </td>
-                    <td className="px-3 py-2">
-                      <AnimatedStatNumber value={s.workDays} duration={0.35} />
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </HoverCard>
-
-        <HoverCard className="rounded-2xl border border-zinc-200 p-4 dark:border-zinc-800">
-          <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">공휴일 관리</div>
-          <div className="mt-3 flex gap-2">
-            <input
-              type="date"
-              value={newHolidayDate}
-              onChange={(e) => setNewHolidayDate(e.target.value)}
-              className="rounded-lg border border-zinc-200 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-            <input
-              value={newHolidayName}
-              onChange={(e) => setNewHolidayName(e.target.value)}
-              placeholder="공휴일명"
-              className="flex-1 rounded-lg border border-zinc-200 px-2 py-1 text-sm dark:border-zinc-700 dark:bg-zinc-900"
-            />
-            <TapButton
-              type="button"
-              onClick={async () => {
-                if (!newHolidayDate || !newHolidayName.trim()) return;
-                await addHoliday(newHolidayDate, newHolidayName.trim());
-                setNewHolidayDate("");
-                setNewHolidayName("");
-                await refresh();
-                toast.success("공휴일이 추가되었습니다.");
-              }}
-              className="rounded-lg bg-indigo-600 px-3 py-1 text-sm font-semibold text-white"
-            >
-              추가
-            </TapButton>
-          </div>
-          <ul className="mt-3 max-h-60 space-y-1 overflow-auto text-sm">
-            {holidays.map((h) => (
-              <li key={h.date} className="flex items-center justify-between rounded-lg border border-zinc-200 px-3 py-2 dark:border-zinc-700">
-                <span>
-                  {h.date} · {h.name}
-                </span>
-                <TapButton
-                  type="button"
-                  onClick={async () => {
-                    await deleteHoliday(h.date);
-                    await refresh();
-                    toast.success("공휴일을 삭제했습니다.");
-                  }}
-                  className="rounded px-2 py-1 text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-900/20"
-                >
-                  삭제
-                </TapButton>
-              </li>
-            ))}
-          </ul>
-        </HoverCard>
-      </div>
-      ) : null}
-      </div>
+      <LeaveRequestModal
+        open={leaveModalOpen}
+        fromDate={leaveFromDate}
+        toDate={leaveToDate}
+        reason={leaveReason}
+        saving={leaveSaving}
+        onChangeFromDate={setLeaveFromDate}
+        onChangeToDate={setLeaveToDate}
+        onChangeReason={setLeaveReason}
+        onCancel={() => setLeaveModalOpen(false)}
+        onSubmit={() => void submitLeaveRequest()}
+      />
     </div>
   );
 }
-

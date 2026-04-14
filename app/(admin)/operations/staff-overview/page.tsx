@@ -28,9 +28,17 @@ import {
   todayYmdKst,
 } from "../../_lib/excelExport";
 import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
-import { effectiveContractFeeForMetrics } from "../../_lib/leaseCrmContractPersist";
+import { effectiveContractNetProfitForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
+import {
+  canAccessAdminOverview,
+  extractVisibleUserIds,
+  filterUsersByScreenScope,
+  getAdminOverviewScope,
+  isTeamLeader,
+  getTeamLeaderOverviewScope,
+} from "../../_lib/screenScopes";
 import {
   CrmListPaginationBar,
   CRM_LIST_PAGE_SIZE,
@@ -88,16 +96,30 @@ export default function StaffOverviewPage() {
   const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
   const managerUserIdFilter = (searchParams.get("managerUserId") ?? "").trim();
-  const isAdmin = profile?.role === "super_admin" || profile?.role === "admin";
+  const adminOverviewViewer = {
+    id: profile?.userId,
+    role: profile?.role,
+    rank: profile?.rank,
+    team_name: profile?.teamName,
+    name: profile?.name,
+  };
+  const adminOverviewScope = getAdminOverviewScope(adminOverviewViewer);
+  const canAccessOverviewPage = canAccessAdminOverview(adminOverviewViewer);
+  const canUseManagerFilter =
+    adminOverviewScope === "all" || adminOverviewScope === "all_except_executive" || adminOverviewScope === "team";
 
   const opScope = useMemo(() => {
-    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) return null;
+    if (!profile) return null;
     return {
-      role: "admin" as const,
+      role: profile.role,
       userId: profile.userId,
-      operationalFullAccess: true,
+      email: profile.email ?? null,
+      rank: profile.rank ?? null,
+      teamName: profile.teamName ?? null,
+      operationalFullAccess:
+        adminOverviewScope === "all" || adminOverviewScope === "all_except_executive" || adminOverviewScope === "team",
     };
-  }, [profile]);
+  }, [profile, adminOverviewScope]);
 
   const refreshAggregates = useCallback(
     async (nextLeads: Lead[], users: Awaited<ReturnType<typeof listActiveUsers>>) => {
@@ -118,7 +140,7 @@ export default function StaffOverviewPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) {
+    if (!profile || !canAccessOverviewPage) {
       router.replace("/dashboard");
       return;
     }
@@ -127,14 +149,49 @@ export default function StaffOverviewPage() {
     (async () => {
       try {
         const users = await listActiveUsers();
-        const loaded = await loadLeadsFromStorage(opScope);
+        const viewer = {
+          id: profile.userId,
+          role: profile.role,
+          rank: profile.rank,
+          team_name: profile.teamName,
+          name: profile.name,
+        };
+        const teamLeaderVisibleIds = getTeamLeaderOverviewScope(viewer, users);
+        const scopedUsers = filterUsersByScreenScope(
+          users,
+          viewer,
+          adminOverviewScope
+        );
+        const visibleUserIds = new Set(
+          adminOverviewScope === "team" ? teamLeaderVisibleIds : extractVisibleUserIds(scopedUsers)
+        );
+        console.log("[staff-overview scope]", {
+          currentUserRole: profile.role,
+          currentUserRank: profile.rank,
+          currentUserTeamName: profile.teamName,
+          isTeamLeader: isTeamLeader(viewer),
+          viewerId: profile.userId,
+          rank: profile.rank,
+          team: profile.teamName,
+          scope: adminOverviewScope,
+          teamLeaderOverviewIds: teamLeaderVisibleIds,
+          visibleUserIds: [...visibleUserIds],
+        });
+        const loadedRaw = await loadLeadsFromStorage({
+          ...opScope,
+          visibleUserIds: [...visibleUserIds],
+        });
+        const loaded = loadedRaw.filter((l) => {
+          const managerId = (l.managerUserId ?? "").trim();
+          return !!managerId && visibleUserIds.has(managerId);
+        });
         const ids = loaded.map((l) => l.id);
         const [contracts, consultMap] = await Promise.all([
           fetchContractFeeSummaryByLeadIds(ids, opScope),
           fetchMaxConsultationCreatedAtByLeadIds(ids, opScope),
         ]);
-        const rows = buildStaffOverviewRows(loaded, users, contracts, consultMap);
-        const org = buildOrgSummary(users.length, loaded, contracts);
+        const rows = buildStaffOverviewRows(loaded, scopedUsers, contracts, consultMap);
+        const org = buildOrgSummary(scopedUsers.length, loaded, contracts);
         if (!mounted) return;
         setContractByLead(contracts);
         setLastConsultByLead(consultMap);
@@ -155,7 +212,7 @@ export default function StaffOverviewPage() {
     return () => {
       mounted = false;
     };
-  }, [profile, authLoading, router, opScope]);
+  }, [profile, authLoading, router, opScope, adminOverviewScope]);
 
   const setManagerUserIdFilter = useCallback(
     (id: string) => {
@@ -317,7 +374,7 @@ export default function StaffOverviewPage() {
               : lastContactReferenceIso(l);
           const fee =
             l.contract != null
-              ? effectiveContractFeeForMetrics(l.contract)
+              ? effectiveContractNetProfitForMetrics(l.contract)
               : contractByLead.get(l.id)?.feeWon ?? null;
           const vehicle = l.contract?.vehicleName?.trim() || l.base.desiredVehicle || "";
           return {
@@ -329,7 +386,7 @@ export default function StaffOverviewPage() {
             다음연락예정일: formatDateOnlyForExcel(l.nextContactAt),
             최근상담일: formatDateForExcel(recent),
             차량정보: vehicle,
-            수수료: formatWonForExcel(fee),
+            총수익: formatWonForExcel(fee),
           };
         });
       downloadXlsxRows(rows, "고객목록", `${safeName}_고객목록_${todayYmdKst()}`);
@@ -344,7 +401,7 @@ export default function StaffOverviewPage() {
     );
   }
 
-  if (profile.role !== "admin" && profile.role !== "super_admin") {
+  if (!canAccessOverviewPage) {
     return null;
   }
 
@@ -363,7 +420,7 @@ export default function StaffOverviewPage() {
               집계는 <span className="font-medium text-slate-800 dark:text-zinc-200">manager_user_id</span> 기준이며,
               단계는 파이프라인(stage) 한 버킷으로 산출합니다.
             </p>
-            {isAdmin ? (
+            {canUseManagerFilter ? (
               <div className="mt-4 max-w-md">
                 <label className="mb-1 block text-[12px] font-medium text-slate-500 dark:text-zinc-400">
                   직원 필터
@@ -400,7 +457,7 @@ export default function StaffOverviewPage() {
           <SummaryCard label="오늘 등록" value={displayOrgSummary.registeredToday} />
           <SummaryCard label="이번 달 등록" value={displayOrgSummary.registeredThisMonth} />
           <SummaryCard
-            label="이번 달 예상 수수료"
+            label="이번 달 예상 총수익"
             value={formatWon(displayOrgSummary.feeThisMonthWon)}
           />
           <SummaryCard label="오늘 연락 예정" value={displayOrgSummary.todayNextContactTotal} />
@@ -434,7 +491,7 @@ export default function StaffOverviewPage() {
                 <th className="px-2 py-2.5">취소</th>
                 <th className="px-2 py-2.5">오늘연락</th>
                 <th className="px-2 py-2.5">최근상담</th>
-                <th className="px-2 py-2.5">월수수료</th>
+                <th className="px-2 py-2.5">월총수익</th>
                 <th className="px-2 py-2.5 text-right">작업</th>
               </tr>
             </thead>
@@ -570,7 +627,7 @@ export default function StaffOverviewPage() {
                   <th className="py-2 pr-3">다음 연락</th>
                   <th className="py-2 pr-3">최근 상담</th>
                   <th className="py-2 pr-3">차량</th>
-                  <th className="py-2 pr-3">수수료</th>
+                  <th className="py-2 pr-3">총수익</th>
                   <th className="py-2 pr-3 text-right">상세</th>
                 </tr>
               </thead>
@@ -590,7 +647,7 @@ export default function StaffOverviewPage() {
                           : lastContactReferenceIso(l);
                       const fee =
                         l.contract != null
-                          ? effectiveContractFeeForMetrics(l.contract)
+                          ? effectiveContractNetProfitForMetrics(l.contract)
                           : contractByLead.get(l.id)?.feeWon ?? null;
                       const vehicle =
                         l.contract?.vehicleName?.trim() || l.base.desiredVehicle || "—";

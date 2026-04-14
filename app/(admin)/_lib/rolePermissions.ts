@@ -1,6 +1,6 @@
 export const SUPER_ADMIN_EMAIL = "jyy1964@naver.com";
 
-export const USER_POSITIONS = [
+export const USER_RANKS = [
   "주임",
   "대리",
   "과장",
@@ -9,17 +9,26 @@ export const USER_POSITIONS = [
   "본부장",
   "대표",
 ] as const;
+export const USER_TEAMS = ["1팀", "2팀"] as const;
+export const USER_DIVISIONS = ["1본부"] as const;
 
 export type UserRole = "super_admin" | "admin" | "staff";
-export type SelectableUserPosition = (typeof USER_POSITIONS)[number];
-export type UserPosition = SelectableUserPosition | "총괄대표";
-export type DisplayUserPosition = UserPosition;
+export type SelectableUserRank = (typeof USER_RANKS)[number];
+export type UserRank = SelectableUserRank | "총괄대표";
+export type DisplayUserRank = UserRank;
+export type UserTeam = (typeof USER_TEAMS)[number];
+export type UserDivision = (typeof USER_DIVISIONS)[number];
 
 type MaybeUserLike = {
   email?: string | null;
   role?: string | null;
-  position?: string | null;
+  rank?: string | null;
+  team_name?: string | null;
+  division_name?: string | null;
+  id?: string | null;
 };
+
+export type DataAccessScope = "all" | "all_except_executive" | "team" | "self";
 
 export function isSuperAdminEmail(email: string | null | undefined): boolean {
   return (email ?? "").trim().toLowerCase() === SUPER_ADMIN_EMAIL;
@@ -32,11 +41,17 @@ export function normalizeUserRole(role: string | null | undefined): UserRole {
   return "staff";
 }
 
-export function normalizeUserPosition(position: string | null | undefined): UserPosition | null {
-  if (position === "총괄대표") return "총괄대표";
-  return USER_POSITIONS.includes(position as SelectableUserPosition)
-    ? (position as SelectableUserPosition)
+export function normalizeUserRank(rank: string | null | undefined): UserRank | null {
+  const normalized = (rank ?? "").trim();
+  if (normalized === "총괄대표") return "총괄대표";
+  return USER_RANKS.includes(normalized as SelectableUserRank)
+    ? (normalized as SelectableUserRank)
     : null;
+}
+
+export function normalizeUserTeam(teamName: string | null | undefined): UserTeam | null {
+  const normalized = (teamName ?? "").trim();
+  return USER_TEAMS.includes(normalized as UserTeam) ? (normalized as UserTeam) : null;
 }
 
 export function effectiveRole(user: MaybeUserLike): UserRole {
@@ -44,9 +59,9 @@ export function effectiveRole(user: MaybeUserLike): UserRole {
   return normalizeUserRole(user.role);
 }
 
-export function effectivePosition(user: MaybeUserLike): DisplayUserPosition | null {
+export function effectiveRank(user: MaybeUserLike): DisplayUserRank | null {
   if (isSuperAdminEmail(user.email)) return "총괄대표";
-  return normalizeUserPosition(user.position);
+  return normalizeUserRank(user.rank);
 }
 
 export function isSuperAdmin(user: MaybeUserLike | null | undefined): boolean {
@@ -65,8 +80,136 @@ export function isStaff(user: MaybeUserLike | null | undefined): boolean {
   return effectiveRole(user) === "staff";
 }
 
-export function canEditPosition(user: MaybeUserLike | null | undefined): boolean {
+export function canEditRank(user: MaybeUserLike | null | undefined): boolean {
   return isSuperAdmin(user);
+}
+
+export function isExecutiveRank(rank: string | null | undefined): boolean {
+  return rank === "대표" || rank === "총괄대표";
+}
+
+export function isExecutive(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  const rank = effectiveRank(user);
+  return rank === "본부장" || rank === "대표" || rank === "총괄대표";
+}
+
+export function isTeamLeader(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  return effectiveRole(user) === "admin" && effectiveRank(user) === "팀장" && !!normalizeUserTeam(user.team_name);
+}
+
+export function isDivisionHead(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  return effectiveRank(user) === "본부장";
+}
+
+export function canViewDivisionWide(user: MaybeUserLike | null | undefined): boolean {
+  return isDivisionHead(user);
+}
+
+export function canViewAll(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  if (isSuperAdmin(user)) return true;
+  const rank = effectiveRank(user);
+  return rank === "대표" || rank === "총괄대표";
+}
+
+export function canViewTeam(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  return isTeamLeader(user);
+}
+
+export function getDataAccessScopeByRank(user: MaybeUserLike | null | undefined): DataAccessScope {
+  if (!user) return "self";
+  const rank = effectiveRank(user);
+  if (rank === "총괄대표" || rank === "대표") return "all";
+  if (rank === "본부장") return "all_except_executive";
+  if (rank === "팀장" && normalizeUserTeam(user.team_name)) return "team";
+  return "self";
+}
+
+export function canManageTeam(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  if (isSuperAdmin(user)) return true;
+  const rank = effectiveRank(user);
+  return rank === "대표" || rank === "총괄대표";
+}
+
+export function canEditTeamSetting(user: MaybeUserLike | null | undefined): boolean {
+  return canManageTeam(user);
+}
+
+export function isProtectedExecutiveTarget(target: MaybeUserLike | null | undefined): boolean {
+  if (!target) return false;
+  return isExecutive(target);
+}
+
+export function getVisibleTeamScope(
+  user: MaybeUserLike | null | undefined
+): "all" | "division" | "team" | "self" {
+  if (!user) return "self";
+  if (canViewAll(user)) return "all";
+  if (canViewDivisionWide(user)) return "division";
+  if (canViewTeam(user)) return "team";
+  return "self";
+}
+
+export function canViewLead(
+  viewer: MaybeUserLike | null | undefined,
+  owner: MaybeUserLike | null | undefined
+): boolean {
+  if (!viewer || !owner) return false;
+  if (viewer.id && owner.id && viewer.id === owner.id) return true;
+  if (isProtectedExecutiveTarget(owner) && !canViewAll(viewer) && !isSuperAdmin(viewer)) {
+    return false;
+  }
+  const scope = getVisibleTeamScope(viewer);
+  if (scope === "all") return true;
+  if (scope === "division") return true;
+  if (scope === "self") {
+    return !!viewer.id && !!owner.id && viewer.id === owner.id;
+  }
+  const viewerTeam = normalizeUserTeam(viewer.team_name);
+  const ownerTeam = normalizeUserTeam(owner.team_name);
+  if (!viewerTeam || !ownerTeam) {
+    return !!viewer.id && !!owner.id && viewer.id === owner.id;
+  }
+  return viewerTeam === ownerTeam;
+}
+
+export function canViewAllLeads(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  if (isSuperAdmin(user)) return true;
+  const rank = effectiveRank(user);
+  return rank === "총괄대표" || rank === "대표" || rank === "본부장";
+}
+
+export function canAccessLeadDetail(
+  user: MaybeUserLike | null | undefined,
+  currentUserId: string | null | undefined,
+  leadManagerUserId: string | null | undefined
+): boolean {
+  if (!user) return false;
+  if (canViewAllLeads(user)) return true;
+  const viewerId = (currentUserId ?? "").trim();
+  const managerId = (leadManagerUserId ?? "").trim();
+  if (!viewerId || !managerId) return false;
+  return viewerId === managerId;
+}
+
+export function canViewAttendance(
+  viewer: MaybeUserLike | null | undefined,
+  target: MaybeUserLike | null | undefined
+): boolean {
+  return canViewLead(viewer, target);
+}
+
+export function canViewUser(
+  viewer: MaybeUserLike | null | undefined,
+  target: MaybeUserLike | null | undefined
+): boolean {
+  return canViewLead(viewer, target);
 }
 
 export function isProtectedSuperAdmin(user: MaybeUserLike | null | undefined): boolean {

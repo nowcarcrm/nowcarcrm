@@ -1,13 +1,21 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
-import { effectiveRole, isSuperAdmin, type UserRole } from "@/app/(admin)/_lib/rolePermissions";
+import {
+  USER_RANKS,
+  USER_TEAMS,
+  effectiveRole,
+  isSuperAdmin,
+  type SelectableUserRank,
+  type UserRole,
+} from "@/app/(admin)/_lib/rolePermissions";
 
 type CreateEmployeeBody = {
   email: string;
   password: string;
   name: string;
   role: UserRole;
-  position?: string;
+  rank?: SelectableUserRank;
+  team_name?: (typeof USER_TEAMS)[number] | null;
   approval_status?: "pending" | "approved" | "rejected";
 };
 
@@ -76,7 +84,12 @@ export async function POST(req: Request) {
     const password = body.password?.trim();
     const name = body.name?.trim();
     const role = body.role === "super_admin" || body.role === "admin" || body.role === "staff" ? body.role : null;
-    const position = typeof body.position === "string" ? body.position.trim() : "주임";
+    const rank = USER_RANKS.includes(body.rank as SelectableUserRank)
+      ? (body.rank as SelectableUserRank)
+      : "주임";
+    const teamName = USER_TEAMS.includes(body.team_name as (typeof USER_TEAMS)[number])
+      ? (body.team_name as (typeof USER_TEAMS)[number])
+      : null;
     const approval_status =
       body.approval_status === "pending" ||
       body.approval_status === "approved" ||
@@ -85,17 +98,17 @@ export async function POST(req: Request) {
         : "approved";
 
     if (!email || !password || !name || !role) {
+      return NextResponse.json(
+        { error: "email, password, name, role은 필수입니다." },
+        { status: 400 }
+      );
+    }
+
     if (requesterRole !== "super_admin" && role !== "staff") {
       return NextResponse.json({ error: "일반 관리자는 staff 계정만 생성할 수 있습니다." }, { status: 403 });
     }
     if (role === "super_admin" && !isSuperAdmin({ role: requesterRole, email: requester.email })) {
       return NextResponse.json({ error: "최고 관리자 계정은 최고 관리자만 생성할 수 있습니다." }, { status: 403 });
-    }
-
-      return NextResponse.json(
-        { error: "email, password, name, role은 필수입니다." },
-        { status: 400 }
-      );
     }
 
     const { data: created, error: createErr } = await supabaseAdmin.auth.admin.createUser({
@@ -117,7 +130,8 @@ export async function POST(req: Request) {
       id: authId,
       name,
       role,
-      position: role === "super_admin" ? "총괄대표" : position || "주임",
+      rank: role === "super_admin" ? "총괄대표" : rank,
+      team_name: teamName,
       email,
       approval_status,
     };
@@ -136,7 +150,8 @@ export async function POST(req: Request) {
           email,
           name,
           role,
-          position: role === "super_admin" ? "총괄대표" : position || "주임",
+          rank: role === "super_admin" ? "총괄대표" : rank,
+          team_name: teamName,
           approval_status,
         })
         .select("id, email, name, role")

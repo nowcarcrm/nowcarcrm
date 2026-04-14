@@ -22,7 +22,7 @@ import {
   todayYmdKst,
 } from "../../../_lib/excelExport";
 import { lastContactReferenceIso } from "../../../_lib/leaseCrmLogic";
-import { effectiveContractFeeForMetrics } from "../../../_lib/leaseCrmContractPersist";
+import { effectiveContractNetProfitForMetrics } from "../../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
 import {
@@ -53,8 +53,11 @@ export default function StaffCustomerDetailPage() {
   const opScope = useMemo(() => {
     if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) return null;
     return {
-      role: "admin" as const,
+      role: profile.role,
       userId: profile.userId,
+      email: profile.email ?? null,
+      rank: profile.rank ?? null,
+      teamName: profile.teamName ?? null,
       operationalFullAccess: true,
     };
   }, [profile]);
@@ -69,7 +72,13 @@ export default function StaffCustomerDetailPage() {
     let mounted = true;
     (async () => {
       try {
-        const users = await listActiveUsers();
+        const users = await listActiveUsers({
+          id: profile.userId,
+          role: profile.role,
+          rank: profile.rank,
+          email: profile.email,
+          team_name: profile.teamName,
+        });
         const u = users.find((x) => x.id === userId);
         const loaded = await loadLeadsFromStorage(opScope);
         const mine = loaded.filter((l) => (l.managerUserId ?? "").trim() === userId);
@@ -80,7 +89,7 @@ export default function StaffCustomerDetailPage() {
         ]);
         if (!mounted) return;
         setStaffName(u?.name?.trim() || mine[0]?.base.ownerStaff || "직원");
-        setStaffPosition(u?.position ?? "직급 미설정");
+        setStaffPosition(u?.rank ?? "직급 미설정");
         setContractByLead(contracts);
         setLastConsultByLead(consultMap);
         setLoadError(null);
@@ -140,7 +149,7 @@ export default function StaffCustomerDetailPage() {
           : lastContactReferenceIso(l);
       const fee =
         l.contract != null
-          ? effectiveContractFeeForMetrics(l.contract)
+          ? effectiveContractNetProfitForMetrics(l.contract)
           : contractByLead.get(l.id)?.feeWon ?? null;
       const vehicle = l.contract?.vehicleName?.trim() || l.base.desiredVehicle || "";
       return {
@@ -152,7 +161,7 @@ export default function StaffCustomerDetailPage() {
         다음연락예정일: formatDateOnlyForExcel(l.nextContactAt),
         최근상담일: formatDateForExcel(recent),
         차량정보: vehicle,
-        수수료: formatWonForExcel(fee),
+        총수익: formatWonForExcel(fee),
       };
     });
     downloadXlsxRows(rows, "고객목록", `${safeName}_고객목록_${todayYmdKst()}`);
@@ -215,7 +224,7 @@ export default function StaffCustomerDetailPage() {
                 <th className="px-3 py-3">다음 연락</th>
                 <th className="px-3 py-3">최근 상담</th>
                 <th className="px-3 py-3">차량</th>
-                <th className="px-3 py-3">수수료</th>
+                <th className="px-3 py-3">총수익</th>
                 <th className="px-3 py-3 text-right">상세</th>
               </tr>
             </thead>
@@ -241,7 +250,7 @@ export default function StaffCustomerDetailPage() {
                       : lastContactReferenceIso(l);
                   const fee =
                     l.contract != null
-                      ? effectiveContractFeeForMetrics(l.contract)
+                      ? effectiveContractNetProfitForMetrics(l.contract)
                       : contractByLead.get(l.id)?.feeWon ?? null;
                   const vehicle =
                     l.contract?.vehicleName?.trim() || l.base.desiredVehicle || "—";

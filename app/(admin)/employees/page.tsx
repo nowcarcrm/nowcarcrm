@@ -7,13 +7,17 @@ import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { getPostLoginPath } from "@/app/_lib/authPostLogin";
 import { getSupabaseAuthTargetInfo, supabase } from "../_lib/supabaseClient";
 import {
-  USER_POSITIONS,
-  canEditPosition,
+  USER_TEAMS,
+  canEditTeamSetting,
+  effectiveRank,
   effectiveRole,
   isProtectedSuperAdmin,
   isSuperAdmin,
-  type SelectableUserPosition,
 } from "../_lib/rolePermissions";
+import { getEmployeeManagementScope } from "../_lib/screenScopes";
+import { rankPriority } from "../_lib/rankConfig";
+import RankBadge from "./_components/RankBadge";
+import RankSelect from "./_components/RankSelect";
 
 type Role = "super_admin" | "admin" | "staff";
 type Approval = "pending" | "approved" | "rejected";
@@ -57,7 +61,9 @@ type UserRow = {
   email: string | null;
   name: string | null;
   role: Role | string | null;
-  position: string | null;
+  rank: string | null;
+  team_name: string | null;
+  division_name?: string | null;
   approval_status: Approval | string | null;
   created_at: string;
 };
@@ -81,8 +87,20 @@ export default function EmployeesPage() {
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [roleBusyId, setRoleBusyId] = useState<string | null>(null);
+  const [rankBusyId, setRankBusyId] = useState<string | null>(null);
+  const [teamBusyId, setTeamBusyId] = useState<string | null>(null);
+  const [usersLoadError, setUsersLoadError] = useState<string | null>(null);
+  const employeeScope = getEmployeeManagementScope({
+    id: profile?.userId,
+    role: profile?.role,
+    rank: profile?.rank,
+    team_name: profile?.teamName,
+    name: profile?.name,
+  });
+  const canViewEmployees = employeeScope !== "none";
   const isAdminLike = profile?.role === "super_admin" || profile?.role === "admin";
   const currentIsSuperAdmin = isSuperAdmin(profile);
+  const currentCanEditTeam = canEditTeamSetting(profile);
   const authTarget = getSupabaseAuthTargetInfo();
 
   function effectiveStatus(s: string | null | undefined): Approval {
@@ -91,7 +109,7 @@ export default function EmployeesPage() {
   }
 
   const loadUsers = useCallback(async () => {
-    if (!isAdminLike) return;
+    if (!canViewEmployees) return;
     setLoadingUsers(true);
     try {
       const {
@@ -115,27 +133,32 @@ export default function EmployeesPage() {
       if (!resAll.ok) throw new Error(allData.error ?? "전체 직원 목록을 불러오지 못했습니다.");
       console.log("[employees] raw all users response", allData.users ?? []);
       setUsers(allData.users ?? []);
+      setUsersLoadError(null);
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "직원 목록 로드 실패");
+      const msg = e instanceof Error ? e.message : "직원 목록 로드 실패";
+      toast.error(msg);
+      setPendingUsers([]);
+      setUsers([]);
+      setUsersLoadError("직원 목록을 불러오지 못해 빈 목록으로 표시합니다. 잠시 후 다시 시도해 주세요.");
     } finally {
       setLoadingUsers(false);
     }
-  }, [isAdminLike]);
+  }, [canViewEmployees]);
 
   useEffect(() => {
-    if (profile && profile.role !== "admin" && profile.role !== "super_admin") {
+    if (profile && employeeScope === "none") {
       router.replace(getPostLoginPath(profile));
     }
-  }, [profile, router]);
+  }, [profile, router, employeeScope]);
 
   useEffect(() => {
     void loadUsers();
   }, [loadUsers]);
 
   useEffect(() => {
-    if (!isAdminLike) return;
+    if (!canViewEmployees) return;
     console.log("[employees] pendingUsers (server filtered role=staff,status=pending)", pendingUsers);
-  }, [pendingUsers, isAdminLike]);
+  }, [pendingUsers, canViewEmployees]);
 
   async function updateUserRole(target: UserRow, next: Role) {
     const prev = roleForSelect(target.role);
@@ -184,8 +207,42 @@ export default function EmployeesPage() {
     }
   }
 
-  async function updateUserPosition(target: UserRow, position: SelectableUserPosition) {
-    setRoleBusyId(target.id);
+  async function updateUserRank(target: UserRow, next: string | "") {
+    const prev = (target.rank ?? "").trim();
+    const safeNext = next.trim();
+    if (prev === safeNext) return;
+    setRankBusyId(target.id);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
+
+      const res = await fetch("/api/admin/employees/role", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ userId: target.id, rank: safeNext || null }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "직급 저장에 실패했습니다.");
+      toast.success("직급을 저장했습니다.");
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "직급 저장 중 오류");
+      await loadUsers();
+    } finally {
+      setRankBusyId(null);
+    }
+  }
+
+  async function updateUserTeam(target: UserRow, nextTeam: string) {
+    const prev = target.team_name ?? "";
+    if (prev === nextTeam) return;
+    setTeamBusyId(target.id);
     try {
       const {
         data: { session },
@@ -198,17 +255,17 @@ export default function EmployeesPage() {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ userId: target.id, position }),
+        body: JSON.stringify({ userId: target.id, team_name: nextTeam || null }),
       });
       const data = (await res.json()) as { error?: string };
-      if (!res.ok) throw new Error(data.error ?? "직급 변경에 실패했습니다.");
-      toast.success("직급을 변경했습니다.");
+      if (!res.ok) throw new Error(data.error ?? "팀 설정 저장에 실패했습니다.");
+      toast.success("팀 설정을 저장했습니다.");
       await loadUsers();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "직급 변경 중 오류");
+      toast.error(e instanceof Error ? e.message : "팀 저장 중 오류");
       await loadUsers();
     } finally {
-      setRoleBusyId(null);
+      setTeamBusyId(null);
     }
   }
 
@@ -328,10 +385,10 @@ export default function EmployeesPage() {
     }
   }
 
-  if (!isAdminLike) {
+  if (!canViewEmployees) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-        권한이 없습니다.
+        접근 권한이 없습니다.
       </div>
     );
   }
@@ -342,6 +399,11 @@ export default function EmployeesPage() {
     statusFilter === "all"
       ? users
       : users.filter((u) => effectiveStatus(u.approval_status) === statusFilter);
+  const sortedUsers = [...filteredUsers].sort((a, b) => {
+    const diff = rankPriority(b.rank) - rankPriority(a.rank);
+    if (diff !== 0) return diff;
+    return a.created_at < b.created_at ? 1 : -1;
+  });
 
   return (
     <div className="space-y-6">
@@ -351,6 +413,11 @@ export default function EmployeesPage() {
           직원은 회원가입 페이지에서 직접 가입합니다. 가입된 계정은 승인 대기 상태로 등록되며,
           관리자가 이 페이지에서 승인한 뒤 CRM을 사용할 수 있습니다.
         </p>
+        {!currentIsSuperAdmin ? (
+          <p className="mt-3 rounded-xl border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 dark:border-sky-500/35 dark:bg-sky-500/10 dark:text-sky-200">
+            직원 정보 조회만 가능합니다. 권한/직급 변경은 최고관리자만 가능하며, 팀 설정은 대표급 이상만 가능합니다.
+          </p>
+        ) : null}
       </div>
 
       <div className="grid gap-3 sm:grid-cols-3">
@@ -386,6 +453,7 @@ export default function EmployeesPage() {
                   <th className="px-3 py-2">이메일</th>
                   <th className="px-3 py-2">권한</th>
                   <th className="px-3 py-2">직급</th>
+                  <th className="px-3 py-2">팀</th>
                   <th className="px-3 py-2">가입일</th>
                   <th className="px-3 py-2 text-right">액션</th>
                 </tr>
@@ -398,13 +466,16 @@ export default function EmployeesPage() {
                     <td className="px-3 py-2">
                       <RoleBadge role={u.role} />
                     </td>
-                    <td className="px-3 py-2">{u.position ?? "직급 미설정"}</td>
+                    <td className="px-3 py-2">
+                      <RankBadge rank={u.rank} />
+                    </td>
+                    <td className="px-3 py-2">{u.team_name ?? "팀 미설정"}</td>
                     <td className="px-3 py-2">{new Date(u.created_at).toLocaleString("ko-KR")}</td>
                     <td className="px-3 py-2 text-right">
                       <div className="inline-flex gap-2">
                         <button
                           type="button"
-                          disabled={approvalBusyId === u.id}
+                          disabled={approvalBusyId === u.id || !isAdminLike}
                           onClick={() => void setApproval(u.id, "approved")}
                           className="rounded-lg bg-emerald-600 px-3 py-1 text-xs font-semibold text-white disabled:opacity-50"
                         >
@@ -412,7 +483,7 @@ export default function EmployeesPage() {
                         </button>
                         <button
                           type="button"
-                          disabled={approvalBusyId === u.id}
+                          disabled={approvalBusyId === u.id || !isAdminLike}
                           onClick={() => void setApproval(u.id, "rejected")}
                           className="rounded-lg border border-zinc-300 bg-white px-3 py-1 text-xs font-semibold text-zinc-800 disabled:opacity-50 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100"
                         >
@@ -427,6 +498,11 @@ export default function EmployeesPage() {
           </div>
         )}
       </section>
+      {usersLoadError ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-500/35 dark:bg-amber-500/10 dark:text-amber-200">
+          {usersLoadError}
+        </div>
+      ) : null}
 
       <section className="crm-card p-5 sm:p-6">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -458,37 +534,56 @@ export default function EmployeesPage() {
                   <th className="px-3 py-2">이름</th>
                   <th className="px-3 py-2">이메일</th>
                   <th className="px-3 py-2">권한</th>
-                  <th className="px-3 py-2">직급</th>
+                  <th className="px-3 py-2">직급 뱃지</th>
+                  <th className="px-3 py-2">팀</th>
                   <th className="px-3 py-2">승인 상태</th>
                   <th className="px-3 py-2">가입일</th>
                   <th className="px-3 py-2 text-right">권한 변경</th>
-                  <th className="px-3 py-2 text-right">직급 변경</th>
+                  <th className="px-3 py-2 text-right">직급 설정</th>
+                  <th className="px-3 py-2 text-right">팀 설정</th>
                   <th className="px-3 py-2 text-right">승인 처리</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredUsers.map((u) => {
+                {sortedUsers.map((u) => {
                   const cur = effectiveStatus(u.approval_status);
                   const isSelf = profile?.userId === u.id;
                   const targetRole = effectiveRole({ role: u.role, email: u.email });
                   const protectedSuperAdmin = isProtectedSuperAdmin({ role: u.role, email: u.email });
+                  const targetRank = effectiveRank({ role: u.role, email: u.email, rank: u.rank });
                   const canChangeRole = currentIsSuperAdmin && cur === "approved";
+                  const canChangeRank = currentIsSuperAdmin && cur === "approved";
+                  const canChangeTeam = currentCanEditTeam && cur === "approved";
                   const selectDisabled =
                     roleBusyId === u.id ||
                     !canChangeRole ||
                     (isSelf && targetRole !== "staff") ||
                     (protectedSuperAdmin && !currentIsSuperAdmin) ||
                     (targetRole === "admin" && !currentIsSuperAdmin);
-                  const canChangePosition = canEditPosition(profile) && cur === "approved";
-                  const positionDisabled = roleBusyId === u.id || !canChangePosition || protectedSuperAdmin;
+                  const rankDisabled =
+                    rankBusyId === u.id ||
+                    !canChangeRank ||
+                    (targetRole === "super_admin" && !currentIsSuperAdmin);
+                  const teamDisabled =
+                    teamBusyId === u.id ||
+                    !canChangeTeam ||
+                    targetRank === "총괄대표";
                   return (
                     <tr key={u.id} className="border-b border-zinc-100 dark:border-zinc-800">
-                      <td className="px-3 py-2">{u.name || "-"}</td>
+                      <td className="px-3 py-2">
+                        <div className="inline-flex items-center gap-2">
+                          <span>{u.name || "-"}</span>
+                          <RankBadge rank={u.rank} />
+                        </div>
+                      </td>
                       <td className="px-3 py-2">{u.email || "-"}</td>
                       <td className="px-3 py-2">
                         <RoleBadge role={u.role} />
                       </td>
-                      <td className="px-3 py-2">{u.position ?? "직급 미설정"}</td>
+                      <td className="px-3 py-2">
+                        <RankBadge rank={u.rank} />
+                      </td>
+                      <td className="px-3 py-2">{u.team_name ?? "팀 미설정"}</td>
                       <td className="px-3 py-2">{cur}</td>
                       <td className="px-3 py-2">{new Date(u.created_at).toLocaleString("ko-KR")}</td>
                       <td className="px-3 py-2 text-right">
@@ -518,24 +613,41 @@ export default function EmployeesPage() {
                         )}
                       </td>
                       <td className="px-3 py-2 text-right">
-                        {protectedSuperAdmin ? (
-                          <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">
-                            총괄대표
-                          </span>
+                        {cur === "approved" ? (
+                          <RankSelect
+                            value={u.rank}
+                            disabled={rankDisabled}
+                            isSuperAdmin={currentIsSuperAdmin}
+                            onChange={(next) => {
+                              void updateUserRank(u, next);
+                            }}
+                          />
                         ) : (
+                          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                            승인 후 변경
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {cur === "approved" ? (
                           <select
-                            aria-label={`${u.name ?? u.email ?? u.id} 직급`}
+                            aria-label={`${u.name ?? u.email ?? u.id} 팀`}
                             className="max-w-[8.5rem] rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs font-medium dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
-                            disabled={positionDisabled}
-                            value={USER_POSITIONS.includes((u.position ?? "") as SelectableUserPosition) ? (u.position as SelectableUserPosition) : "주임"}
-                            onChange={(e) => void updateUserPosition(u, e.target.value as SelectableUserPosition)}
+                            disabled={teamDisabled}
+                            value={u.team_name ?? ""}
+                            onChange={(e) => void updateUserTeam(u, e.target.value)}
                           >
-                            {USER_POSITIONS.map((p) => (
-                              <option key={p} value={p}>
-                                {p}
+                            <option value="">팀 미설정</option>
+                            {USER_TEAMS.map((team) => (
+                              <option key={team} value={team}>
+                                {team}
                               </option>
                             ))}
                           </select>
+                        ) : (
+                          <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                            승인 후 변경
+                          </span>
                         )}
                       </td>
                       <td className="px-3 py-2 text-right">
@@ -543,7 +655,7 @@ export default function EmployeesPage() {
                           {cur !== "pending" ? (
                             <button
                               type="button"
-                              disabled={approvalBusyId === u.id}
+                              disabled={approvalBusyId === u.id || !isAdminLike}
                               onClick={() => void setApproval(u.id, "pending")}
                               className="rounded border border-zinc-300 px-2 py-1 text-xs dark:border-zinc-600"
                             >
@@ -553,7 +665,7 @@ export default function EmployeesPage() {
                           {cur !== "approved" ? (
                             <button
                               type="button"
-                              disabled={approvalBusyId === u.id}
+                              disabled={approvalBusyId === u.id || !isAdminLike}
                               onClick={() => void setApproval(u.id, "approved")}
                               className="rounded bg-emerald-600 px-2 py-1 text-xs font-semibold text-white"
                             >
@@ -563,7 +675,7 @@ export default function EmployeesPage() {
                           {cur !== "rejected" ? (
                             <button
                               type="button"
-                              disabled={approvalBusyId === u.id}
+                              disabled={approvalBusyId === u.id || !isAdminLike}
                               onClick={() => void setApproval(u.id, "rejected")}
                               className="rounded border border-rose-300 px-2 py-1 text-xs text-rose-700 dark:border-rose-500/40 dark:text-rose-300"
                             >
@@ -581,6 +693,7 @@ export default function EmployeesPage() {
         )}
       </section>
 
+      {isAdminLike ? (
       <section className="crm-card p-5 sm:p-6">
         <div className="flex items-center justify-between">
           <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
@@ -646,6 +759,7 @@ export default function EmployeesPage() {
           </form>
         ) : null}
       </section>
+      ) : null}
     </div>
   );
 }

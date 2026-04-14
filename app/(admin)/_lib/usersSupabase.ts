@@ -1,11 +1,13 @@
 import { formatPostgrestForMessage, pickPostgrestFields } from "@/app/_lib/postgrestError";
 import { EMPLOYEES } from "./leaseCrmSeed";
 import {
-  effectivePosition,
+  canViewUser,
   effectiveRole,
-  normalizeUserPosition,
-  type DisplayUserPosition,
-  type UserPosition,
+  effectiveRank,
+  getVisibleTeamScope,
+  isExecutive,
+  normalizeUserTeam,
+  isSuperAdmin,
   type UserRole,
 } from "./rolePermissions";
 import { supabase } from "./supabaseClient";
@@ -22,7 +24,10 @@ export type UserRow = {
   id: string;
   name: string;
   role: UserRole;
-  position?: UserPosition | null;
+  /** DB 스키마 미적용 환경 호환: 선택 필드(없으면 undefined) */
+  rank?: string | null;
+  team_name?: string | null;
+  division_name?: string | null;
   created_at: string;
   /** false면 로그인·CRM 접근 차단 */
   is_active?: boolean | null;
@@ -49,19 +54,25 @@ export function roleLabelKo(role: UserRole): string {
   return "직원";
 }
 
-export function positionLabelKo(
-  row: Pick<UserRow, "position" | "role" | "email"> | null | undefined
-): DisplayUserPosition | "직급 미설정" {
+export function positionLabelKo(_row?: unknown): "직급 미설정" {
+  return "직급 미설정";
+}
+
+export function rankLabelKo(row: Pick<UserRow, "rank" | "role" | "email"> | null | undefined): string {
   if (!row) return "직급 미설정";
-  const position = effectivePosition(row);
-  return position ?? "직급 미설정";
+  const rank = effectiveRank({ rank: row.rank, role: row.role, email: row.email });
+  return rank ?? "직급 미설정";
+}
+
+export function teamLabelKo(row: Pick<UserRow, "team_name"> | null | undefined): string {
+  const team = row?.team_name?.trim();
+  return team || "팀 미설정";
 }
 
 function normalizeUserRow(row: UserRow): UserRow {
   return {
     ...row,
     role: effectiveRole(row),
-    position: normalizeUserPosition(row.position),
   };
 }
 
@@ -111,7 +122,6 @@ export async function ensureDefaultUsers() {
     name,
     email: `${name.replace(/\s+/g, "").toLowerCase()}@company.local`,
     role: idx === 0 ? "admin" : "staff",
-    position: "주임" as const,
     approval_status: "approved" as const,
   }));
 
@@ -119,22 +129,59 @@ export async function ensureDefaultUsers() {
   if (insertError) throw insertError;
 }
 
-export async function listActiveUsers(): Promise<UserRow[]> {
+export async function listActiveUsers(viewer?: {
+  id?: string | null;
+  email?: string | null;
+  role?: string | null;
+  rank?: string | null;
+  team_name?: string | null;
+}): Promise<UserRow[]> {
   try {
-    const { data, error } = await supabase
+    let query = supabase
       .from("users")
       .select("*")
       .or("approval_status.eq.approved,approval_status.is.null")
       .order("name", { ascending: true });
+    if (viewer && !isSuperAdmin(viewer) && !isExecutive(viewer)) {
+      const scope = getVisibleTeamScope(viewer);
+      if (scope === "self") {
+        query = query.eq("id", viewer.id ?? "__none__");
+      } else if (scope === "team") {
+        // team_name 불일치(공백 등) 안전 처리를 위해 후처리 필터도 함께 사용
+        const team = normalizeUserTeam(viewer.team_name);
+        if (team) query = query.eq("team_name", team);
+      }
+    }
+    const { data, error } = await query;
     console.log("users fetch result:", data, error);
     if (error) {
       console.warn("[listActiveUsers] 비어 있는 목록으로 대체:", error.message);
       return [];
     }
     const rows = (data as UserRow[]) ?? [];
-    return rows
+    let normalized = rows
       .map((u) => normalizeUserRow(u))
       .filter((u) => effectiveApprovalStatus(u) === "approved");
+    if (viewer) {
+      const viewerTeam = normalizeUserTeam(viewer.team_name);
+      normalized = normalized.filter((u) =>
+        canViewUser(viewer, {
+          id: u.id,
+          email: u.email,
+          role: u.role,
+          rank: u.rank ?? null,
+          team_name: normalizeUserTeam(u.team_name ?? null) ?? null,
+        })
+      );
+      console.log("[users] listActiveUsers scope", {
+        viewerId: viewer.id ?? null,
+        viewerRole: viewer.role ?? null,
+        viewerRank: viewer.rank ?? null,
+        viewerTeam,
+        visibleCount: normalized.length,
+      });
+    }
+    return normalized;
   } catch (e) {
     console.warn("[listActiveUsers] 예외, 빈 배열 반환:", e);
     return [];
@@ -221,7 +268,6 @@ export async function createPendingStaffProfileFromAuth(input: {
     email: input.email,
     name: baseName,
     role: "staff" as UserRole,
-    position: "주임" as const,
     approval_status: "pending" as const,
     is_active: true,
   };

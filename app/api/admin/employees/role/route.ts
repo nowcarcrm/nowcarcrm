@@ -1,12 +1,16 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
 import {
-  USER_POSITIONS,
+  USER_RANKS,
+  USER_TEAMS,
+  canEditTeamSetting,
   canManageTarget,
+  effectiveRank,
   effectiveRole,
+  normalizeUserRank,
   isProtectedSuperAdmin,
   isSuperAdmin,
-  type SelectableUserPosition,
+  type SelectableUserRank,
 } from "@/app/(admin)/_lib/rolePermissions";
 
 function getBearerToken(req: Request) {
@@ -22,10 +26,10 @@ function effectiveApproval(
   return "pending";
 }
 
-async function requireApprovedAdmin(authUserId: string) {
+async function requireApprovedUser(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, email, role, approval_status, position")
+    .select("id, email, role, rank, team_name, approval_status")
     .eq("id", authUserId)
     .maybeSingle();
   if (e1) return { admin: null as null, error: e1.message };
@@ -34,7 +38,7 @@ async function requireApprovedAdmin(authUserId: string) {
   if (!row) {
     const { data: legacy, error: e2 } = await supabaseAdmin
       .from("users")
-      .select("id, email, role, approval_status, position")
+      .select("id, email, role, rank, team_name, approval_status")
       .eq("auth_user_id", authUserId)
       .maybeSingle();
     if (e2) return { admin: null as null, error: e2.message };
@@ -43,18 +47,22 @@ async function requireApprovedAdmin(authUserId: string) {
 
   if (!row) return { admin: null as null, error: "직원 계정을 찾을 수 없습니다." };
   if (effectiveApproval(row.approval_status) !== "approved") {
-    return { admin: null as null, error: "승인된 관리자만 이 작업을 할 수 있습니다." };
+    return { user: null as null, error: "승인된 직원만 이 작업을 할 수 있습니다." };
   }
   const requesterRole = effectiveRole({ role: row.role, email: row.email });
-  if (requesterRole !== "super_admin" && requesterRole !== "admin") {
-    return { admin: null as null, error: "관리자만 직원 권한을 변경할 수 있습니다." };
-  }
-  return { admin: { ...row, role: requesterRole }, error: null as null };
+  return {
+    user: {
+      ...row,
+      role: requesterRole,
+      rank: effectiveRank({ rank: row.rank, email: row.email, role: row.role }),
+    },
+    error: null as null,
+  };
 }
 
 /**
  * PATCH: 직원 role 변경 (admin 전용)
- * body: { userId: string, role?: "super_admin" | "admin" | "staff", position?: SelectableUserPosition }
+ * body: { userId: string, role?: "super_admin" | "admin" | "staff", rank?: SelectableUserRank | "총괄대표" | null, team_name?: "1팀" | "2팀" | null }
  */
 export async function PATCH(req: Request) {
   try {
@@ -68,12 +76,12 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ error: "유효하지 않은 인증입니다." }, { status: 401 });
     }
 
-    const { admin, error } = await requireApprovedAdmin(authData.user.id);
-    if (!admin) {
+    const { user: requester, error } = await requireApprovedUser(authData.user.id);
+    if (!requester) {
       return NextResponse.json({ error: error ?? "권한이 없습니다." }, { status: 403 });
     }
 
-    const body = (await req.json()) as { userId?: unknown; role?: unknown; position?: unknown };
+    const body = (await req.json()) as { userId?: unknown; role?: unknown; rank?: unknown; team_name?: unknown };
     const userId =
       body.userId == null || body.userId === ""
         ? ""
@@ -82,20 +90,30 @@ export async function PATCH(req: Request) {
           : String(body.userId);
     const nextRole =
       body.role === "super_admin" || body.role === "admin" || body.role === "staff" ? body.role : null;
-    const nextPosition = USER_POSITIONS.includes(body.position as SelectableUserPosition)
-      ? (body.position as SelectableUserPosition)
-      : null;
-
-    if (!userId || (!nextRole && !nextPosition)) {
+    const requestedRank =
+      body.rank == null
+        ? null
+        : body.rank === "총괄대표"
+          ? "총괄대표"
+          : USER_RANKS.includes(body.rank as SelectableUserRank)
+            ? (body.rank as SelectableUserRank)
+            : null;
+    const nextTeam =
+      body.team_name == null
+        ? null
+        : USER_TEAMS.includes(body.team_name as (typeof USER_TEAMS)[number])
+          ? (body.team_name as (typeof USER_TEAMS)[number])
+          : "";
+    if (!userId || (!nextRole && requestedRank === null && nextTeam === null)) {
       return NextResponse.json(
-        { error: "userId와 role(super_admin|admin|staff) 또는 position이 필요합니다." },
+        { error: "userId와 role/rank/team_name 중 하나가 필요합니다." },
         { status: 400 }
       );
     }
 
     const { data: targetRow, error: tErr } = await supabaseAdmin
       .from("users")
-      .select("id, email, role, approval_status, position")
+      .select("id, email, role, rank, approval_status")
       .eq("id", userId)
       .maybeSingle();
 
@@ -107,12 +125,11 @@ export async function PATCH(req: Request) {
     }
 
     const targetRole = effectiveRole({ role: targetRow.role, email: targetRow.email });
-    const requester = admin;
-
-    if (!canManageTarget(requester, targetRow)) {
+    const isTeamOnlyPatch = nextTeam !== null && !nextRole && requestedRank === null;
+    if (!isTeamOnlyPatch && !canManageTarget(requester, targetRow)) {
       return NextResponse.json({ error: "권한 없음" }, { status: 403 });
     }
-    if (!isSuperAdmin(requester)) {
+    if (!isSuperAdmin(requester) && nextRole) {
       return NextResponse.json({ error: "권한 변경은 최고 관리자만 가능합니다." }, { status: 403 });
     }
 
@@ -123,7 +140,7 @@ export async function PATCH(req: Request) {
       );
     }
 
-    if (nextRole && userId === admin.id && nextRole === "staff") {
+    if (nextRole && userId === requester.id && nextRole === "staff") {
       return NextResponse.json(
         { error: "본인 계정은 일반 직원으로 변경할 수 없습니다." },
         { status: 400 }
@@ -162,13 +179,33 @@ export async function PATCH(req: Request) {
 
     const patch: Record<string, unknown> = {};
     if (nextRole) patch.role = nextRole;
-    if (nextPosition) patch.position = nextPosition;
+
+    if (requestedRank !== null) {
+      if (!isSuperAdmin(requester)) {
+        return NextResponse.json({ error: "직급 변경은 최고 관리자만 가능합니다." }, { status: 403 });
+      }
+      if (requestedRank === "총괄대표" && nextRole !== "super_admin" && targetRole !== "super_admin") {
+        return NextResponse.json({ error: "총괄대표는 super_admin만 설정할 수 있습니다." }, { status: 400 });
+      }
+      const normalized = normalizeUserRank(requestedRank);
+      patch.rank = normalized;
+    }
+
+    if (nextTeam !== null) {
+      if (!canEditTeamSetting(requester)) {
+        return NextResponse.json({ error: "팀 설정 변경은 대표급 이상만 가능합니다." }, { status: 403 });
+      }
+      if (nextTeam === "") {
+        return NextResponse.json({ error: "팀 설정은 1팀 또는 2팀만 가능합니다." }, { status: 400 });
+      }
+      patch.team_name = nextTeam;
+    }
 
     const { data: updated, error: uErr } = await supabaseAdmin
       .from("users")
       .update(patch)
       .eq("id", userId)
-      .select("id, email, name, role, position, approval_status")
+      .select("id, email, name, role, rank, team_name, approval_status")
       .maybeSingle();
 
     if (uErr) {

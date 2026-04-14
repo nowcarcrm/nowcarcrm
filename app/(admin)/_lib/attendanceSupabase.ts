@@ -570,13 +570,17 @@ export async function markAttendanceStatus(
   return data as AttendanceRow;
 }
 
-export async function listAttendance(limit = 200): Promise<AttendanceRow[]> {
+export async function listAttendance(limit = 200, userIds?: string[]): Promise<AttendanceRow[]> {
   /** date만 정렬하면 date가 null인 work_date 행이 limit 밖으로 밀릴 수 있어 created_at 기준으로 통일 */
-  const { data, error } = await supabase
+  let query = supabase
     .from("attendance")
     .select("*")
     .order("created_at", { ascending: false })
     .limit(limit);
+  if (userIds && userIds.length > 0) {
+    query = query.in("user_id", userIds);
+  }
+  const { data, error } = await query;
   if (error) throw error;
   return (data as AttendanceRow[]) ?? [];
 }
@@ -590,24 +594,29 @@ function lastDayOfCalendarMonth(month: string): number {
 }
 
 export async function listAttendanceByMonth(
-  month: string // yyyy-mm
+  month: string, // yyyy-mm
+  userIds?: string[]
 ): Promise<AttendanceRow[]> {
   const from = `${month}-01`;
   const last = lastDayOfCalendarMonth(month);
   const to = `${month}-${String(last).padStart(2, "0")}`;
 
-  const byDate = await supabase
+  let byDateQuery = supabase
     .from("attendance")
     .select("*")
     .gte("date", from)
     .lte("date", to);
+  if (userIds && userIds.length > 0) byDateQuery = byDateQuery.in("user_id", userIds);
+  const byDate = await byDateQuery;
   if (byDate.error && !isUndefinedColumnError(byDate.error)) throw byDate.error;
 
-  const byWork = await supabase
+  let byWorkQuery = supabase
     .from("attendance")
     .select("*")
     .gte("work_date", from)
     .lte("work_date", to);
+  if (userIds && userIds.length > 0) byWorkQuery = byWorkQuery.in("user_id", userIds);
+  const byWork = await byWorkQuery;
   if (byWork.error && !isUndefinedColumnError(byWork.error)) throw byWork.error;
 
   const map = new Map<string, AttendanceRow>();
@@ -643,6 +652,34 @@ export async function listTodayAttendance(): Promise<AttendanceRow[]> {
   }
 
   const byDate = await supabase.from("attendance").select("*").eq("date", today);
+  if (byDate.error && !isUndefinedColumnError(byDate.error)) throw byDate.error;
+  if (!byDate.error) {
+    for (const r of (byDate.data as AttendanceRow[]) ?? []) map.set(r.id, r);
+  }
+
+  return Array.from(map.values());
+}
+
+export async function listTodayAttendanceByUserIds(userIds: string[]): Promise<AttendanceRow[]> {
+  if (!userIds.length) return [];
+  const today = getLocalDateKey();
+  const map = new Map<string, AttendanceRow>();
+
+  const byWork = await supabase
+    .from("attendance")
+    .select("*")
+    .eq("work_date", today)
+    .in("user_id", userIds);
+  if (byWork.error && !isUndefinedColumnError(byWork.error)) throw byWork.error;
+  if (!byWork.error) {
+    for (const r of (byWork.data as AttendanceRow[]) ?? []) map.set(r.id, r);
+  }
+
+  const byDate = await supabase
+    .from("attendance")
+    .select("*")
+    .eq("date", today)
+    .in("user_id", userIds);
   if (byDate.error && !isUndefinedColumnError(byDate.error)) throw byDate.error;
   if (!byDate.error) {
     for (const r of (byDate.data as AttendanceRow[]) ?? []) map.set(r.id, r);
@@ -689,11 +726,12 @@ export async function getActivitySummaryByUserDate(
   };
 }
 
-export async function getActivitySummaryMapByDate(date: string) {
-  const { data, error } = await supabase
-    .from("crm_activity_logs")
-    .select("user_id, activity_type")
-    .eq("date", date);
+export async function getActivitySummaryMapByDate(date: string, userIds?: string[]) {
+  let q = supabase.from("crm_activity_logs").select("user_id, activity_type").eq("date", date);
+  if (userIds && userIds.length > 0) {
+    q = q.in("user_id", userIds);
+  }
+  const { data, error } = await q;
   if (error) {
     if (isCrmActivityLogsUnavailable(error)) {
       console.warn("[attendance] crm_activity_logs unavailable, empty map:", error);

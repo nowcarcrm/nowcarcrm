@@ -36,6 +36,7 @@ import {
   calculatePercentFromAmount,
   clampPercent,
   contractPartialFromLatestQuote,
+  effectiveContractNetProfitForMetrics,
   formatDepositDbLine,
   formatWonInput,
   hasFinalDeliverySnapshot,
@@ -154,6 +155,7 @@ function sanitizeContractForSave(c: ContractInfo, fallbackContractTerm: string):
   const depositPercent = clampPercent(coerceContractNumber(c.depositPercent));
   const fee = safeNonNegativeInt(coerceContractNumber(c.fee));
   const feePercent = clampPercent(coerceContractNumber(c.feePercent));
+  const dealerAllowance = safeNonNegativeInt(coerceContractNumber(c.dealerAllowance));
   const depLine = formatDepositDbLine(depositAmount, depositPercent);
   const depositOrPrepayment = depLine || String(c.depositOrPrepayment ?? "").trim();
   const deliveryType =
@@ -169,15 +171,16 @@ function sanitizeContractForSave(c: ContractInfo, fallbackContractTerm: string):
     depositPercent,
     fee,
     feePercent,
-    prepaymentSupportAmount: coerceContractNumber(c.prepaymentSupportAmount),
-    suppliesSupportAmount: coerceContractNumber(c.suppliesSupportAmount),
-    totalSupportCost: coerceContractNumber(c.totalSupportCost),
+    prepaymentSupportAmount: safeNonNegativeInt(coerceContractNumber(c.prepaymentSupportAmount)),
+    suppliesSupportAmount: safeNonNegativeInt(coerceContractNumber(c.suppliesSupportAmount)),
+    totalSupportCost: safeNonNegativeInt(coerceContractNumber(c.totalSupportCost)),
     contractTerm: (c.contractTerm ?? "").trim() || fallbackContractTerm,
     vehicleName: (c.vehicleName ?? "").trim(),
     depositOrPrepayment,
     suppliesSupportContent: (c.suppliesSupportContent ?? "").trim(),
     note: (c.note ?? "").trim(),
     profitMemo: (c.profitMemo ?? "").trim(),
+    dealerAllowance,
     deliveryType,
     product:
       c.product === "운용리스" || c.product === "금융리스" || c.product === "장기렌트"
@@ -367,7 +370,7 @@ export default function LeadDetailModal({
   /** 상담기록의「상담 담당자」는 admin만 변경 가능(staff·manager는 읽기 전용). */
   const canPickCounselor = profile?.role === "admin";
 
-  const [leadOwnerOptions, setLeadOwnerOptions] = useState<Array<{ id: string; name: string; position?: string | null }>>(
+  const [leadOwnerOptions, setLeadOwnerOptions] = useState<Array<{ id: string; name: string; rank?: string | null }>>(
     () => []
   );
 
@@ -385,13 +388,19 @@ export default function LeadDetailModal({
     if (usersLoadedForRoleRef.current === roleKey) return;
     if (!canReassignLeadOwner && !canPickCounselor) return;
     let cancelled = false;
-    void listActiveUsers()
+    void listActiveUsers({
+      id: profile?.userId,
+      role: profile?.role,
+      rank: profile?.rank ?? null,
+      email: profile?.email ?? null,
+      team_name: profile?.teamName ?? null,
+    })
       .then((users) => {
         if (cancelled) return;
         if (canReassignLeadOwner) {
           const options = users
             .filter((u) => !!u.id && !!u.name?.trim())
-            .map((u) => ({ id: u.id, name: u.name.trim(), position: u.position ?? null }));
+            .map((u) => ({ id: u.id, name: u.name.trim(), rank: u.rank ?? null }));
           setLeadOwnerOptions(options);
         }
         if (canPickCounselor) {
@@ -411,22 +420,22 @@ export default function LeadDetailModal({
   }, [canReassignLeadOwner, canPickCounselor, profile?.role]);
 
   const leadOwnerSelectChoices = useMemo(() => {
-    const byId = new Map<string, { name: string; position: string | null }>(
-      leadOwnerOptions.map((u) => [u.id, { name: u.name, position: u.position ?? null }])
+    const byId = new Map<string, { name: string; rank: string | null }>(
+      leadOwnerOptions.map((u) => [u.id, { name: u.name, rank: u.rank ?? null }])
     );
     if (draft.managerUserId && draft.base.ownerStaff?.trim() && !byId.has(draft.managerUserId)) {
-      byId.set(draft.managerUserId, { name: draft.base.ownerStaff.trim(), position: null });
+      byId.set(draft.managerUserId, { name: draft.base.ownerStaff.trim(), rank: null });
     }
     return Array.from(byId.entries())
-      .map(([id, info]) => ({ id, name: info.name, position: info.position }))
+      .map(([id, info]) => ({ id, name: info.name, rank: info.rank }))
       .sort((a, b) => a.name.localeCompare(b.name, "ko"));
   }, [leadOwnerOptions, draft.managerUserId, draft.base.ownerStaff]);
 
-  const ownerPositionLabel = useMemo(() => {
+  const ownerRankLabel = useMemo(() => {
     const byId = leadOwnerSelectChoices.find((o) => o.id === draft.managerUserId);
-    if (byId?.position) return byId.position;
+    if (byId?.rank) return byId.rank;
     const byName = leadOwnerSelectChoices.find((o) => o.name === draft.base.ownerStaff);
-    return byName?.position ?? "직급 미설정";
+    return byName?.rank ?? "직급 미설정";
   }, [leadOwnerSelectChoices, draft.managerUserId, draft.base.ownerStaff]);
 
   const [counselorOptions, setCounselorOptions] = useState<string[]>(() => [...EMPLOYEES]);
@@ -524,7 +533,9 @@ export default function LeadDetailModal({
     setRefreshingAfterSave(true);
     try {
       const fresh = await fetchLeadById(leadId, { role: profile.role, userId: profile.userId });
-      setDraft(ensureLeadShape(fresh ?? fallback));
+      setDraft(ensureLeadShape(fresh));
+    } catch {
+      setDraft(fallback);
     } finally {
       setRefreshingAfterSave(false);
     }
@@ -563,7 +574,7 @@ export default function LeadDetailModal({
         const fresh = await fetchLeadById(payload.id, { role: profile.role, userId: profile.userId });
         devLog("[LeadDetailModal] quoteHistory refetch", {
           leadId: payload.id,
-          estimateLengthAfter: fresh?.quoteHistory?.length ?? 0,
+          estimateLengthAfter: fresh.quoteHistory?.length ?? 0,
         });
       }
       await refetchAfterSave(payload.id, payload);
@@ -655,6 +666,7 @@ export default function LeadDetailModal({
           note: "",
           fee: 0,
           feePercent: 0,
+          dealerAllowance: 0,
           profitMemo: "",
           pickupPlannedAt: today,
           deliveryType: "",
@@ -788,7 +800,7 @@ export default function LeadDetailModal({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
-                  {base.name} ({base.ownerStaff} · {ownerPositionLabel})
+                  {base.name} ({base.ownerStaff} · {ownerRankLabel})
                 </div>
                 <span
                   title={`상담결과: ${status}`}
@@ -1116,7 +1128,7 @@ export default function LeadDetailModal({
                         {leadOwnerSelectChoices.map((s) => (
                           <option key={s.id} value={s.id}>
                             {s.name}
-                            {s.position ? ` · ${s.position}` : ""}
+                            {s.rank ? ` · ${s.rank}` : ""}
                           </option>
                         ))}
                       </select>
@@ -2095,6 +2107,7 @@ function ContractTab({
       note: "",
       fee: 0,
       feePercent: 0,
+      dealerAllowance: 0,
       profitMemo: "",
       pickupPlannedAt: new Date().toISOString().slice(0, 10),
       deliveryType: "",
@@ -2130,6 +2143,7 @@ function ContractTab({
               note: "",
               fee: 0,
               feePercent: 0,
+              dealerAllowance: 0,
               profitMemo: "",
               pickupPlannedAt: today,
               deliveryType: "",
@@ -2148,6 +2162,11 @@ function ContractTab({
     const d = local.depositAmount;
     return Number.isFinite(d) && d >= 0 ? Math.round(d) : 0;
   }, [local.depositAmount]);
+
+  const expectedNetProfit = useMemo(
+    () => effectiveContractNetProfitForMetrics(local),
+    [local]
+  );
 
   const fieldDisabled = mode === "view";
 
@@ -2454,7 +2473,7 @@ function ContractTab({
           </div>
         </Field>
 
-        <Field label="수수료">
+        <Field label="수수료 (금액 / %)">
           <div className="flex flex-wrap items-stretch gap-2">
             <input
               inputMode="numeric"
@@ -2477,6 +2496,9 @@ function ContractTab({
             />
             <div className="flex min-w-[100px] max-w-[140px] flex-1 items-center gap-1">
               <input
+                type="number"
+                step="0.01"
+                min="0"
                 inputMode="decimal"
                 autoComplete="off"
                 className="crm-field min-w-0 flex-1 text-right tabular-nums"
@@ -2491,7 +2513,7 @@ function ContractTab({
                 onChange={(e) => {
                   const raw = e.target.value.trim();
                   if (raw === "") {
-                    setLocal((p) => ({ ...p, feePercent: 0 }));
+                    setLocal((p) => ({ ...p, feePercent: 0, fee: 0 }));
                     return;
                   }
                   const pct = parsePercentInput(raw);
@@ -2507,6 +2529,9 @@ function ContractTab({
               />
               <span className="shrink-0 text-xs text-zinc-500 dark:text-zinc-400">%</span>
             </div>
+          </div>
+          <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+            자동 계산 수수료: {formatWonInput(local.fee || 0)}원
           </div>
         </Field>
 
@@ -2530,6 +2555,22 @@ function ContractTab({
             ))}
           </select>
         </Field>
+
+        {local.deliveryType === "대리점 출고" ? (
+          <Field label="대리점 수당">
+            <input
+              inputMode="numeric"
+              autoComplete="off"
+              value={local.dealerAllowance ? formatWonInput(local.dealerAllowance) : ""}
+              onChange={(e) =>
+                setLocal((p) => ({ ...p, dealerAllowance: parseDigitsToInt(e.target.value) }))
+              }
+              className="crm-field"
+              placeholder="0"
+              disabled={fieldDisabled}
+            />
+          </Field>
+        ) : null}
 
         <Field label="선납금 지원금액">
           <input
@@ -2563,14 +2604,23 @@ function ContractTab({
 
         <Field label="총 지원 비용">
           <input
-            type="number"
-            value={local.totalSupportCost || ""}
-            onChange={(e) =>
-              setLocal((p) => ({ ...p, totalSupportCost: Number(e.target.value) || 0 }))
-            }
+            inputMode="numeric"
+            autoComplete="off"
+            value={local.totalSupportCost ? formatWonInput(local.totalSupportCost) : ""}
+            onChange={(e) => setLocal((p) => ({ ...p, totalSupportCost: parseDigitsToInt(e.target.value) }))}
             className="crm-field"
+            placeholder="0"
             disabled={fieldDisabled}
           />
+        </Field>
+
+        <Field label="최종 순이익">
+          <div className="crm-field bg-zinc-50 text-zinc-900 dark:bg-zinc-900/40 dark:text-zinc-100">
+            {formatWonInput(expectedNetProfit)}원
+          </div>
+          <div className="mt-1 text-[11px] text-zinc-500 dark:text-zinc-400">
+            수수료 + 대리점 수당 - 총 지원 비용
+          </div>
         </Field>
 
         <div className="sm:col-span-2">

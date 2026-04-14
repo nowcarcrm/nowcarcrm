@@ -9,7 +9,11 @@ import CrmPageTransition from "../motion/CrmPageTransition";
 import toast from "react-hot-toast";
 import LeadDetailModal from "@/app/(admin)/leads/_components/LeadDetailModal";
 import type { Lead } from "@/app/(admin)/_lib/leaseCrmTypes";
-import { fetchLeadById } from "@/app/(admin)/_lib/leaseCrmSupabase";
+import {
+  fetchLeadById,
+  LeadNotFoundError,
+  LeadPermissionDeniedError,
+} from "@/app/(admin)/_lib/leaseCrmSupabase";
 import {
   applyStaffLeadClientLocks,
   deleteLeadById,
@@ -18,6 +22,8 @@ import {
 import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
 import { listActiveUsers } from "@/app/(admin)/_lib/usersSupabase";
 import AiCounselAssistPopup from "@/app/(admin)/leads/_components/AiCounselAssistPopup";
+import UserRankSummary from "@/app/_components/ui/UserRankSummary";
+import UserRankCard from "@/app/_components/ui/UserRankCard";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -70,7 +76,7 @@ type ShellUser = {
   role: "super_admin" | "admin" | "staff";
   /** 표시용 (예: 관리자 / 매니저 / 직원) */
   roleLabel?: string;
-  position?: string;
+  rank?: string | null;
   email?: string;
 };
 
@@ -361,7 +367,12 @@ function SidebarContents({
     if (!showAdminManagerFilter) return;
     let mounted = true;
     (async () => {
-      const users = await listActiveUsers();
+      const users = await listActiveUsers({
+        id: currentUser?.userId,
+        role: currentUser?.role,
+        rank: currentUser?.rank ?? null,
+        email: currentUser?.email ?? null,
+      });
       if (!mounted) return;
       setStaffOptions(users.map((u) => ({ id: u.id, name: u.name?.trim() || "이름없음" })));
     })();
@@ -520,9 +531,13 @@ function SidebarContents({
               ? `권한 · ${currentUser.roleLabel ?? currentUser.role}`
               : "미로그인"}
           </div>
-          {currentUser?.position ? (
-            <div className="mt-1 text-[11px] font-medium text-slate-300">직급 · {currentUser.position}</div>
-          ) : null}
+          <div className="mt-1">
+            <UserRankSummary
+              name={currentUser?.name ?? "—"}
+              rank={currentUser?.rank ?? null}
+              roleLabel={currentUser ? currentUser.roleLabel ?? currentUser.role : ""}
+            />
+          </div>
           {onLogout ? (
             <button type="button" onClick={onLogout} className="crm-btn-secondary mt-3 w-full py-2 text-xs">
               로그아웃
@@ -561,8 +576,10 @@ export default function AdminShell({
       pathname?.startsWith("/operations")
     ) {
       return {
-        role: "admin" as const,
+        role: currentUser.role,
         userId: currentUser.userId,
+        email: currentUser.email ?? null,
+        rank: currentUser.rank ?? null,
         operationalFullAccess: true,
       };
     }
@@ -576,13 +593,15 @@ export default function AdminShell({
         setModalLoading(true);
         try {
           const lead = await fetchLeadById(leadId, modalScope);
-          if (!lead) {
-            toast.error("고객을 찾을 수 없거나 권한이 없습니다.");
-            return;
-          }
           setModalLead(lead);
         } catch (e) {
-          toast.error(e instanceof Error ? e.message : "고객 정보를 불러오지 못했습니다.");
+          if (e instanceof LeadNotFoundError) {
+            toast.error("고객 정보를 찾을 수 없습니다.");
+          } else if (e instanceof LeadPermissionDeniedError) {
+            toast.error("이 고객 상세를 볼 권한이 없습니다.");
+          } else {
+            toast.error(e instanceof Error ? e.message : "고객 정보를 불러오지 못했습니다.");
+          }
         } finally {
           setModalLoading(false);
         }
@@ -693,15 +712,13 @@ export default function AdminShell({
                     >
                       상담 기록
                     </Link>
-                    <div className="hidden flex-col items-end text-right md:flex">
-                      <span className="text-[14px] font-semibold text-slate-900 dark:text-zinc-100">
-                        {currentUser?.name ?? "—"}
-                      </span>
-                      <span className="text-[13px] text-slate-500 dark:text-zinc-400">
-                        {currentUser
-                          ? `${currentUser.roleLabel ?? currentUser.role}${currentUser.position ? ` · ${currentUser.position}` : ""}`
-                          : ""}
-                      </span>
+                    <div className="hidden md:block">
+                      <UserRankCard
+                        name={currentUser?.name ?? "—"}
+                        rank={currentUser?.rank ?? null}
+                        size="header"
+                        className="min-w-[170px]"
+                      />
                     </div>
                     {onLogout ? (
                       <button

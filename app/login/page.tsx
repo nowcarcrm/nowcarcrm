@@ -29,7 +29,7 @@ export default function LoginPage() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [debugInfo, setDebugInfo] = useState<Record<string, unknown> | null>(null);
-  const showDebugPanel = process.env.NODE_ENV !== "production";
+  const showDebugPanel = false;
   const target = getSupabaseAuthTargetInfo();
 
   const cardM = loginCardMotion(reduce);
@@ -89,7 +89,9 @@ export default function LoginPage() {
         debug.authDiagnoseError =
           diagErr instanceof Error ? diagErr.message : "diagnose 호출 실패";
       }
-      setDebugInfo(debug);
+      if (showDebugPanel) {
+        setDebugInfo(debug);
+      }
       const message = enhanceInvalidLoginWithDiagnose(raw, debug.authDiagnose);
       setError(message);
       toast.error("로그인에 실패했습니다. 이메일·비밀번호를 확인해 주세요.", { duration: 4000 });

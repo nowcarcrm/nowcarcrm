@@ -1,4 +1,4 @@
-import { effectiveContractFeeForMetrics } from "./leaseCrmContractPersist";
+import { effectiveContractNetProfitForMetrics } from "./leaseCrmContractPersist";
 import type { Lead } from "./leaseCrmTypes";
 
 /** 수수료·금액 필드 안전 파싱 (NaN·빈 문자열 → 0) */
@@ -16,7 +16,7 @@ export function toSafeMoney(value: unknown): number {
  */
 export function expectedFeeWonForLead(lead: Lead): number {
   if (lead.contract) {
-    return effectiveContractFeeForMetrics(lead.contract);
+    return effectiveContractNetProfitForMetrics(lead.contract);
   }
   const quotes = Array.isArray(lead.quoteHistory) ? lead.quoteHistory : [];
   if (quotes.length === 0) return 0;

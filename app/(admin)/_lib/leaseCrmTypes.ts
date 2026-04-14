@@ -234,9 +234,13 @@ export type ContractInfo = {
   fee: number; // 수수료(원)
   /** 차량가 대비 수수료 % */
   feePercent: number;
+  /** 대리점 출고일 때만 반영되는 추가 수익 */
+  dealerAllowance: number;
   profitMemo: string; // 수익 메모
   pickupPlannedAt: string; // 출고 예정일
   deliveryType: DeliveryTypeOption;
+  /** 계산 필드(표시용) */
+  netProfit?: number;
   /** 확정·출고 시점 스냅샷(첫 저장 후 고정, 견적 변경과 무관한 실적·수수료 기준) */
   finalVehiclePrice?: number | null;
   finalDepositAmount?: number | null;

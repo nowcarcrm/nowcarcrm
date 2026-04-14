@@ -14,6 +14,7 @@ import { ensureDefaultUsers } from "./usersSupabase";
 export type LeadViewerScope = {
   role: UserRole;
   userId: string;
+  visibleUserIds?: string[];
   /** @see LeadSupabaseScope.operationalFullAccess — 관리자 운영 화면 전용 */
   operationalFullAccess?: boolean;
 };

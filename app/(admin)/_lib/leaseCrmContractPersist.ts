@@ -27,6 +27,8 @@ export type ContractExtraV1 = {
   fp: number;
   /** 출고 유형 */
   dt: DeliveryTypeOption;
+  /** 대리점 수당(원) */
+  al?: number;
 };
 
 export function clampPercent(n: number): number {
@@ -235,6 +237,7 @@ export function shouldPersistContractExtra(e: ContractExtraV1): boolean {
   if (safeNonNegativeInt(e.da) > 0) return true;
   if (clampPercent(e.dp) > 0) return true;
   if (clampPercent(e.fp) > 0) return true;
+  if (safeNonNegativeInt(e.al ?? 0) > 0) return true;
   return e.dt === "대리점 출고" || e.dt === "특판 출고";
 }
 
@@ -254,7 +257,8 @@ export function parseLegacyDepositLine(s: string): { amount: number; percent: nu
 }
 
 function coalesceDeliveryType(raw: unknown): DeliveryTypeOption {
-  if (raw === "대리점 출고" || raw === "특판 출고") return raw;
+  if (raw === "대리점 출고" || raw === "대리점출고") return "대리점 출고";
+  if (raw === "특판 출고" || raw === "특판출고") return "특판 출고";
   return "";
 }
 
@@ -271,6 +275,7 @@ export function applyContractExtraToInfo(
       depositPercent: base.depositPercent ?? 0,
       feePercent: base.feePercent ?? 0,
       deliveryType: base.deliveryType ?? "",
+      dealerAllowance: base.dealerAllowance ?? 0,
     };
   }
   return {
@@ -280,6 +285,7 @@ export function applyContractExtraToInfo(
     depositPercent: clampPercent(extra.dp),
     feePercent: clampPercent(extra.fp),
     deliveryType: coalesceDeliveryType(extra.dt),
+    dealerAllowance: safeNonNegativeInt(extra.al ?? 0),
   };
 }
 
@@ -291,6 +297,7 @@ export function buildContractExtraFromInfo(c: ContractInfo): ContractExtraV1 {
     dp: clampPercent(c.depositPercent),
     fp: clampPercent(c.feePercent),
     dt: coalesceDeliveryType(c.deliveryType),
+    al: safeNonNegativeInt(c.dealerAllowance),
   };
 }
 
@@ -370,4 +377,25 @@ export function effectiveContractFeeForMetrics(c: ContractInfo): number {
     return safeNonNegativeInt(c.finalFeeAmount);
   }
   return safeNonNegativeInt(c.fee);
+}
+
+export function effectiveContractDealerAllowanceForMetrics(c: ContractInfo): number {
+  const delivery =
+    c.finalDeliveryType === "대리점 출고" || c.finalDeliveryType === "특판 출고"
+      ? c.finalDeliveryType
+      : c.deliveryType;
+  if (delivery !== "대리점 출고") return 0;
+  return safeNonNegativeInt(c.dealerAllowance);
+}
+
+export function effectiveContractSupportCostForMetrics(c: ContractInfo): number {
+  return safeNonNegativeInt(c.totalSupportCost);
+}
+
+export function effectiveContractNetProfitForMetrics(c: ContractInfo): number {
+  return (
+    effectiveContractFeeForMetrics(c) +
+    effectiveContractDealerAllowanceForMetrics(c) -
+    effectiveContractSupportCostForMetrics(c)
+  );
 }

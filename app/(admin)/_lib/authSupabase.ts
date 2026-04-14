@@ -11,10 +11,9 @@ import {
   type UserRow,
 } from "./usersSupabase";
 import {
-  effectivePosition,
   effectiveRole,
+  effectiveRank,
   isSuperAdminEmail,
-  type DisplayUserPosition,
   type UserRole,
 } from "./rolePermissions";
 
@@ -26,7 +25,9 @@ export type AuthProfile = {
   email: string;
   name: string;
   role: UserRole;
-  position: DisplayUserPosition | null;
+  rank: string | null;
+  teamName: string | null;
+  divisionName: string | null;
   /** users.is_active — false면 CRM 접근 불가 */
   isActive: boolean;
   approvalStatus: UserApprovalStatus;
@@ -57,13 +58,16 @@ function toAuthProfile(user: User, row: UserRow): AuthProfile {
   const fallbackName = normalizeName(user);
   const approvalStatus = effectiveApprovalStatus(row);
   const role = effectiveRole({ email: user.email ?? row.email ?? "", role: row.role });
+  const rank = effectiveRank({ email: user.email ?? row.email ?? "", role: row.role, rank: row.rank });
   return {
     authUserId: user.id,
     userId: row.id,
     email: user.email ?? row.email ?? "",
     name: row.name?.trim() || row.email?.split("@")[0] || fallbackName,
     role,
-    position: effectivePosition({ email: user.email ?? row.email ?? "", role, position: row.position }),
+    rank,
+    teamName: row.team_name ?? null,
+    divisionName: row.division_name ?? null,
     isActive: rowIsActive(row),
     approvalStatus,
     approved: approvalStatus === "approved",
@@ -92,7 +96,6 @@ async function enforceSuperAdminIdentity(user: User, row: UserRow): Promise<User
   if (!isSuperAdminEmail(user.email)) return row;
   const patch: Partial<UserRow> = {};
   if (row.role !== "super_admin") patch.role = "super_admin";
-  if (row.position !== "총괄대표") patch.position = "총괄대표";
   if (Object.keys(patch).length === 0) return row;
   const { data, error } = await supabase
     .from("users")
@@ -100,8 +103,12 @@ async function enforceSuperAdminIdentity(user: User, row: UserRow): Promise<User
     .eq("id", row.id)
     .select("*")
     .single();
-  if (error) throw new Error(`최고 관리자 계정 보정 실패: ${error.message}`);
-  return data as UserRow;
+  if (error) {
+    // Fail-safe: 보정 실패로 로그인 자체를 막지 않음
+    console.warn("[auth] super admin identity patch skipped:", error.message);
+    return row;
+  }
+  return (data as UserRow) ?? row;
 }
 
 export async function signInWithEmail(email: string, password: string) {
