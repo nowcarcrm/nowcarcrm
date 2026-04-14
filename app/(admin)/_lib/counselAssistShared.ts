@@ -1,4 +1,53 @@
-import type { Lead } from "./leaseCrmTypes";
+﻿import type { Lead } from "./leaseCrmTypes";
+
+export const COUNSEL_ASSIST_UI_TONES = ["친절형", "설득형", "단호형", "대표형"] as const;
+export type CounselAssistUiTone = (typeof COUNSEL_ASSIST_UI_TONES)[number];
+
+export const COUNSEL_ASSIST_PURPOSES = [
+  "첫 응대",
+  "비교견적 응대",
+  "망설이는 고객 설득",
+  "계약 전환 유도",
+  "재컨택 멘트",
+  "출고 지연 안내",
+  "클레임 진정",
+] as const;
+export type CounselAssistPurpose = (typeof COUNSEL_ASSIST_PURPOSES)[number];
+
+export const COUNSEL_ASSIST_OBJECTION_OPTIONS = [
+  "가격이 비싸다",
+  "타사 비교 중이다",
+  "가족/배우자와 상의해야 한다",
+  "아직 급하지 않다",
+  "초기비용이 부담된다",
+  "신용이 걱정된다",
+  "출고가 오래 걸릴까 걱정된다",
+  "계약이 불안하다",
+  "생각해보고 연락주겠다",
+  "지금 차를 더 탈 수 있다",
+] as const;
+export type CounselAssistObjection = (typeof COUNSEL_ASSIST_OBJECTION_OPTIONS)[number];
+
+export const COUNSEL_ASSIST_CHANNEL_OPTIONS = ["전화", "문자", "카톡", "방문"] as const;
+export type CounselAssistChannel = (typeof COUNSEL_ASSIST_CHANNEL_OPTIONS)[number];
+
+export type CounselAssistManualInput = {
+  reactionSummary: string;
+  objections: CounselAssistObjection[];
+  objectionsFreeText: string;
+  budgetSensitive: boolean;
+  desiredVehicle: string;
+  alternativeVehicle: string;
+  upfrontBudgetRange: string;
+  urgency: "급함" | "보통" | "낮음";
+  recentChannel: CounselAssistChannel;
+  lastCustomerReaction: string;
+};
+
+export type CounselAssistRequestOptions = {
+  uiTone: CounselAssistUiTone;
+  purpose: CounselAssistPurpose;
+};
 
 /** Serialized lead snapshot for counsel-assist API (validated on server). */
 export type CounselAssistContextPayload = {
@@ -74,12 +123,7 @@ export type CounselAssistContextPayload = {
   };
 };
 
-export const COUNSEL_ASSIST_MESSAGE_TONES = [
-  "\ubd80\ub2f4 \uc644\ud654\ud615",
-  "\uc2e0\ub8b0 \ud655\ubcf4\ud615",
-  "\ub9c8\uac10 \uc720\ub3c4\ud615",
-] as const;
-
+export const COUNSEL_ASSIST_MESSAGE_TONES = ["부담 완화형", "신뢰 확보형", "마감 유도형"] as const;
 export type CounselAssistMessageTone = (typeof COUNSEL_ASSIST_MESSAGE_TONES)[number];
 
 export type CounselAssistResult = {
@@ -95,7 +139,56 @@ export type CounselAssistResult = {
     tone: CounselAssistMessageTone;
     text: string;
   }>;
+  oneLineReply: string;
+  nextQuestions: string[];
+  talkPoints: string[];
+  cautionPhrases: string[];
+  conversionLikelihoodNote: string;
+  pushOrPauseAdvice: string;
 };
+
+export type AiCounselAnalysisRecord = {
+  id?: string;
+  leadId: string;
+  generatedBy: string;
+  tone: CounselAssistUiTone;
+  purpose: CounselAssistPurpose;
+  inputSnapshot: {
+    context: CounselAssistContextPayload;
+    manual: CounselAssistManualInput;
+  };
+  summary: string[];
+  scores: {
+    purchaseIntentScore: number;
+    priceSensitivityScore: number;
+    responseRiskScore: number;
+  };
+  recommendedAction: string;
+  messageSuggestions: CounselAssistResult["messageSuggestions"];
+  createdAt: string;
+};
+
+export function defaultCounselAssistManualInput(lead?: Lead | null): CounselAssistManualInput {
+  return {
+    reactionSummary: "",
+    objections: [],
+    objectionsFreeText: "",
+    budgetSensitive: false,
+    desiredVehicle: lead?.base.desiredVehicle ?? "",
+    alternativeVehicle: "",
+    upfrontBudgetRange: lead?.base.depositOrPrepaymentAmount ?? "",
+    urgency: "보통",
+    recentChannel: "카톡",
+    lastCustomerReaction: "",
+  };
+}
+
+export function defaultCounselAssistRequestOptions(): CounselAssistRequestOptions {
+  return {
+    uiTone: "친절형",
+    purpose: "재컨택 멘트",
+  };
+}
 
 const MAX_RECORD_CONTENT = 900;
 const MAX_RECORDS = 14;
@@ -104,7 +197,7 @@ const MAX_QUOTES = 5;
 function trimText(s: string, max: number): string {
   const t = (s ?? "").replace(/\s+/g, " ").trim();
   if (t.length <= max) return t;
-  return `${t.slice(0, max)}\u2026`;
+  return `${t.slice(0, max)}…`;
 }
 
 export function buildCounselAssistPayload(lead: Lead): CounselAssistContextPayload {

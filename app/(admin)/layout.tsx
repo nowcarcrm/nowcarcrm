@@ -64,6 +64,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         name: profile.name?.trim() || profile.email?.split("@")[0] || "사용자",
         role: profile.role,
         roleLabel: roleLabelKo(profile.role),
+        position: profile.position ?? "직급 미설정",
         email: profile.email || "",
       }}
       onLogout={() => void logout()}

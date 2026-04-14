@@ -39,6 +39,7 @@ export default function StaffCustomerDetailPage() {
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [staffName, setStaffName] = useState("");
+  const [staffPosition, setStaffPosition] = useState<string>("");
   const [lastConsultByLead, setLastConsultByLead] = useState<Map<string, string>>(
     () => new Map()
   );
@@ -50,7 +51,7 @@ export default function StaffCustomerDetailPage() {
   const { openLeadById } = useLeadDetailModal();
 
   const opScope = useMemo(() => {
-    if (!profile || profile.role !== "admin") return null;
+    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) return null;
     return {
       role: "admin" as const,
       userId: profile.userId,
@@ -60,7 +61,7 @@ export default function StaffCustomerDetailPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!profile || profile.role !== "admin") {
+    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) {
       router.replace("/dashboard");
       return;
     }
@@ -79,6 +80,7 @@ export default function StaffCustomerDetailPage() {
         ]);
         if (!mounted) return;
         setStaffName(u?.name?.trim() || mine[0]?.base.ownerStaff || "직원");
+        setStaffPosition(u?.position ?? "직급 미설정");
         setContractByLead(contracts);
         setLastConsultByLead(consultMap);
         setLoadError(null);
@@ -161,7 +163,7 @@ export default function StaffCustomerDetailPage() {
     return <div className="py-16 text-center text-sm text-slate-500">로딩 중…</div>;
   }
 
-  if (profile.role !== "admin") {
+  if (profile.role !== "admin" && profile.role !== "super_admin") {
     return null;
   }
 
@@ -177,7 +179,7 @@ export default function StaffCustomerDetailPage() {
               ← 직원 현황
             </Link>
             <h1 className="mt-2 text-2xl font-bold text-slate-900 dark:text-zinc-50">
-              {staffName || "…"} · 담당 고객
+              {staffName || "…"} · {staffPosition || "직급 미설정"} · 담당 고객
             </h1>
             <p className="mt-1 text-[14px] text-slate-600 dark:text-zinc-400">
               manager_user_id 일치 고객만 표시합니다.

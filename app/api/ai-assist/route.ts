@@ -93,7 +93,7 @@ export async function POST(req: Request) {
     }
     const approved = requester.approval_status === "approved";
     const role = requester.role;
-    if (!approved || (role !== "admin" && role !== "manager" && role !== "staff")) {
+    if (!approved || (role !== "super_admin" && role !== "admin" && role !== "staff")) {
       return NextResponse.json({ error: "접근 권한이 없습니다." }, { status: 403 });
     }
 

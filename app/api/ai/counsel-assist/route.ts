@@ -1,10 +1,17 @@
-import { NextResponse } from "next/server";
+﻿import { NextResponse } from "next/server";
 import { z } from "zod";
 import {
+  COUNSEL_ASSIST_CHANNEL_OPTIONS,
   COUNSEL_ASSIST_MESSAGE_TONES,
+  COUNSEL_ASSIST_OBJECTION_OPTIONS,
+  COUNSEL_ASSIST_PURPOSES,
+  COUNSEL_ASSIST_UI_TONES,
   type CounselAssistContextPayload,
+  type CounselAssistManualInput,
+  type CounselAssistRequestOptions,
   type CounselAssistResult,
 } from "@/app/(admin)/_lib/counselAssistShared";
+import { saveAiCounselAnalysisDraft } from "@/app/(admin)/_lib/aiCounselAnalysisService";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
 
 function getBearerToken(req: Request) {
@@ -30,6 +37,113 @@ async function getRequester(authUserId: string) {
 }
 
 const toneEnum = COUNSEL_ASSIST_MESSAGE_TONES as unknown as [string, ...string[]];
+const uiToneEnum = COUNSEL_ASSIST_UI_TONES as unknown as [string, ...string[]];
+const purposeEnum = COUNSEL_ASSIST_PURPOSES as unknown as [string, ...string[]];
+const channelEnum = COUNSEL_ASSIST_CHANNEL_OPTIONS as unknown as [string, ...string[]];
+const objectionEnum = COUNSEL_ASSIST_OBJECTION_OPTIONS as unknown as [string, ...string[]];
+
+const ContextSchema = z.object({
+  leadId: z.string().min(1),
+  managerUserId: z.string().nullable().optional(),
+  base: z.object({
+    name: z.string(),
+    phone: z.string(),
+    desiredVehicle: z.string(),
+    source: z.string(),
+    leadTemperature: z.string(),
+    customerType: z.string(),
+    contractTerm: z.string(),
+    wantedMonthlyPayment: z.number(),
+    depositOrPrepaymentAmount: z.string(),
+    memo: z.string(),
+    ownerStaff: z.string(),
+  }),
+  status: z.object({
+    counselingStatus: z.string(),
+    leadPriority: z.string(),
+    creditReviewStatus: z.string(),
+    failureReason: z.string(),
+    failureReasonNote: z.string(),
+  }),
+  timeline: z.object({
+    createdAt: z.string(),
+    lastHandledAt: z.string(),
+    nextContactAt: z.string().nullable(),
+    nextContactMemo: z.string(),
+    statusUpdatedAt: z.string(),
+  }),
+  counselingRecords: z.array(
+    z.object({
+      occurredAt: z.string(),
+      method: z.string(),
+      counselor: z.string(),
+      content: z.string(),
+      reaction: z.string(),
+      desiredProgressAt: z.string(),
+      nextContactAt: z.string(),
+      nextContactMemo: z.string(),
+      importance: z.string(),
+    })
+  ),
+  quoteHistory: z.array(
+    z.object({
+      quotedAt: z.string(),
+      productType: z.string(),
+      financeCompany: z.string(),
+      vehicleModel: z.string(),
+      contractTerm: z.string(),
+      monthlyPayment: z.number(),
+      depositAmount: z.number(),
+      prepaymentAmount: z.number(),
+      maintenanceIncluded: z.boolean(),
+      note: z.string(),
+    })
+  ),
+  contract: z
+    .object({
+      contractDate: z.string(),
+      product: z.string(),
+      vehicleName: z.string(),
+      vehiclePrice: z.number(),
+      monthlyPayment: z.number(),
+      contractTerm: z.string(),
+      depositAmount: z.number(),
+      pickupPlannedAt: z.string(),
+      note: z.string(),
+    })
+    .nullable(),
+  exportProgress: z
+    .object({
+      stage: z.string(),
+      expectedDeliveryDate: z.string().optional(),
+      vehicleModel: z.string().optional(),
+      financeCompany: z.string().optional(),
+      deliveredAt: z.string().nullable().optional(),
+    })
+    .nullable(),
+});
+
+const ManualInputSchema = z.object({
+  reactionSummary: z.string().max(500),
+  objections: z.array(z.enum(objectionEnum)).max(10),
+  objectionsFreeText: z.string().max(500),
+  budgetSensitive: z.boolean(),
+  desiredVehicle: z.string().max(200),
+  alternativeVehicle: z.string().max(200),
+  upfrontBudgetRange: z.string().max(120),
+  urgency: z.enum(["급함", "보통", "낮음"]),
+  recentChannel: z.enum(channelEnum),
+  lastCustomerReaction: z.string().max(300),
+});
+
+const RequestSchema = z.object({
+  context: ContextSchema,
+  options: z.object({
+    uiTone: z.enum(uiToneEnum),
+    purpose: z.enum(purposeEnum),
+  }),
+  manualInput: ManualInputSchema,
+});
 
 const CounselAssistResultSchema = z.object({
   summary: z.array(z.string()).min(3).max(5),
@@ -48,151 +162,198 @@ const CounselAssistResultSchema = z.object({
       })
     )
     .length(3),
+  oneLineReply: z.string().min(1).max(180),
+  nextQuestions: z.array(z.string().min(1)).length(2),
+  talkPoints: z.array(z.string().min(1)).min(3).max(6),
+  cautionPhrases: z.array(z.string().min(1)).min(2).max(4),
+  conversionLikelihoodNote: z.string().min(1),
+  pushOrPauseAdvice: z.string().min(1),
 });
 
-const RequestSchema = z.object({
-  context: z.record(z.string(), z.unknown()),
-});
+function developerPrompt(options: CounselAssistRequestOptions): string {
+  const toneRule: Record<(typeof COUNSEL_ASSIST_UI_TONES)[number], string> = {
+    친절형: "친절형: 공감 중심, 부드러운 설명형, 압박 금지",
+    설득형: "설득형: 비교 우위와 정리 중심, 이유를 짧게 제시",
+    단호형: "단호형: 불필요한 장문 없이 핵심만 명확히",
+    대표형: "대표형: 확신은 있으나 부담스럽지 않게, 책임감 있는 톤",
+  };
 
-function developerPrompt(): string {
   return [
-    "You are a senior coach for Korean automotive long-term rent and operating/finance lease sales teams.",
-    "Input is a JSON snapshot of one CRM lead: profile, counseling logs, quotes, contract/export hints.",
-    "Output MUST be a single JSON object matching the provided schema. All user-facing strings in Korean.",
-    "Goals: honest conversion, actionable next steps, three copy-paste Kakao/SMS-ready messages.",
-    "Strict prohibitions:",
-    "- No underwriting approval guarantees, no false discounts, no unverified lowest-price claims.",
-    "- No legal promises; use conditional wording (terms depend on finance company rules).",
-    "- Do not invent facts not supported by the snapshot; if data is thin, say so briefly.",
-    "Scores are heuristic 0-100 integers, not guarantees.",
-    "customerStage: one short Korean phrase (comparison stage, price sensitivity, slow reply, etc.).",
-    "riskSignals: short Korean tags (price sensitivity, delayed response, credit anxiety, etc.).",
-    "recommendedAction: one decisive sentence. recommendedActions: 2-5 concrete bullets for the rep.",
-    "summary: 3-5 items, each 1-2 sentences, recent counseling essence.",
-    "messageSuggestions: exactly three items; tones MUST be exactly these Korean labels:",
-    `"${COUNSEL_ASSIST_MESSAGE_TONES[0]}", "${COUNSEL_ASSIST_MESSAGE_TONES[1]}", "${COUNSEL_ASSIST_MESSAGE_TONES[2]}"`,
-    "Each message: natural Korean, not robotic, max 2-5 short sentences, ready to send.",
-    "Output JSON only, no markdown.",
+    "You are a Korean automotive lease/rent sales coach for real frontline reps.",
+    "User is a real sales rep and wants copy-ready Korean follow-up phrases for Kakao/SMS/calls.",
+    "Apply selected style and purpose strictly.",
+    `Selected user tone: ${options.uiTone} / Rule: ${toneRule[options.uiTone]}`,
+    `Selected purpose: ${options.purpose}`,
+    "Avoid pressure and lower customer resistance first.",
+    "Never promise underwriting approval, delivery guarantee, fake discounts, or certainty without facts.",
+    "If information is insufficient, avoid hard claims and say uncertainty briefly.",
+    "Keep sentences short, practical, and conversational. No robotic phrasing.",
+    "Output JSON only (no markdown, no extra text).",
   ].join("\n");
 }
 
 function fallbackResult(): CounselAssistResult {
   return {
     summary: [
-      "\uc0c1\ub2f4 \uae30\ub85d\uc744 \ucda9\ubd84\ud788 \ubd84\uc11d\ud558\uc9c0 \ubabb\ud588\uac70\ub098 AI \uc751\ub2f5\uc774 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.",
-      "\uace0\uac1d\ub2d8 \uad00\uc2ec \ucc28\uc885\uacfc \uc6d4\ub0a9/\ucd08\uae30\ube44\uc6a9 \ubd80\ub2f4\uc744 \ud55c \ubc88 \ub354 \ud655\uc778\ud558\ub294 \uac83\uc774 \uc88b\uc2b5\ub2c8\ub2e4.",
-      "\ub2e4\uc74c \uc5f0\ub77d \uc77c\uc815\uc774 \uc788\ub2e4\uba74 \uadf8 \uc804\uc5d0 \uc870\uac74\ud45c\ub97c \uc815\ub9ac\ud574 \ub450\uba74 \uc7ac\uc5f0\ub77d\uc774 \uc218\uc6d4\ud569\ub2c8\ub2e4.",
+      "상담 데이터가 충분하지 않아 보수적으로 요약했습니다.",
+      "고객의 예산·초기비용 부담과 차종 우선순위를 먼저 다시 확인하는 것이 좋습니다.",
+      "압박보다 공감 중심 재접촉이 전환 가능성을 높입니다.",
     ],
-    customerStage: "\uc815\ubcf4 \ubd80\uc871 \xb7 \uc7ac\ud655\uc778 \ud544\uc694",
-    purchaseIntentScore: 50,
-    priceSensitivityScore: 50,
-    responseRiskScore: 50,
-    riskSignals: ["\ub370\uc774\ud130 \ubd80\uc871"],
-    recommendedAction:
-      "\uace0\uac1d\ub2d8 \uad00\uc2ec \ucc28\uc885\uacfc \uc6d4 \ub0a9\uc785 \uc5ec\uc5c0\uc744 \ud655\uc778\ud55c \ub4a4 \uc624\ub298 \uc911 \uc7ac\uc5f0\ub77d\uc744 \uc81c\uc548\ud558\uc138\uc694.",
+    customerStage: "정보 재확인 단계",
+    purchaseIntentScore: 52,
+    priceSensitivityScore: 58,
+    responseRiskScore: 53,
+    riskSignals: ["정보 부족", "조건 재확인 필요"],
+    recommendedAction: "오늘 안에 부담을 낮춘 조건으로 짧게 재컨택하세요.",
     recommendedActions: [
-      "\ucd5c\uadfc \uc0c1\ub2f4 \ub0b4\uc6a93\uac00\uc9c0\ub9cc \ucc99\uc5d0 \uc815\ub9ac\ud574 \uacf5\uc720",
-      "\uc870\uac74\ud45c(\uc6d4\ub0a9/\ubcf4\uc99d\uae08)\ub97c \ud604\uc2e4 \uae30\uc900\uc73c\ub85c \uc7ac\uc804\uc1a1",
-      "\ub2e4\uc74c \uc5f0\ub77d \uc77c\uc815\uc744 \uc7a1\uace0 \uce74\ud1a1\uc73c\ub85c \uc55e\uc7a5\uc11c \uc548\ub0b4",
+      "월 납입/초기비용 기준을 먼저 1문장으로 확인",
+      "관심 차종 + 대체 차종 1개씩만 제시",
+      "다음 연락 시간을 고객이 선택하게 유도",
     ],
     messageSuggestions: [
       {
-        tone: COUNSEL_ASSIST_MESSAGE_TONES[0],
-        text: "\uc548\ub155\ud558\uc138\uc694, \uc5b4\uc81c \ub9d0\uc500\ub4dc\ub9b0 \uc870\uac74 \uae30\uc900\uc73c\ub85c \ubd80\ub2f4\uc744 \uc870\uae08 \ub354 \ub098\ub204\uc5b4 \ubcf4\ub824\uace0 \ud569\ub2c8\ub2e4. \uc2dc\uac04 \ub418\uc2e4 \ub54c \uc5f0\ub77d \uc8fc\uc2dc\uba74 \uc0c8 \uc218\uce58\ub85c \ub9de\ucda4 \uc548\ub0b4\ub4dc\ub9b4\uac8c\uc694.",
+        tone: "부담 완화형",
+        text: "고객님, 말씀 주신 예산 범위에서 부담이 덜한 조건으로 다시 정리해봤습니다. 괜찮으시면 1~2가지 안만 짧게 비교해서 안내드릴게요.",
       },
       {
-        tone: COUNSEL_ASSIST_MESSAGE_TONES[1],
-        text: "\uc800\ud76c\ub294 \uacc4\uc57d \uc804 \uc870\uac74\uacfc \uc9c4\ud589 \uc77c\uc815\uc744 \ud22c\uba85\ud558\uac8c \uc548\ub0b4\ub4dc\ub9ac\uace0 \uc788\uc2b5\ub2c8\ub2e4. \uaf2d \ube44\uad50\ud574 \ubcf4\uc2dc\uace0 \uaf2d \ub354 \ub098\uc740 \uc548\uc744 \ucc3e\uc544\ubcf4\uaca0\uc2b5\ub2c8\ub2e4.",
+        tone: "신뢰 확보형",
+        text: "확정되지 않은 부분은 확정처럼 말씀드리지 않고, 가능한 조건 기준으로만 정확히 안내드리겠습니다. 비교하실 수 있게 핵심만 정리해 드릴게요.",
       },
       {
-        tone: COUNSEL_ASSIST_MESSAGE_TONES[2],
-        text: "\uc624\ub298 \uc911\uc5d0 \uc870\uac74\uc774 \ub9de\uc73c\uc2dc\uba74 \ubc1c\uc1a1 \uac00\ub2a5 \uc2dc\uae30\ub3c4 \uc5f0\ub3d9\ud574 \ubcf4\uaca0\uc2b5\ub2c8\ub2e4. \uc7a0\uc2dc \uc804\ud654 \ub610\ub294 \uce74\ud1a1 \uc8fc\uc2dc\uba74 \ubc14\ub85c \uc815\ub9ac\ud574 \ub4dc\ub9b4\uac8c\uc694.",
+        tone: "마감 유도형",
+        text: "오늘 확인 가능하시면 현재 조건 기준으로 가장 유리한 안부터 먼저 잡아보겠습니다. 원하시는 시간 알려주시면 바로 맞춰드릴게요.",
       },
     ],
+    oneLineReply: "부담 덜한 조건으로 핵심만 다시 정리해드릴까요?",
+    nextQuestions: ["월 납입 한도는 최대 어느 정도까지 생각하고 계실까요?", "초기비용은 어느 범위에서 진행 가능하실까요?"],
+    talkPoints: ["가격 부담 완화", "조건 투명성", "다음 일정 확정"],
+    cautionPhrases: ["무조건 승인됩니다", "최저가 보장", "곧 무조건 출고됩니다"],
+    conversionLikelihoodNote: "조건 재정리 후 재접촉 시 전환 가능성이 중간 이상으로 회복될 수 있습니다.",
+    pushOrPauseAdvice: "지금은 강한 압박보다 짧은 재확인 메시지로 접근하세요.",
   };
 }
 
 function parseModelJson(raw: string): CounselAssistResult {
   try {
-    const parsed = JSON.parse(raw) as unknown;
-    return CounselAssistResultSchema.parse(parsed) as CounselAssistResult;
+    return CounselAssistResultSchema.parse(JSON.parse(raw)) as CounselAssistResult;
   } catch (e) {
     console.error("[counsel-assist] parse/validate failed", e);
     return fallbackResult();
   }
 }
 
+function buildUserPrompt(
+  context: CounselAssistContextPayload,
+  options: CounselAssistRequestOptions,
+  manualInput: CounselAssistManualInput
+): string {
+  const compactManual = {
+    ...manualInput,
+    selectedTone: options.uiTone,
+    selectedPurpose: options.purpose,
+  };
+
+  return [
+    "Analyze the lead and produce practical sales guidance.",
+    "Lead snapshot JSON:",
+    JSON.stringify(context, null, 2),
+    "Rep override inputs JSON:",
+    JSON.stringify(compactManual, null, 2),
+  ].join("\n\n");
+}
+
+async function assertLeadAccess(params: {
+  leadId: string;
+  requesterId: string;
+  role: string;
+}) {
+  const { data: leadRow, error: leadErr } = await supabaseAdmin
+    .from("leads")
+    .select("id, manager_user_id")
+    .eq("id", params.leadId)
+    .maybeSingle();
+
+  if (leadErr) {
+    console.error("[counsel-assist] lead lookup", leadErr);
+    return { ok: false, status: 500 as const, error: "고객 조회에 실패했습니다." };
+  }
+  if (!leadRow) {
+    return { ok: false, status: 404 as const, error: "고객을 찾을 수 없습니다." };
+  }
+
+  const managerId = (leadRow as { manager_user_id?: string | null }).manager_user_id ?? null;
+
+  if (params.role === "staff") {
+    if (!managerId) {
+      return {
+        ok: false,
+        status: 403 as const,
+        error: "미배정 리드는 staff 권한으로 AI 분석할 수 없습니다.",
+      };
+    }
+    if (managerId !== params.requesterId) {
+      return {
+        ok: false,
+        status: 403 as const,
+        error: "본인 담당 리드만 AI 분석할 수 있습니다.",
+      };
+    }
+  }
+
+  // admin/manager: staff보다 넓게 허용. super_admin 역할이 추가되면 별도 정책으로 확장 가능.
+  return { ok: true, status: 200 as const, managerId };
+}
+
 export async function POST(req: Request) {
   try {
     const token = getBearerToken(req);
-    if (!token) {
-      return NextResponse.json({ error: "\uc778\uc99d \ud1a0\ud070\uc774 \uc5c6\uc2b5\ub2c8\ub2e4." }, { status: 401 });
-    }
+    if (!token) return NextResponse.json({ error: "인증 토큰이 없습니다." }, { status: 401 });
 
     const { data: authData, error: authErr } = await supabaseAuthVerifier.auth.getUser(token);
     if (authErr || !authData.user) {
-      return NextResponse.json({ error: "\uc720\ud6a8\ud558\uc9c0 \uc54a\uc740 \uc778\uc99d\uc785\ub2c8\ub2e4." }, { status: 401 });
+      return NextResponse.json({ error: "유효하지 않은 인증입니다." }, { status: 401 });
     }
 
     const { row: requester, error: requesterErr } = await getRequester(authData.user.id);
     if (requesterErr || !requester) {
-      return NextResponse.json({ error: "\uc9c1\uc6d0 \uacc4\uc815 \ud655\uc778\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4." }, { status: 403 });
+      return NextResponse.json({ error: "직원 계정 확인에 실패했습니다." }, { status: 403 });
     }
+
+    const role = (requester.role ?? "") as string;
     const approved = requester.approval_status === "approved";
-    const role = requester.role;
-    if (!approved || (role !== "admin" && role !== "manager" && role !== "staff")) {
-      return NextResponse.json({ error: "\uc811\uadfc \uad8c\ud55c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4." }, { status: 403 });
+    if (!approved || !["staff", "admin", "super_admin"].includes(role)) {
+      return NextResponse.json({ error: "AI 상담 어시스트 접근 권한이 없습니다." }, { status: 403 });
     }
 
-    const bodyRaw = await req.json();
-    const parsed = RequestSchema.safeParse(bodyRaw);
+    const parsed = RequestSchema.safeParse(await req.json());
     if (!parsed.success) {
-      return NextResponse.json({ error: "context \ud544\ub4dc\uac00 \uc5c6\uc2b5\ub2c8\ub2e4." }, { status: 400 });
+      return NextResponse.json({ error: "요청 형식이 올바르지 않습니다." }, { status: 400 });
     }
 
-    const context = parsed.data.context as CounselAssistContextPayload;
-    const leadId = typeof context.leadId === "string" ? context.leadId.trim() : "";
-    if (!leadId) {
-      return NextResponse.json({ error: "leadId\uac00 \uc5c6\uc2b5\ub2c8\ub2e4." }, { status: 400 });
-    }
+    const { context, options, manualInput } = parsed.data as {
+      context: CounselAssistContextPayload;
+      options: CounselAssistRequestOptions;
+      manualInput: CounselAssistManualInput;
+    };
 
-    const { data: leadRow, error: leadErr } = await supabaseAdmin
-      .from("leads")
-      .select("id, manager_user_id")
-      .eq("id", leadId)
-      .maybeSingle();
-
-    if (leadErr) {
-      console.error("[counsel-assist] lead lookup", leadErr);
-      return NextResponse.json({ error: "\uace0\uac1d \uc870\ud68c\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4." }, { status: 500 });
-    }
-    if (!leadRow) {
-      return NextResponse.json({ error: "\uace0\uac1d\uc744 \ucc3e\uc744 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4." }, { status: 404 });
-    }
-
-    const managerId = (leadRow as { manager_user_id?: string | null }).manager_user_id ?? null;
-    if (role === "staff" && managerId && managerId !== requester.id) {
-      return NextResponse.json({ error: "\uc774 \uace0\uac1d\uc5d0 \ub300\ud55c \ubd84\uc11d \uad8c\ud55c\uc774 \uc5c6\uc2b5\ub2c8\ub2e4." }, { status: 403 });
+    const access = await assertLeadAccess({
+      leadId: context.leadId,
+      requesterId: requester.id,
+      role,
+    });
+    if (!access.ok) {
+      return NextResponse.json({ error: access.error }, { status: access.status });
     }
 
     const apiKey = process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) {
-      return NextResponse.json(
-        { error: "OPENAI_API_KEY\uac00 \uc124\uc815\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.", result: fallbackResult() },
-        { status: 503 }
-      );
+      return NextResponse.json({ ok: false, error: "OPENAI_API_KEY가 설정되지 않았습니다.", result: fallbackResult() }, { status: 503 });
     }
 
-    const model =
-      (process.env.AI_COUNSEL_MODEL ?? process.env.AI_ASSIST_MODEL ?? "gpt-4o-mini").trim() || "gpt-4o-mini";
-
-    const userContent = [
-      "Analyze this lead JSON and return ONLY the JSON object per schema.",
-      JSON.stringify(context, null, 2),
-    ].join("\n\n");
+    const model = (process.env.AI_COUNSEL_MODEL ?? process.env.AI_ASSIST_MODEL ?? "gpt-4o-mini").trim();
 
     const jsonSchema = {
-      name: "counsel_assist_result",
+      name: "counsel_assist_result_v2",
       strict: true,
       schema: {
         type: "object",
@@ -220,6 +381,12 @@ export async function POST(req: Request) {
               required: ["tone", "text"],
             },
           },
+          oneLineReply: { type: "string" },
+          nextQuestions: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 2 },
+          talkPoints: { type: "array", items: { type: "string" }, minItems: 3, maxItems: 6 },
+          cautionPhrases: { type: "array", items: { type: "string" }, minItems: 2, maxItems: 4 },
+          conversionLikelihoodNote: { type: "string" },
+          pushOrPauseAdvice: { type: "string" },
         },
         required: [
           "summary",
@@ -231,13 +398,18 @@ export async function POST(req: Request) {
           "recommendedAction",
           "recommendedActions",
           "messageSuggestions",
+          "oneLineReply",
+          "nextQuestions",
+          "talkPoints",
+          "cautionPhrases",
+          "conversionLikelihoodNote",
+          "pushOrPauseAdvice",
         ],
       },
     };
 
     const controller = new AbortController();
-    const timeoutMs = 55_000;
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), 55_000);
 
     let aiRes: Response;
     try {
@@ -251,16 +423,16 @@ export async function POST(req: Request) {
         body: JSON.stringify({
           model,
           temperature: 0.35,
-          max_tokens: 1800,
+          max_tokens: 2200,
           response_format: { type: "json_schema", json_schema: jsonSchema },
           messages: [
-            { role: "developer", content: developerPrompt() },
-            { role: "user", content: userContent },
+            { role: "developer", content: developerPrompt(options) },
+            { role: "user", content: buildUserPrompt(context, options, manualInput) },
           ],
         }),
       });
     } finally {
-      clearTimeout(timeout);
+      clearTimeout(timer);
     }
 
     const aiData = (await aiRes.json()) as {
@@ -271,21 +443,35 @@ export async function POST(req: Request) {
     if (!aiRes.ok) {
       console.error("[counsel-assist] OpenAI error", aiData.error);
       return NextResponse.json(
-        {
-          ok: false,
-          error: aiData.error?.message ?? "AI \ud638\ucd9c \uc2e4\ud328",
-          result: fallbackResult(),
-        },
+        { ok: false, error: aiData.error?.message ?? "AI 호출 실패", result: fallbackResult() },
         { status: 200 }
       );
     }
 
-    const content = aiData.choices?.[0]?.message?.content?.trim() ?? "";
-    const result = parseModelJson(content);
+    const result = parseModelJson(aiData.choices?.[0]?.message?.content?.trim() ?? "");
+
+    void saveAiCounselAnalysisDraft({
+      leadId: context.leadId,
+      generatedBy: requester.id,
+      tone: options.uiTone,
+      purpose: options.purpose,
+      inputSnapshot: { context, manual: manualInput },
+      summary: result.summary,
+      scores: {
+        purchaseIntentScore: result.purchaseIntentScore,
+        priceSensitivityScore: result.priceSensitivityScore,
+        responseRiskScore: result.responseRiskScore,
+      },
+      recommendedAction: result.recommendedAction,
+      messageSuggestions: result.messageSuggestions,
+      createdAt: new Date().toISOString(),
+    }).catch((e) => {
+      console.error("[counsel-assist] save stub failed", e);
+    });
 
     return NextResponse.json({ ok: true, model, result });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "\uc11c\ubc84 \uc624\ub958";
+    const message = error instanceof Error ? error.message : "서버 오류";
     console.error("[counsel-assist]", error);
     return NextResponse.json({ ok: false, error: message, result: fallbackResult() }, { status: 200 });
   }

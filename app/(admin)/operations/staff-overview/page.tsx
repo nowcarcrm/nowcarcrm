@@ -88,10 +88,10 @@ export default function StaffOverviewPage() {
   const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
   const managerUserIdFilter = (searchParams.get("managerUserId") ?? "").trim();
-  const isAdmin = profile?.role === "admin";
+  const isAdmin = profile?.role === "super_admin" || profile?.role === "admin";
 
   const opScope = useMemo(() => {
-    if (!profile || profile.role !== "admin") return null;
+    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) return null;
     return {
       role: "admin" as const,
       userId: profile.userId,
@@ -118,7 +118,7 @@ export default function StaffOverviewPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!profile || profile.role !== "admin") {
+    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) {
       router.replace("/dashboard");
       return;
     }
@@ -195,7 +195,7 @@ export default function StaffOverviewPage() {
 
   const staffSelectOptions = useMemo(() => {
     return [...overviewRows]
-      .map((r) => ({ id: r.userId, name: r.name || r.email || r.userId }))
+      .map((r) => ({ id: r.userId, name: r.name || r.email || r.userId, position: r.positionLabel }))
       .filter((o) => !!o.id)
       .sort((a, b) => a.name.localeCompare(b.name, "ko"));
   }, [overviewRows]);
@@ -280,6 +280,7 @@ export default function StaffOverviewPage() {
       직원명: r.name,
       이메일: r.email,
       권한: r.roleLabel,
+      직급: r.positionLabel,
       현재담당고객수: r.assignedTotal,
       오늘등록: r.registeredToday,
       이번달등록: r.registeredThisMonth,
@@ -343,7 +344,7 @@ export default function StaffOverviewPage() {
     );
   }
 
-  if (profile.role !== "admin") {
+  if (profile.role !== "admin" && profile.role !== "super_admin") {
     return null;
   }
 
@@ -375,7 +376,7 @@ export default function StaffOverviewPage() {
                   <option value="">전체</option>
                   {staffSelectOptions.map((o) => (
                     <option key={o.id} value={o.id}>
-                      {o.name}
+                      {o.name} · {o.position}
                     </option>
                   ))}
                 </select>
@@ -479,7 +480,9 @@ export default function StaffOverviewPage() {
                       <td className="max-w-[140px] truncate px-2 py-2 text-slate-600 dark:text-zinc-400">
                         {r.email || "—"}
                       </td>
-                      <td className="px-2 py-2">{r.roleLabel}</td>
+                      <td className="px-2 py-2">
+                        {r.roleLabel} · {r.positionLabel}
+                      </td>
                       <td className="px-2 py-2 tabular-nums">{r.assignedTotal}</td>
                       <td className="px-2 py-2 tabular-nums">{r.registeredToday}</td>
                       <td className="px-2 py-2 tabular-nums">{r.registeredThisMonth}</td>

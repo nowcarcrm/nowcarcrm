@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
+import { effectiveRole } from "@/app/(admin)/_lib/rolePermissions";
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
@@ -17,7 +18,7 @@ function effectiveApproval(
 async function requireApprovedAdmin(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status")
+    .select("id, email, role, approval_status")
     .eq("id", authUserId)
     .maybeSingle();
   if (e1) return { admin: null as null, error: e1.message };
@@ -26,7 +27,7 @@ async function requireApprovedAdmin(authUserId: string) {
   if (!row) {
     const { data: legacy, error: e2 } = await supabaseAdmin
       .from("users")
-      .select("id, role, approval_status")
+      .select("id, email, role, approval_status")
       .eq("auth_user_id", authUserId)
       .maybeSingle();
     if (e2) return { admin: null as null, error: e2.message };
@@ -37,10 +38,11 @@ async function requireApprovedAdmin(authUserId: string) {
   if (effectiveApproval(row.approval_status) !== "approved") {
     return { admin: null as null, error: "승인된 관리자만 이 작업을 할 수 있습니다." };
   }
-  if (row.role !== "admin") {
+  const role = effectiveRole({ role: row.role, email: row.email });
+  if (role !== "super_admin" && role !== "admin") {
     return { admin: null as null, error: "관리자만 직원 승인을 처리할 수 있습니다." };
   }
-  return { admin: row, error: null as null };
+  return { admin: { ...row, role }, error: null as null };
 }
 
 export async function GET(req: Request) {
@@ -80,7 +82,7 @@ export async function GET(req: Request) {
 
     let query = supabaseAdmin
       .from("users")
-      .select("id, email, name, role, approval_status, created_at")
+      .select("id, email, name, role, position, approval_status, created_at")
       .order("created_at", { ascending: false });
     if (allowedRole !== "all") {
       query = query.eq("role", allowedRole);
@@ -105,6 +107,7 @@ export async function GET(req: Request) {
       email: string | null;
       name: string | null;
       role: string | null;
+      position: string | null;
       approval_status: string | null;
       created_at: string;
     }>;

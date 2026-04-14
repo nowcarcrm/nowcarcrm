@@ -49,7 +49,7 @@ export default function AllCustomersOperationalPage() {
   const [contractByLead, setContractByLead] = useState<
     Map<string, { feeWon: number; contractDate: string }>
   >(() => new Map());
-  const [managerNameById, setManagerNameById] = useState<Map<string, string>>(
+  const [managerNameById, setManagerNameById] = useState<Map<string, { name: string; position: string }>>(
     () => new Map()
   );
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -62,10 +62,10 @@ export default function AllCustomersOperationalPage() {
   const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
   const selectedUserId = (searchParams.get("managerUserId") ?? "").trim();
-  const isAdmin = profile?.role === "admin";
+  const isAdmin = profile?.role === "super_admin" || profile?.role === "admin";
 
   const opScope = useMemo(() => {
-    if (!profile || profile.role !== "admin") return null;
+    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) return null;
     return {
       role: "admin" as const,
       userId: profile.userId,
@@ -75,7 +75,7 @@ export default function AllCustomersOperationalPage() {
 
   useEffect(() => {
     if (authLoading) return;
-    if (!profile || profile.role !== "admin") {
+    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) {
       router.replace("/dashboard");
       return;
     }
@@ -84,7 +84,9 @@ export default function AllCustomersOperationalPage() {
     (async () => {
       try {
         const users = await listActiveUsers();
-        const nameMap = new Map(users.map((u) => [u.id, u.name?.trim() || ""]));
+        const nameMap = new Map(
+          users.map((u) => [u.id, { name: u.name?.trim() || "", position: u.position ?? "직급 미설정" }])
+        );
         const loaded = await loadLeadsFromStorage(opScope);
         const ids = loaded.map((l) => l.id);
         const [consultMap, contractMap] = await Promise.all([
@@ -131,7 +133,7 @@ export default function AllCustomersOperationalPage() {
       const phone = l.base.phone.toLowerCase();
       const phoneD = l.base.phone.replace(/\D/g, "");
       const mid = (l.managerUserId ?? "").trim();
-      const mgr = (mid ? managerNameById.get(mid) : "") || l.base.ownerStaff || "";
+      const mgr = (mid ? managerNameById.get(mid)?.name : "") || l.base.ownerStaff || "";
       const mgrLower = mgr.toLowerCase();
       if (name.includes(q) || phone.includes(q) || mgrLower.includes(q)) return true;
       if (qd.length >= 2 && phoneD.includes(qd)) return true;
@@ -161,7 +163,11 @@ export default function AllCustomersOperationalPage() {
   const staffSelectOptions = useMemo(() => {
     return [...managerNameById.entries()]
       .filter(([id]) => !!id)
-      .map(([id, name]) => ({ id, name: name || id }))
+      .map(([id, info]) => ({
+        id,
+        name: info?.name || id,
+        position: info?.position || "직급 미설정",
+      }))
       .sort((a, b) => a.name.localeCompare(b.name, "ko"));
   }, [managerNameById]);
 
@@ -247,7 +253,9 @@ export default function AllCustomersOperationalPage() {
         등록일: formatDateOnlyForExcel(l.createdAt),
         고객명: l.base.name,
         연락처: l.base.phone,
-        담당자: mid ? managerNameById.get(mid) || l.base.ownerStaff : l.base.ownerStaff,
+        담당자: mid
+          ? `${managerNameById.get(mid)?.name || l.base.ownerStaff} · ${managerNameById.get(mid)?.position ?? "직급 미설정"}`
+          : l.base.ownerStaff,
         상담결과: l.counselingStatus,
         현재단계: pipelineStageLabelForLead(l),
         다음연락예정일: formatDateOnlyForExcel(l.nextContactAt),
@@ -266,7 +274,7 @@ export default function AllCustomersOperationalPage() {
     );
   }
 
-  if (profile.role !== "admin") {
+  if (profile.role !== "admin" && profile.role !== "super_admin") {
     return null;
   }
 
@@ -317,7 +325,7 @@ export default function AllCustomersOperationalPage() {
               <option value="">전체</option>
               {staffSelectOptions.map((o) => (
                 <option key={o.id} value={o.id}>
-                  {o.name}
+                  {o.name} · {o.position}
                 </option>
               ))}
             </select>
@@ -515,7 +523,8 @@ export default function AllCustomersOperationalPage() {
                 pagedLeads.map((l) => {
                   const mid = (l.managerUserId ?? "").trim();
                   const mgr =
-                    (mid && managerNameById.get(mid)) || l.base.ownerStaff || "—";
+                    (mid && managerNameById.get(mid)?.name) || l.base.ownerStaff || "—";
+                  const mgrPosition = (mid && managerNameById.get(mid)?.position) || "직급 미설정";
                   const consult = lastConsultByLead.get(l.id);
                   const recent =
                     consult && consult > lastContactReferenceIso(l)
@@ -540,7 +549,7 @@ export default function AllCustomersOperationalPage() {
                       <td className="px-3 py-2.5 text-slate-700 dark:text-zinc-300">
                         {l.base.phone}
                       </td>
-                      <td className="px-3 py-2.5 text-slate-700 dark:text-zinc-300">{mgr}</td>
+                      <td className="px-3 py-2.5 text-slate-700 dark:text-zinc-300">{mgr} · {mgrPosition}</td>
                       <td className="px-3 py-2.5">
                         <span
                           className={cn(

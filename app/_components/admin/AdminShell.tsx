@@ -67,9 +67,10 @@ type ShellUser = {
   /** public.users.id (레거시 스키마와 동일 목적) */
   userId: string;
   name: string;
-  role: "admin" | "manager" | "staff";
+  role: "super_admin" | "admin" | "staff";
   /** 표시용 (예: 관리자 / 매니저 / 직원) */
   roleLabel?: string;
+  position?: string;
   email?: string;
 };
 
@@ -353,7 +354,8 @@ function SidebarContents({
   const [staffOptions, setStaffOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const showAdminManagerFilter =
-    currentUser?.role === "admin" && (pathname?.startsWith("/operations/all-customers") ?? false);
+    (currentUser?.role === "super_admin" || currentUser?.role === "admin") &&
+    (pathname?.startsWith("/operations/all-customers") ?? false);
 
   useEffect(() => {
     if (!showAdminManagerFilter) return;
@@ -397,7 +399,7 @@ function SidebarContents({
   const visibleNavSections = useMemo((): NavSection[] => {
     /** 관리자 전용 메뉴: users.role 이 정확히 "admin" 일 때만 (DB·프로필 불일치 시 운영에서 숨겨질 수 있음) */
     const visible = NAV_ITEMS.filter((i) => {
-      if (i.adminOnly && currentUser?.role !== "admin") return false;
+      if (i.adminOnly && currentUser?.role !== "admin" && currentUser?.role !== "super_admin") return false;
       return true;
     });
     const order: NavSectionKey[] = ["sales", "operations"];
@@ -518,6 +520,9 @@ function SidebarContents({
               ? `권한 · ${currentUser.roleLabel ?? currentUser.role}`
               : "미로그인"}
           </div>
+          {currentUser?.position ? (
+            <div className="mt-1 text-[11px] font-medium text-slate-300">직급 · {currentUser.position}</div>
+          ) : null}
           {onLogout ? (
             <button type="button" onClick={onLogout} className="crm-btn-secondary mt-3 w-full py-2 text-xs">
               로그아웃
@@ -551,7 +556,10 @@ export default function AdminShell({
   );
   const modalScope = useMemo(() => {
     if (!currentUser) return null;
-    if (currentUser.role === "admin" && pathname?.startsWith("/operations")) {
+    if (
+      (currentUser.role === "super_admin" || currentUser.role === "admin") &&
+      pathname?.startsWith("/operations")
+    ) {
       return {
         role: "admin" as const,
         userId: currentUser.userId,
@@ -690,7 +698,9 @@ export default function AdminShell({
                         {currentUser?.name ?? "—"}
                       </span>
                       <span className="text-[13px] text-slate-500 dark:text-zinc-400">
-                        {currentUser ? (currentUser.roleLabel ?? currentUser.role) : ""}
+                        {currentUser
+                          ? `${currentUser.roleLabel ?? currentUser.role}${currentUser.position ? ` · ${currentUser.position}` : ""}`
+                          : ""}
                       </span>
                     </div>
                     {onLogout ? (

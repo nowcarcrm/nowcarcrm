@@ -367,7 +367,7 @@ export default function LeadDetailModal({
   /** 상담기록의「상담 담당자」는 admin만 변경 가능(staff·manager는 읽기 전용). */
   const canPickCounselor = profile?.role === "admin";
 
-  const [leadOwnerOptions, setLeadOwnerOptions] = useState<Array<{ id: string; name: string }>>(
+  const [leadOwnerOptions, setLeadOwnerOptions] = useState<Array<{ id: string; name: string; position?: string | null }>>(
     () => []
   );
 
@@ -391,7 +391,7 @@ export default function LeadDetailModal({
         if (canReassignLeadOwner) {
           const options = users
             .filter((u) => !!u.id && !!u.name?.trim())
-            .map((u) => ({ id: u.id, name: u.name.trim() }));
+            .map((u) => ({ id: u.id, name: u.name.trim(), position: u.position ?? null }));
           setLeadOwnerOptions(options);
         }
         if (canPickCounselor) {
@@ -411,14 +411,23 @@ export default function LeadDetailModal({
   }, [canReassignLeadOwner, canPickCounselor, profile?.role]);
 
   const leadOwnerSelectChoices = useMemo(() => {
-    const byId = new Map<string, string>(leadOwnerOptions.map((u) => [u.id, u.name]));
+    const byId = new Map<string, { name: string; position: string | null }>(
+      leadOwnerOptions.map((u) => [u.id, { name: u.name, position: u.position ?? null }])
+    );
     if (draft.managerUserId && draft.base.ownerStaff?.trim() && !byId.has(draft.managerUserId)) {
-      byId.set(draft.managerUserId, draft.base.ownerStaff.trim());
+      byId.set(draft.managerUserId, { name: draft.base.ownerStaff.trim(), position: null });
     }
     return Array.from(byId.entries())
-      .map(([id, name]) => ({ id, name }))
+      .map(([id, info]) => ({ id, name: info.name, position: info.position }))
       .sort((a, b) => a.name.localeCompare(b.name, "ko"));
   }, [leadOwnerOptions, draft.managerUserId, draft.base.ownerStaff]);
+
+  const ownerPositionLabel = useMemo(() => {
+    const byId = leadOwnerSelectChoices.find((o) => o.id === draft.managerUserId);
+    if (byId?.position) return byId.position;
+    const byName = leadOwnerSelectChoices.find((o) => o.name === draft.base.ownerStaff);
+    return byName?.position ?? "직급 미설정";
+  }, [leadOwnerSelectChoices, draft.managerUserId, draft.base.ownerStaff]);
 
   const [counselorOptions, setCounselorOptions] = useState<string[]>(() => [...EMPLOYEES]);
 
@@ -779,7 +788,7 @@ export default function LeadDetailModal({
             <div>
               <div className="flex flex-wrap items-center gap-2">
                 <div className="text-base font-semibold text-zinc-900 dark:text-zinc-50">
-                  {base.name} ({base.ownerStaff})
+                  {base.name} ({base.ownerStaff} · {ownerPositionLabel})
                 </div>
                 <span
                   title={`상담결과: ${status}`}
@@ -1107,6 +1116,7 @@ export default function LeadDetailModal({
                         {leadOwnerSelectChoices.map((s) => (
                           <option key={s.id} value={s.id}>
                             {s.name}
+                            {s.position ? ` · ${s.position}` : ""}
                           </option>
                         ))}
                       </select>
@@ -1445,11 +1455,6 @@ export default function LeadDetailModal({
                           {profile?.role === "staff" ? (
                             <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
                               직원 계정은 상담 담당자가 본인으로만 저장됩니다.
-                            </p>
-                          ) : null}
-                          {profile?.role === "manager" ? (
-                            <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
-                              상담 담당자 변경은 관리자만 할 수 있습니다.
                             </p>
                           ) : null}
                         </div>

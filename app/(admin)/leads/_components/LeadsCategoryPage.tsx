@@ -1211,7 +1211,7 @@ function LeadsCategoryView({
           defaultOwner={profile?.name}
           categoryKey={categoryKey}
           categoryLabel={categoryLabel}
-          canAssignOwner={profile?.role === "admin" || profile?.role === "manager"}
+          canAssignOwner={profile?.role === "admin" || profile?.role === "super_admin"}
           lockedOwnerDisplayName={profile?.name ?? ""}
         />
       ) : null}

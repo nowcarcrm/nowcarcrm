@@ -6,24 +6,32 @@ import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { getPostLoginPath } from "@/app/_lib/authPostLogin";
 import { getSupabaseAuthTargetInfo, supabase } from "../_lib/supabaseClient";
+import {
+  USER_POSITIONS,
+  canEditPosition,
+  effectiveRole,
+  isProtectedSuperAdmin,
+  isSuperAdmin,
+  type SelectableUserPosition,
+} from "../_lib/rolePermissions";
 
-type Role = "admin" | "staff";
+type Role = "super_admin" | "admin" | "staff";
 type Approval = "pending" | "approved" | "rejected";
 
 function roleBadgeLabel(role: string | null | undefined): string {
+  if (role === "super_admin") return "최고 관리자";
   if (role === "admin") return "관리자";
   if (role === "staff") return "직원";
-  if (role === "manager") return "매니저";
   const s = (role ?? "").trim();
   return s || "직원";
 }
 
 function roleBadgeClass(role: string | null | undefined): string {
+  if (role === "super_admin") {
+    return "border-sky-300 bg-sky-50 text-sky-900 dark:border-sky-500/40 dark:bg-sky-500/15 dark:text-sky-100";
+  }
   if (role === "admin") {
     return "border-indigo-300 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-100";
-  }
-  if (role === "manager") {
-    return "border-violet-300 bg-violet-50 text-violet-900 dark:border-violet-500/40 dark:bg-violet-500/15 dark:text-violet-100";
   }
   return "border-zinc-300 bg-zinc-100 text-zinc-800 dark:border-zinc-600 dark:bg-zinc-800/80 dark:text-zinc-200";
 }
@@ -40,6 +48,7 @@ function RoleBadge({ role }: { role: string | null | undefined }) {
 
 /** 권한 변경 UI용: DB의 manager 등은 staff 옵션으로 매핑 */
 function roleForSelect(role: string | null | undefined): Role {
+  if (role === "super_admin") return "super_admin";
   return role === "admin" ? "admin" : "staff";
 }
 
@@ -48,6 +57,7 @@ type UserRow = {
   email: string | null;
   name: string | null;
   role: Role | string | null;
+  position: string | null;
   approval_status: Approval | string | null;
   created_at: string;
 };
@@ -71,7 +81,8 @@ export default function EmployeesPage() {
   const [inviteBusy, setInviteBusy] = useState(false);
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [roleBusyId, setRoleBusyId] = useState<string | null>(null);
-  const isAdmin = profile?.role === "admin";
+  const isAdminLike = profile?.role === "super_admin" || profile?.role === "admin";
+  const currentIsSuperAdmin = isSuperAdmin(profile);
   const authTarget = getSupabaseAuthTargetInfo();
 
   function effectiveStatus(s: string | null | undefined): Approval {
@@ -80,7 +91,7 @@ export default function EmployeesPage() {
   }
 
   const loadUsers = useCallback(async () => {
-    if (!isAdmin) return;
+    if (!isAdminLike) return;
     setLoadingUsers(true);
     try {
       const {
@@ -109,10 +120,10 @@ export default function EmployeesPage() {
     } finally {
       setLoadingUsers(false);
     }
-  }, [isAdmin]);
+  }, [isAdminLike]);
 
   useEffect(() => {
-    if (profile && profile.role !== "admin") {
+    if (profile && profile.role !== "admin" && profile.role !== "super_admin") {
       router.replace(getPostLoginPath(profile));
     }
   }, [profile, router]);
@@ -122,9 +133,9 @@ export default function EmployeesPage() {
   }, [loadUsers]);
 
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isAdminLike) return;
     console.log("[employees] pendingUsers (server filtered role=staff,status=pending)", pendingUsers);
-  }, [pendingUsers, isAdmin]);
+  }, [pendingUsers, isAdminLike]);
 
   async function updateUserRole(target: UserRow, next: Role) {
     const prev = roleForSelect(target.role);
@@ -132,9 +143,11 @@ export default function EmployeesPage() {
 
     const name = target.name?.trim() || target.email || "해당 직원";
     const msg =
-      next === "admin"
-        ? `정말 「${name}」을(를) 관리자로 변경하시겠습니까?`
-        : `정말 「${name}」을(를) 일반 직원으로 변경하시겠습니까?`;
+      next === "super_admin"
+        ? `정말 「${name}」을(를) 최고 관리자로 변경하시겠습니까?`
+        : next === "admin"
+          ? `정말 「${name}」을(를) 관리자로 변경하시겠습니까?`
+          : `정말 「${name}」을(를) 일반 직원으로 변경하시겠습니까?`;
     if (!window.confirm(msg)) return;
 
     setRoleBusyId(target.id);
@@ -155,10 +168,44 @@ export default function EmployeesPage() {
       });
       const data = (await res.json()) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? "권한 변경에 실패했습니다.");
-      toast.success(next === "admin" ? "관리자로 변경했습니다." : "일반 직원으로 변경했습니다.");
+      toast.success(
+        next === "super_admin"
+          ? "최고 관리자로 변경했습니다."
+          : next === "admin"
+            ? "관리자로 변경했습니다."
+            : "일반 직원으로 변경했습니다."
+      );
       await loadUsers();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "권한 변경 중 오류");
+      await loadUsers();
+    } finally {
+      setRoleBusyId(null);
+    }
+  }
+
+  async function updateUserPosition(target: UserRow, position: SelectableUserPosition) {
+    setRoleBusyId(target.id);
+    try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) throw new Error("세션이 만료되었습니다. 다시 로그인하세요.");
+      const res = await fetch("/api/admin/employees/role", {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ userId: target.id, position }),
+      });
+      const data = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "직급 변경에 실패했습니다.");
+      toast.success("직급을 변경했습니다.");
+      await loadUsers();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "직급 변경 중 오류");
       await loadUsers();
     } finally {
       setRoleBusyId(null);
@@ -203,7 +250,7 @@ export default function EmployeesPage() {
 
   async function createEmployee(e: React.FormEvent) {
     e.preventDefault();
-    if (!isAdmin) return;
+    if (!isAdminLike) return;
     setLoadingCreate(true);
     setMessage(null);
     try {
@@ -245,7 +292,7 @@ export default function EmployeesPage() {
   }
 
   async function createInviteLink() {
-    if (!isAdmin) return;
+    if (!isAdminLike) return;
     const targetEmail = email.trim().toLowerCase();
     if (!targetEmail) {
       setMessage("초대 링크를 만들 이메일을 입력해 주세요.");
@@ -281,7 +328,7 @@ export default function EmployeesPage() {
     }
   }
 
-  if (!isAdmin) {
+  if (!isAdminLike) {
     return (
       <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
         권한이 없습니다.
@@ -338,6 +385,7 @@ export default function EmployeesPage() {
                   <th className="px-3 py-2">이름</th>
                   <th className="px-3 py-2">이메일</th>
                   <th className="px-3 py-2">권한</th>
+                  <th className="px-3 py-2">직급</th>
                   <th className="px-3 py-2">가입일</th>
                   <th className="px-3 py-2 text-right">액션</th>
                 </tr>
@@ -350,6 +398,7 @@ export default function EmployeesPage() {
                     <td className="px-3 py-2">
                       <RoleBadge role={u.role} />
                     </td>
+                    <td className="px-3 py-2">{u.position ?? "직급 미설정"}</td>
                     <td className="px-3 py-2">{new Date(u.created_at).toLocaleString("ko-KR")}</td>
                     <td className="px-3 py-2 text-right">
                       <div className="inline-flex gap-2">
@@ -409,9 +458,11 @@ export default function EmployeesPage() {
                   <th className="px-3 py-2">이름</th>
                   <th className="px-3 py-2">이메일</th>
                   <th className="px-3 py-2">권한</th>
+                  <th className="px-3 py-2">직급</th>
                   <th className="px-3 py-2">승인 상태</th>
                   <th className="px-3 py-2">가입일</th>
                   <th className="px-3 py-2 text-right">권한 변경</th>
+                  <th className="px-3 py-2 text-right">직급 변경</th>
                   <th className="px-3 py-2 text-right">승인 처리</th>
                 </tr>
               </thead>
@@ -419,11 +470,17 @@ export default function EmployeesPage() {
                 {filteredUsers.map((u) => {
                   const cur = effectiveStatus(u.approval_status);
                   const isSelf = profile?.userId === u.id;
-                  const canChangeRole = isAdmin && cur === "approved";
+                  const targetRole = effectiveRole({ role: u.role, email: u.email });
+                  const protectedSuperAdmin = isProtectedSuperAdmin({ role: u.role, email: u.email });
+                  const canChangeRole = currentIsSuperAdmin && cur === "approved";
                   const selectDisabled =
                     roleBusyId === u.id ||
                     !canChangeRole ||
-                    (isSelf && roleForSelect(u.role) === "admin");
+                    (isSelf && targetRole !== "staff") ||
+                    (protectedSuperAdmin && !currentIsSuperAdmin) ||
+                    (targetRole === "admin" && !currentIsSuperAdmin);
+                  const canChangePosition = canEditPosition(profile) && cur === "approved";
+                  const positionDisabled = roleBusyId === u.id || !canChangePosition || protectedSuperAdmin;
                   return (
                     <tr key={u.id} className="border-b border-zinc-100 dark:border-zinc-800">
                       <td className="px-3 py-2">{u.name || "-"}</td>
@@ -431,10 +488,11 @@ export default function EmployeesPage() {
                       <td className="px-3 py-2">
                         <RoleBadge role={u.role} />
                       </td>
+                      <td className="px-3 py-2">{u.position ?? "직급 미설정"}</td>
                       <td className="px-3 py-2">{cur}</td>
                       <td className="px-3 py-2">{new Date(u.created_at).toLocaleString("ko-KR")}</td>
                       <td className="px-3 py-2 text-right">
-                        {isAdmin ? (
+                        {isAdminLike ? (
                           cur === "approved" ? (
                             <select
                               aria-label={`${u.name ?? u.email ?? u.id} 권한`}
@@ -448,6 +506,7 @@ export default function EmployeesPage() {
                             >
                               <option value="staff">직원</option>
                               <option value="admin">관리자</option>
+                              {currentIsSuperAdmin ? <option value="super_admin">최고 관리자</option> : null}
                             </select>
                           ) : (
                             <span className="text-[11px] text-zinc-500 dark:text-zinc-400">
@@ -456,6 +515,27 @@ export default function EmployeesPage() {
                           )
                         ) : (
                           <span className="text-[11px] text-zinc-400">—</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        {protectedSuperAdmin ? (
+                          <span className="text-[11px] font-semibold text-sky-700 dark:text-sky-300">
+                            총괄대표
+                          </span>
+                        ) : (
+                          <select
+                            aria-label={`${u.name ?? u.email ?? u.id} 직급`}
+                            className="max-w-[8.5rem] rounded-lg border border-zinc-300 bg-white px-2 py-1 text-xs font-medium dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                            disabled={positionDisabled}
+                            value={USER_POSITIONS.includes((u.position ?? "") as SelectableUserPosition) ? (u.position as SelectableUserPosition) : "주임"}
+                            onChange={(e) => void updateUserPosition(u, e.target.value as SelectableUserPosition)}
+                          >
+                            {USER_POSITIONS.map((p) => (
+                              <option key={p} value={p}>
+                                {p}
+                              </option>
+                            ))}
+                          </select>
                         )}
                       </td>
                       <td className="px-3 py-2 text-right">
@@ -533,7 +613,7 @@ export default function EmployeesPage() {
                 <label className="mb-1 block text-xs font-semibold text-zinc-500 dark:text-zinc-400">역할</label>
                 <select value={role} onChange={(e) => setRole(e.target.value as Role)} className="w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm outline-none dark:border-zinc-800 dark:bg-zinc-900/50 dark:text-zinc-50">
                   <option value="staff">직원</option>
-                  <option value="admin">관리자</option>
+                  {currentIsSuperAdmin ? <option value="admin">관리자</option> : null}
                 </select>
               </div>
               <div>

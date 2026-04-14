@@ -53,7 +53,7 @@ export async function POST(req: Request) {
     }
     if (existing && existing.role !== "staff") {
       return NextResponse.json(
-        { error: "기존 관리자·매니저 계정은 공개 가입 API로 변경할 수 없습니다." },
+        { error: "기존 관리자 계정은 공개 가입 API로 변경할 수 없습니다." },
         { status: 403 }
       );
     }
@@ -67,6 +67,7 @@ export async function POST(req: Request) {
       email,
       name: name || email.split("@")[0] || "staff",
       role: "staff" as const,
+      position: "주임",
       approval_status: "pending" as const,
       is_active: true,
     };

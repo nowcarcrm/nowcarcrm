@@ -8,9 +8,15 @@ import {
   getUserProfileByAuthId,
   updateUserAuthLink,
   type UserApprovalStatus,
-  type UserRole,
   type UserRow,
 } from "./usersSupabase";
+import {
+  effectivePosition,
+  effectiveRole,
+  isSuperAdminEmail,
+  type DisplayUserPosition,
+  type UserRole,
+} from "./rolePermissions";
 
 const AUTH_DEBUG_VERSION = "auth-diagnose-2026-04-10-v1";
 
@@ -20,6 +26,7 @@ export type AuthProfile = {
   email: string;
   name: string;
   role: UserRole;
+  position: DisplayUserPosition | null;
   /** users.is_active — false면 CRM 접근 불가 */
   isActive: boolean;
   approvalStatus: UserApprovalStatus;
@@ -49,12 +56,14 @@ function rowIsActive(row: UserRow): boolean {
 function toAuthProfile(user: User, row: UserRow): AuthProfile {
   const fallbackName = normalizeName(user);
   const approvalStatus = effectiveApprovalStatus(row);
+  const role = effectiveRole({ email: user.email ?? row.email ?? "", role: row.role });
   return {
     authUserId: user.id,
     userId: row.id,
     email: user.email ?? row.email ?? "",
     name: row.name?.trim() || row.email?.split("@")[0] || fallbackName,
-    role: row.role,
+    role,
+    position: effectivePosition({ email: user.email ?? row.email ?? "", role, position: row.position }),
     isActive: rowIsActive(row),
     approvalStatus,
     approved: approvalStatus === "approved",
@@ -77,6 +86,22 @@ async function assertStaffAccountUsable(row: UserRow) {
     await supabase.auth.signOut();
     throw new Error("승인 거절된 계정입니다. 관리자에게 문의하세요.");
   }
+}
+
+async function enforceSuperAdminIdentity(user: User, row: UserRow): Promise<UserRow> {
+  if (!isSuperAdminEmail(user.email)) return row;
+  const patch: Partial<UserRow> = {};
+  if (row.role !== "super_admin") patch.role = "super_admin";
+  if (row.position !== "총괄대표") patch.position = "총괄대표";
+  if (Object.keys(patch).length === 0) return row;
+  const { data, error } = await supabase
+    .from("users")
+    .update(patch)
+    .eq("id", row.id)
+    .select("*")
+    .single();
+  if (error) throw new Error(`최고 관리자 계정 보정 실패: ${error.message}`);
+  return data as UserRow;
 }
 
 export async function signInWithEmail(email: string, password: string) {
@@ -164,11 +189,13 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
       await supabase.auth.signOut();
       throw new Error("사용 중지된 계정입니다. 관리자에게 문의하세요.");
     }
-    if (linked.role !== "admin" && linked.role !== "staff") {
+    linked = await enforceSuperAdminIdentity(user, linked);
+    const linkedRole = effectiveRole({ email: user.email ?? linked.email ?? "", role: linked.role });
+    if (linkedRole !== "super_admin" && linkedRole !== "admin" && linkedRole !== "staff") {
       await supabase.auth.signOut();
       throw new Error("허용되지 않은 계정 권한입니다. 관리자에게 문의하세요.");
     }
-    if (linked.role === "staff") {
+    if (linkedRole === "staff") {
       await assertStaffAccountUsable(linked);
     }
     return toAuthProfile(user, linked);
@@ -189,16 +216,18 @@ export async function resolveAuthProfile(user: User): Promise<AuthProfile> {
   console.log("[auth] profile lookup by email:", email, "→", byEmail ? "found" : "not found", byEmail);
 
   if (byEmail) {
-    const updated = (await updateUserAuthLink(byEmail.id, user.id)) as UserRow;
+    const linkedByEmail = await enforceSuperAdminIdentity(user, byEmail);
+    const updated = (await updateUserAuthLink(linkedByEmail.id, user.id)) as UserRow;
     if (!rowIsActive(updated)) {
       await supabase.auth.signOut();
       throw new Error("사용 중지된 계정입니다. 관리자에게 문의하세요.");
     }
-    if (updated.role !== "admin" && updated.role !== "staff") {
+    const updatedRole = effectiveRole({ email: user.email ?? updated.email ?? "", role: updated.role });
+    if (updatedRole !== "super_admin" && updatedRole !== "admin" && updatedRole !== "staff") {
       await supabase.auth.signOut();
       throw new Error("허용되지 않은 계정 권한입니다. 관리자에게 문의하세요.");
     }
-    if (updated.role === "staff") {
+    if (updatedRole === "staff") {
       await assertStaffAccountUsable(updated);
     }
     return toAuthProfile(user, updated);

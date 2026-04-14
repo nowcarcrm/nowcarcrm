@@ -1,11 +1,13 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
+import { effectiveRole, isSuperAdmin, type UserRole } from "@/app/(admin)/_lib/rolePermissions";
 
 type CreateEmployeeBody = {
   email: string;
   password: string;
   name: string;
-  role: "admin" | "staff";
+  role: UserRole;
+  position?: string;
   approval_status?: "pending" | "approved" | "rejected";
 };
 
@@ -24,7 +26,7 @@ function effectiveApproval(status: string | null | undefined): "pending" | "appr
 async function getRequesterRow(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status")
+    .select("id, email, role, approval_status")
     .eq("id", authUserId)
     .maybeSingle();
   if (e1) return { row: null, error: e1 };
@@ -32,7 +34,7 @@ async function getRequesterRow(authUserId: string) {
 
   const { data: legacy, error: e2 } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status")
+    .select("id, email, role, approval_status")
     .eq("auth_user_id", authUserId)
     .maybeSingle();
   return { row: legacy, error: e2 };
@@ -61,7 +63,8 @@ export async function POST(req: Request) {
         { status: 403 }
       );
     }
-    if (requester.role !== "admin") {
+    const requesterRole = effectiveRole({ role: requester.role, email: requester.email });
+    if (requesterRole !== "super_admin" && requesterRole !== "admin") {
       return NextResponse.json(
         { error: "관리자만 직원 계정을 생성할 수 있습니다." },
         { status: 403 }
@@ -72,7 +75,8 @@ export async function POST(req: Request) {
     const email = body.email?.trim().toLowerCase();
     const password = body.password?.trim();
     const name = body.name?.trim();
-    const role = body.role;
+    const role = body.role === "super_admin" || body.role === "admin" || body.role === "staff" ? body.role : null;
+    const position = typeof body.position === "string" ? body.position.trim() : "주임";
     const approval_status =
       body.approval_status === "pending" ||
       body.approval_status === "approved" ||
@@ -81,6 +85,13 @@ export async function POST(req: Request) {
         : "approved";
 
     if (!email || !password || !name || !role) {
+    if (requesterRole !== "super_admin" && role !== "staff") {
+      return NextResponse.json({ error: "일반 관리자는 staff 계정만 생성할 수 있습니다." }, { status: 403 });
+    }
+    if (role === "super_admin" && !isSuperAdmin({ role: requesterRole, email: requester.email })) {
+      return NextResponse.json({ error: "최고 관리자 계정은 최고 관리자만 생성할 수 있습니다." }, { status: 403 });
+    }
+
       return NextResponse.json(
         { error: "email, password, name, role은 필수입니다." },
         { status: 400 }
@@ -106,6 +117,7 @@ export async function POST(req: Request) {
       id: authId,
       name,
       role,
+      position: role === "super_admin" ? "총괄대표" : position || "주임",
       email,
       approval_status,
     };
@@ -124,6 +136,7 @@ export async function POST(req: Request) {
           email,
           name,
           role,
+          position: role === "super_admin" ? "총괄대표" : position || "주임",
           approval_status,
         })
         .select("id, email, name, role")

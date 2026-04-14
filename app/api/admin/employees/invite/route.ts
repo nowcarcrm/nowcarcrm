@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
+import { effectiveRole } from "@/app/(admin)/_lib/rolePermissions";
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
@@ -10,13 +11,16 @@ function getBearerToken(req: Request) {
 async function requireAdmin(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status")
+    .select("id, email, role, approval_status")
     .eq("id", authUserId)
     .maybeSingle();
   if (e1) return { ok: false as const, error: e1.message };
   const row = byId;
   if (!row) return { ok: false as const, error: "직원 계정을 찾을 수 없습니다." };
-  if (row.role !== "admin") return { ok: false as const, error: "관리자만 사용할 수 있습니다." };
+  const role = effectiveRole({ role: row.role, email: row.email });
+  if (role !== "super_admin" && role !== "admin") {
+    return { ok: false as const, error: "관리자만 사용할 수 있습니다." };
+  }
   const status = row.approval_status ?? "pending";
   if (status !== "approved") {
     return { ok: false as const, error: "승인된 관리자만 사용할 수 있습니다." };

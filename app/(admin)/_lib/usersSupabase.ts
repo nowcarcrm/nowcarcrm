@@ -1,8 +1,16 @@
 import { formatPostgrestForMessage, pickPostgrestFields } from "@/app/_lib/postgrestError";
 import { EMPLOYEES } from "./leaseCrmSeed";
+import {
+  effectivePosition,
+  effectiveRole,
+  normalizeUserPosition,
+  type DisplayUserPosition,
+  type UserPosition,
+  type UserRole,
+} from "./rolePermissions";
 import { supabase } from "./supabaseClient";
 
-export type UserRole = "admin" | "manager" | "staff";
+export type { UserRole } from "./rolePermissions";
 
 export type UserApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -14,6 +22,7 @@ export type UserRow = {
   id: string;
   name: string;
   role: UserRole;
+  position?: UserPosition | null;
   created_at: string;
   /** false면 로그인·CRM 접근 차단 */
   is_active?: boolean | null;
@@ -35,9 +44,25 @@ export function effectiveApprovalStatus(row: Pick<UserRow, "approval_status">): 
 }
 
 export function roleLabelKo(role: UserRole): string {
+  if (role === "super_admin") return "최고 관리자";
   if (role === "admin") return "관리자";
-  if (role === "manager") return "매니저";
   return "직원";
+}
+
+export function positionLabelKo(
+  row: Pick<UserRow, "position" | "role" | "email"> | null | undefined
+): DisplayUserPosition | "직급 미설정" {
+  if (!row) return "직급 미설정";
+  const position = effectivePosition(row);
+  return position ?? "직급 미설정";
+}
+
+function normalizeUserRow(row: UserRow): UserRow {
+  return {
+    ...row,
+    role: effectiveRole(row),
+    position: normalizeUserPosition(row.position),
+  };
 }
 
 /** 세션 auth.users.id 로 CRM 프로필 조회 (신규: users.id = auth id / 레거시: auth_user_id) */
@@ -56,7 +81,7 @@ export async function getUserProfileByAuthId(authUserId: string): Promise<UserRo
     console.error("[users] query by id raw error:", errPk);
     throw new Error(`[PROFILE_BY_ID] ${errPk.message ?? "users 조회 실패"}`);
   }
-  if (byPk) return byPk as UserRow;
+  if (byPk) return normalizeUserRow(byPk as UserRow);
 
   console.log("[users] query by legacy auth_user_id condition:", {
     table: "users",
@@ -72,7 +97,7 @@ export async function getUserProfileByAuthId(authUserId: string): Promise<UserRo
     console.error("[users] query by auth_user_id raw error:", errLegacy);
     throw new Error(`[PROFILE_BY_AUTH_USER_ID] ${errLegacy.message ?? "users 조회 실패"}`);
   }
-  return (legacy as UserRow | null) ?? null;
+  return legacy ? normalizeUserRow(legacy as UserRow) : null;
 }
 
 export async function ensureDefaultUsers() {
@@ -86,6 +111,7 @@ export async function ensureDefaultUsers() {
     name,
     email: `${name.replace(/\s+/g, "").toLowerCase()}@company.local`,
     role: idx === 0 ? "admin" : "staff",
+    position: "주임" as const,
     approval_status: "approved" as const,
   }));
 
@@ -106,7 +132,9 @@ export async function listActiveUsers(): Promise<UserRow[]> {
       return [];
     }
     const rows = (data as UserRow[]) ?? [];
-    return rows.filter((u) => effectiveApprovalStatus(u) === "approved");
+    return rows
+      .map((u) => normalizeUserRow(u))
+      .filter((u) => effectiveApprovalStatus(u) === "approved");
   } catch (e) {
     console.warn("[listActiveUsers] 예외, 빈 배열 반환:", e);
     return [];
@@ -132,7 +160,7 @@ export async function getActiveUserByEmail(email: string) {
     console.error("[users] query by email raw error:", error);
     throw new Error(`[PROFILE_BY_EMAIL] ${error.message ?? "users 조회 실패"}`);
   }
-  return (data as UserRow | null) ?? null;
+  return data ? normalizeUserRow(data as UserRow) : null;
 }
 
 /** 활성/비활성 무관 조회: 로그인 오류 원인 분기용 */
@@ -143,7 +171,7 @@ export async function getUserByAuthIdAny(authUserId: string): Promise<UserRow | 
     .eq("id", authUserId)
     .maybeSingle();
   if (errPk) throw errPk;
-  if (byPk) return byPk as UserRow;
+  if (byPk) return normalizeUserRow(byPk as UserRow);
 
   const { data: legacy, error: errLegacy } = await supabase
     .from("users")
@@ -151,7 +179,7 @@ export async function getUserByAuthIdAny(authUserId: string): Promise<UserRow | 
     .eq("auth_user_id", authUserId)
     .maybeSingle();
   if (errLegacy) throw errLegacy;
-  return (legacy as UserRow | null) ?? null;
+  return legacy ? normalizeUserRow(legacy as UserRow) : null;
 }
 
 /** 활성/비활성 무관 조회: 로그인 오류 원인 분기용 */
@@ -162,7 +190,7 @@ export async function getUserByEmailAny(email: string): Promise<UserRow | null> 
     .eq("email", email)
     .maybeSingle();
   if (error) throw error;
-  return (data as UserRow | null) ?? null;
+  return data ? normalizeUserRow(data as UserRow) : null;
 }
 
 /** 레거시: auth 연결만 갱신 */
@@ -174,7 +202,7 @@ export async function updateUserAuthLink(userId: string, authUserId: string) {
     .select("*")
     .single();
   if (error) throw error;
-  return data as UserRow;
+  return normalizeUserRow(data as UserRow);
 }
 
 /**
@@ -193,6 +221,7 @@ export async function createPendingStaffProfileFromAuth(input: {
     email: input.email,
     name: baseName,
     role: "staff" as UserRole,
+    position: "주임" as const,
     approval_status: "pending" as const,
     is_active: true,
   };
@@ -224,5 +253,5 @@ export async function createPendingStaffProfileFromAuth(input: {
     name: input.name,
     data,
   });
-  return (data as UserRow | null) ?? null;
+  return data ? normalizeUserRow(data as UserRow) : null;
 }
