@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import {
@@ -24,6 +24,14 @@ import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
 import { effectiveContractFeeForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
+import {
+  CrmListPaginationBar,
+  CRM_LIST_PAGE_SIZE,
+  crmSlicePage,
+  crmTotalPages,
+} from "@/app/_components/ui/CrmListPagination";
+
+const STORAGE_MANAGER_KEY = "nowcar_all_customers_manager_user_id";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -31,6 +39,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 
 export default function AllCustomersOperationalPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
@@ -48,8 +57,12 @@ export default function AllCustomersOperationalPage() {
   const [yearFilter, setYearFilter] = useState("");
   const [monthFilter, setMonthFilter] = useState("");
   const [dayFilter, setDayFilter] = useState("");
+  const [periodView, setPeriodView] = useState<"year" | "month">("month");
+  const [listPage, setListPage] = useState(1);
+  const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
   const selectedUserId = (searchParams.get("managerUserId") ?? "").trim();
+  const isAdmin = profile?.role === "admin";
 
   const opScope = useMemo(() => {
     if (!profile || profile.role !== "admin") return null;
@@ -126,6 +139,79 @@ export default function AllCustomersOperationalPage() {
     });
   }, [sortedLeads, search, managerNameById, selectedUserId, yearFilter, monthFilter, dayFilter]);
 
+  useEffect(() => {
+    setListPage(1);
+  }, [search, selectedUserId, yearFilter, monthFilter, dayFilter]);
+
+  const safeListPage = Math.min(
+    Math.max(1, listPage),
+    crmTotalPages(filteredLeads.length, CRM_LIST_PAGE_SIZE)
+  );
+  const pagedLeads = useMemo(
+    () => crmSlicePage(filteredLeads, safeListPage, CRM_LIST_PAGE_SIZE),
+    [filteredLeads, safeListPage]
+  );
+
+  useEffect(() => {
+    setListPage((p) =>
+      Math.min(Math.max(1, p), crmTotalPages(filteredLeads.length, CRM_LIST_PAGE_SIZE))
+    );
+  }, [filteredLeads.length]);
+
+  const staffSelectOptions = useMemo(() => {
+    return [...managerNameById.entries()]
+      .filter(([id]) => !!id)
+      .map(([id, name]) => ({ id, name: name || id }))
+      .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  }, [managerNameById]);
+
+  const setSelectedManagerUserId = useCallback(
+    (id: string) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (id) next.set("managerUserId", id);
+      else next.delete("managerUserId");
+      const qs = next.toString();
+      const base = pathname || "/operations/all-customers";
+      router.replace(qs ? `${base}?${qs}` : base, { scroll: false });
+      try {
+        if (id) window.localStorage.setItem(STORAGE_MANAGER_KEY, id);
+        else window.localStorage.removeItem(STORAGE_MANAGER_KEY);
+      } catch {
+        /* ignore */
+      }
+    },
+    [pathname, router, searchParams]
+  );
+
+  useEffect(() => {
+    if (hydratedManagerRef.current) return;
+    hydratedManagerRef.current = true;
+    if (typeof window === "undefined") return;
+    const fromUrl = (searchParams.get("managerUserId") ?? "").trim();
+    if (fromUrl) return;
+    try {
+      const saved = window.localStorage.getItem(STORAGE_MANAGER_KEY)?.trim();
+      if (!saved) return;
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("managerUserId", saved);
+      const base = pathname || "/operations/all-customers";
+      router.replace(`${base}?${next.toString()}`, { scroll: false });
+    } catch {
+      /* ignore */
+    }
+  }, [pathname, router, searchParams]);
+
+  const yearlyBuckets = useMemo(() => {
+    const bucket = new Map<string, number>();
+    for (const lead of sortedLeads) {
+      const d = new Date(lead.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const y = String(d.getFullYear());
+      bucket.set(y, (bucket.get(y) ?? 0) + 1);
+    }
+    return [...bucket.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [sortedLeads]);
+
   const monthlyBuckets = useMemo(() => {
     const bucket = new Map<string, number>();
     for (const lead of sortedLeads) {
@@ -196,7 +282,7 @@ export default function AllCustomersOperationalPage() {
               전체 상담 고객
             </h1>
             <p className="mt-2 max-w-2xl text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
-              전사 DB·인수인계·백업용입니다. 일반 영업 메뉴와 달리 담당자 필터 없이 전체가 표시됩니다.
+              전사 DB·인수인계·백업용입니다. 관리자는 상단 직원 필터로 담당자별로 좁혀 볼 수 있습니다.
             </p>
           </div>
           <button
@@ -218,7 +304,61 @@ export default function AllCustomersOperationalPage() {
             placeholder="검색어 입력"
           />
         </div>
+        {isAdmin ? (
+          <div className="mt-4 max-w-md">
+            <label className="mb-1 block text-[12px] font-medium text-slate-500 dark:text-zinc-400">
+              직원 필터 (담당자)
+            </label>
+            <select
+              value={selectedUserId}
+              onChange={(e) => setSelectedManagerUserId(e.target.value)}
+              className="crm-field crm-field-select w-full text-[14px]"
+            >
+              <option value="">전체</option>
+              {staffSelectOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
         <div className="mt-3 flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              const d = new Date();
+              setYearFilter(String(d.getFullYear()));
+              setMonthFilter(String(d.getMonth() + 1).padStart(2, "0"));
+              setDayFilter(String(d.getDate()).padStart(2, "0"));
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
+          >
+            오늘
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const d = new Date();
+              setYearFilter(String(d.getFullYear()));
+              setMonthFilter(String(d.getMonth() + 1).padStart(2, "0"));
+              setDayFilter("");
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
+          >
+            이번달
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setYearFilter("");
+              setMonthFilter("");
+              setDayFilter("");
+            }}
+            className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
+          >
+            전체
+          </button>
           <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} className="crm-field crm-field-select text-[13px]">
             <option value="">연도 전체</option>
             {Array.from(new Set(sortedLeads.map((l) => String(new Date(l.createdAt).getFullYear()))))
@@ -253,22 +393,84 @@ export default function AllCustomersOperationalPage() {
             })}
           </select>
         </div>
-        <div className="mt-3 flex flex-wrap items-center gap-2">
-          {monthlyBuckets.slice(0, 12).map(([month, count]) => (
+        <div className="mt-4 border-t border-slate-100 pt-4 dark:border-zinc-800/80">
+          <p className="mb-2 text-[12px] font-medium text-slate-500 dark:text-zinc-400">
+            등록일 기준 집계
+          </p>
+          <div className="mb-2 flex flex-wrap gap-2">
             <button
-              key={month}
               type="button"
-              onClick={() => {
-                const [y, m] = month.split("-");
-                setYearFilter(y);
-                setMonthFilter(m);
-                setDayFilter("");
-              }}
-              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
+              onClick={() => setPeriodView("year")}
+              className={cn(
+                "rounded-lg border bg-white px-3 py-1.5 text-[12px] font-semibold transition",
+                periodView === "year"
+                  ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                  : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              )}
             >
-              {month} ({count})
+              연도별
             </button>
-          ))}
+            <button
+              type="button"
+              onClick={() => setPeriodView("month")}
+              className={cn(
+                "rounded-lg border bg-white px-3 py-1.5 text-[12px] font-semibold transition",
+                periodView === "month"
+                  ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                  : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+              )}
+            >
+              월별
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {periodView === "year"
+              ? yearlyBuckets.map(([y, count]) => {
+                  const active = yearFilter === y && !monthFilter && !dayFilter;
+                  return (
+                    <button
+                      key={y}
+                      type="button"
+                      onClick={() => {
+                        setYearFilter(y);
+                        setMonthFilter("");
+                        setDayFilter("");
+                      }}
+                      className={cn(
+                        "rounded-lg border bg-white px-2.5 py-1 text-[12px] font-medium transition",
+                        active
+                          ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                          : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                      )}
+                    >
+                      {y}년 ({count})
+                    </button>
+                  );
+                })
+              : monthlyBuckets.map(([month, count]) => {
+                  const [yy, mm] = month.split("-");
+                  const active = yearFilter === yy && monthFilter === mm && !dayFilter;
+                  return (
+                    <button
+                      key={month}
+                      type="button"
+                      onClick={() => {
+                        setYearFilter(yy);
+                        setMonthFilter(mm);
+                        setDayFilter("");
+                      }}
+                      className={cn(
+                        "rounded-lg border bg-white px-2.5 py-1 text-[12px] font-medium transition",
+                        active
+                          ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                          : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+                      )}
+                    >
+                      {month} ({count})
+                    </button>
+                  );
+                })}
+          </div>
         </div>
       </header>
 
@@ -310,7 +512,7 @@ export default function AllCustomersOperationalPage() {
                   </td>
                 </tr>
               ) : (
-                filteredLeads.map((l) => {
+                pagedLeads.map((l) => {
                   const mid = (l.managerUserId ?? "").trim();
                   const mgr =
                     (mid && managerNameById.get(mid)) || l.base.ownerStaff || "—";
@@ -382,6 +584,11 @@ export default function AllCustomersOperationalPage() {
             </tbody>
           </table>
         </div>
+        <CrmListPaginationBar
+          page={safeListPage}
+          total={filteredLeads.length}
+          onPageChange={setListPage}
+        />
       </div>
 
     </div>

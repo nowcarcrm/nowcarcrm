@@ -42,7 +42,7 @@ const LEAD_CATEGORY_PATH: Record<LeadCategoryKey, string> = {
   "unresponsive": "/leads/unresponsive",
   "quote-sent": "/leads/quote-sent",
   "contract-progress": "/leads/contract-progress",
-  "export-progress": "/leads/export-progress",
+  "export-progress": "/leads/contract-progress",
   "delivery-complete": "/leads/delivery-complete",
   aftercare: "/leads/aftercare",
   hold: "/leads/hold",

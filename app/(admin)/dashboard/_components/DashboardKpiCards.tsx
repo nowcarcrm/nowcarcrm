@@ -159,7 +159,7 @@ const PIPELINE: {
     key: "export",
     label: "출고",
     hint: "출고 일정 진행 고객",
-    href: "/leads/export-progress",
+    href: "/leads/contract-progress",
     accent: "bg-violet-600",
     valueKey: "exportProgress",
     valueTone: "neutral",

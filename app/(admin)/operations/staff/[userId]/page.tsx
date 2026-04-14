@@ -25,6 +25,12 @@ import { lastContactReferenceIso } from "../../../_lib/leaseCrmLogic";
 import { effectiveContractFeeForMetrics } from "../../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
+import {
+  CrmListPaginationBar,
+  CRM_LIST_PAGE_SIZE,
+  crmSlicePage,
+  crmTotalPages,
+} from "@/app/_components/ui/CrmListPagination";
 
 export default function StaffCustomerDetailPage() {
   const params = useParams();
@@ -40,6 +46,7 @@ export default function StaffCustomerDetailPage() {
     Map<string, { feeWon: number; contractDate: string }>
   >(() => new Map());
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [listPage, setListPage] = useState(1);
   const { openLeadById } = useLeadDetailModal();
 
   const opScope = useMemo(() => {
@@ -92,6 +99,23 @@ export default function StaffCustomerDetailPage() {
     if (!leads) return [];
     return [...leads].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }, [leads]);
+
+  useEffect(() => {
+    setListPage(1);
+  }, [userId, sorted.length]);
+
+  const safeListPage = Math.min(
+    Math.max(1, listPage),
+    crmTotalPages(sorted.length, CRM_LIST_PAGE_SIZE)
+  );
+  const pagedLeads = useMemo(
+    () => crmSlicePage(sorted, safeListPage, CRM_LIST_PAGE_SIZE),
+    [sorted, safeListPage]
+  );
+
+  useEffect(() => {
+    setListPage((p) => Math.min(Math.max(1, p), crmTotalPages(sorted.length, CRM_LIST_PAGE_SIZE)));
+  }, [sorted.length]);
 
   const openLead = useCallback(
     async (id: string) => {
@@ -207,7 +231,7 @@ export default function StaffCustomerDetailPage() {
                   </td>
                 </tr>
               ) : (
-                sorted.map((l) => {
+                pagedLeads.map((l) => {
                   const consult = lastConsultByLead.get(l.id);
                   const recent =
                     consult && consult > lastContactReferenceIso(l)
@@ -260,6 +284,11 @@ export default function StaffCustomerDetailPage() {
             </tbody>
           </table>
         </div>
+        <CrmListPaginationBar
+          page={safeListPage}
+          total={sorted.length}
+          onPageChange={setListPage}
+        />
       </div>
 
     </div>

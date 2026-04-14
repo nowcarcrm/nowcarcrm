@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import {
@@ -31,6 +31,14 @@ import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
 import { effectiveContractFeeForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
+import {
+  CrmListPaginationBar,
+  CRM_LIST_PAGE_SIZE,
+  crmSlicePage,
+  crmTotalPages,
+} from "@/app/_components/ui/CrmListPagination";
+
+const STORAGE_STAFF_OVERVIEW_MANAGER_KEY = "nowcar_staff_overview_manager_user_id";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -62,6 +70,8 @@ function SummaryCard({
 
 export default function StaffOverviewPage() {
   const router = useRouter();
+  const pathname = usePathname();
+  const searchParams = useSearchParams();
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [overviewRows, setOverviewRows] = useState<StaffOverviewRow[]>([]);
@@ -73,8 +83,12 @@ export default function StaffOverviewPage() {
     () => new Map()
   );
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [overviewListPage, setOverviewListPage] = useState(1);
+  const [detailListPage, setDetailListPage] = useState(1);
+  const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
+  const managerUserIdFilter = (searchParams.get("managerUserId") ?? "").trim();
+  const isAdmin = profile?.role === "admin";
 
   const opScope = useMemo(() => {
     if (!profile || profile.role !== "admin") return null;
@@ -143,15 +157,112 @@ export default function StaffOverviewPage() {
     };
   }, [profile, authLoading, router, opScope]);
 
+  const setManagerUserIdFilter = useCallback(
+    (id: string) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (id) next.set("managerUserId", id);
+      else next.delete("managerUserId");
+      const qs = next.toString();
+      const base = pathname || "/operations/staff-overview";
+      router.replace(qs ? `${base}?${qs}` : base, { scroll: false });
+      try {
+        if (id) window.localStorage.setItem(STORAGE_STAFF_OVERVIEW_MANAGER_KEY, id);
+        else window.localStorage.removeItem(STORAGE_STAFF_OVERVIEW_MANAGER_KEY);
+      } catch {
+        /* ignore */
+      }
+    },
+    [pathname, router, searchParams]
+  );
+
+  useEffect(() => {
+    if (hydratedManagerRef.current) return;
+    hydratedManagerRef.current = true;
+    if (typeof window === "undefined") return;
+    const fromUrl = (searchParams.get("managerUserId") ?? "").trim();
+    if (fromUrl) return;
+    try {
+      const saved = window.localStorage.getItem(STORAGE_STAFF_OVERVIEW_MANAGER_KEY)?.trim();
+      if (!saved) return;
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("managerUserId", saved);
+      const base = pathname || "/operations/staff-overview";
+      router.replace(`${base}?${next.toString()}`, { scroll: false });
+    } catch {
+      /* ignore */
+    }
+  }, [pathname, router, searchParams]);
+
+  const staffSelectOptions = useMemo(() => {
+    return [...overviewRows]
+      .map((r) => ({ id: r.userId, name: r.name || r.email || r.userId }))
+      .filter((o) => !!o.id)
+      .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+  }, [overviewRows]);
+
+  const filteredOverviewRows = useMemo(() => {
+    if (!managerUserIdFilter) return overviewRows;
+    return overviewRows.filter((r) => r.userId === managerUserIdFilter);
+  }, [overviewRows, managerUserIdFilter]);
+
+  const displayOrgSummary = useMemo((): StaffOverviewOrgSummary | null => {
+    if (!leads || !orgSummary) return null;
+    if (!managerUserIdFilter) return orgSummary;
+    const fl = leads.filter((l) => (l.managerUserId ?? "").trim() === managerUserIdFilter);
+    return buildOrgSummary(1, fl, contractByLead);
+  }, [leads, orgSummary, managerUserIdFilter, contractByLead]);
+
   const leadsForSelected = useMemo(() => {
-    if (!leads || !selectedUserId) return [];
-    return leads.filter((l) => (l.managerUserId ?? "").trim() === selectedUserId);
-  }, [leads, selectedUserId]);
+    if (!leads || !managerUserIdFilter) return [];
+    return leads.filter((l) => (l.managerUserId ?? "").trim() === managerUserIdFilter);
+  }, [leads, managerUserIdFilter]);
+
+  const sortedDetailLeads = useMemo(() => {
+    return [...leadsForSelected].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }, [leadsForSelected]);
+
+  useEffect(() => {
+    setOverviewListPage(1);
+  }, [managerUserIdFilter, overviewRows.length]);
+
+  useEffect(() => {
+    setDetailListPage(1);
+  }, [managerUserIdFilter, leadsForSelected.length]);
+
+  const safeOverviewPage = Math.min(
+    Math.max(1, overviewListPage),
+    crmTotalPages(filteredOverviewRows.length, CRM_LIST_PAGE_SIZE)
+  );
+  const pagedOverviewRows = useMemo(
+    () => crmSlicePage(filteredOverviewRows, safeOverviewPage, CRM_LIST_PAGE_SIZE),
+    [filteredOverviewRows, safeOverviewPage]
+  );
+
+  useEffect(() => {
+    setOverviewListPage((p) =>
+      Math.min(Math.max(1, p), crmTotalPages(filteredOverviewRows.length, CRM_LIST_PAGE_SIZE))
+    );
+  }, [filteredOverviewRows.length]);
+
+  const safeDetailPage = Math.min(
+    Math.max(1, detailListPage),
+    crmTotalPages(sortedDetailLeads.length, CRM_LIST_PAGE_SIZE)
+  );
+  const pagedDetailLeads = useMemo(
+    () => crmSlicePage(sortedDetailLeads, safeDetailPage, CRM_LIST_PAGE_SIZE),
+    [sortedDetailLeads, safeDetailPage]
+  );
+
+  useEffect(() => {
+    setDetailListPage((p) =>
+      Math.min(Math.max(1, p), crmTotalPages(sortedDetailLeads.length, CRM_LIST_PAGE_SIZE))
+    );
+  }, [sortedDetailLeads.length]);
 
   const selectedName = useMemo(() => {
-    if (!selectedUserId) return "";
-    return overviewRows.find((r) => r.userId === selectedUserId)?.name ?? "";
-  }, [overviewRows, selectedUserId]);
+    if (!managerUserIdFilter) return "";
+    return overviewRows.find((r) => r.userId === managerUserIdFilter)?.name ?? "";
+  }, [overviewRows, managerUserIdFilter]);
 
   const openLead = useCallback(
     async (id: string) => {
@@ -161,11 +272,11 @@ export default function StaffOverviewPage() {
   );
 
   const downloadSummaryExcel = useCallback(() => {
-    if (!overviewRows.length) {
+    if (!filteredOverviewRows.length) {
       toast.error("보낼 데이터가 없습니다.");
       return;
     }
-    const rows = overviewRows.map((r) => ({
+    const rows = filteredOverviewRows.map((r) => ({
       직원명: r.name,
       이메일: r.email,
       권한: r.roleLabel,
@@ -186,7 +297,7 @@ export default function StaffOverviewPage() {
     }));
     downloadXlsxRows(rows, "직원현황요약", `직원현황요약_${todayYmdKst()}`);
     toast.success("요약 엑셀을 저장했습니다.");
-  }, [overviewRows]);
+  }, [filteredOverviewRows]);
 
   const downloadStaffLeadsExcel = useCallback(
     (userId: string, displayName: string, list: Lead[]) => {
@@ -251,6 +362,25 @@ export default function StaffOverviewPage() {
               집계는 <span className="font-medium text-slate-800 dark:text-zinc-200">manager_user_id</span> 기준이며,
               단계는 파이프라인(stage) 한 버킷으로 산출합니다.
             </p>
+            {isAdmin ? (
+              <div className="mt-4 max-w-md">
+                <label className="mb-1 block text-[12px] font-medium text-slate-500 dark:text-zinc-400">
+                  직원 필터
+                </label>
+                <select
+                  value={managerUserIdFilter}
+                  onChange={(e) => setManagerUserIdFilter(e.target.value)}
+                  className="crm-field crm-field-select w-full text-[14px]"
+                >
+                  <option value="">전체</option>
+                  {staffSelectOptions.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      {o.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
@@ -262,17 +392,17 @@ export default function StaffOverviewPage() {
         </div>
       </header>
 
-      {orgSummary ? (
+      {displayOrgSummary ? (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <SummaryCard label="전체 직원 수" value={orgSummary.staffCount} />
-          <SummaryCard label="전체 고객 수" value={orgSummary.totalLeads} sub="DB 전체 행" />
-          <SummaryCard label="오늘 등록" value={orgSummary.registeredToday} />
-          <SummaryCard label="이번 달 등록" value={orgSummary.registeredThisMonth} />
+          <SummaryCard label="전체 직원 수" value={displayOrgSummary.staffCount} />
+          <SummaryCard label="전체 고객 수" value={displayOrgSummary.totalLeads} sub="DB 전체 행" />
+          <SummaryCard label="오늘 등록" value={displayOrgSummary.registeredToday} />
+          <SummaryCard label="이번 달 등록" value={displayOrgSummary.registeredThisMonth} />
           <SummaryCard
             label="이번 달 예상 수수료"
-            value={formatWon(orgSummary.feeThisMonthWon)}
+            value={formatWon(displayOrgSummary.feeThisMonthWon)}
           />
-          <SummaryCard label="오늘 연락 예정" value={orgSummary.todayNextContactTotal} />
+          <SummaryCard label="오늘 연락 예정" value={displayOrgSummary.todayNextContactTotal} />
         </div>
       ) : null}
 
@@ -314,15 +444,15 @@ export default function StaffOverviewPage() {
                     불러오는 중…
                   </td>
                 </tr>
-              ) : overviewRows.length === 0 ? (
+              ) : filteredOverviewRows.length === 0 ? (
                 <tr>
                   <td colSpan={18} className="px-3 py-12 text-center text-slate-500">
                     표시할 직원이 없습니다.
                   </td>
                 </tr>
               ) : (
-                overviewRows.map((r) => {
-                  const active = selectedUserId === r.userId;
+                pagedOverviewRows.map((r) => {
+                  const active = managerUserIdFilter === r.userId;
                   const rowLeads =
                     leads?.filter((l) => (l.managerUserId ?? "").trim() === r.userId) ?? [];
                   return (
@@ -340,7 +470,7 @@ export default function StaffOverviewPage() {
                           type="button"
                           className="text-left underline-offset-2 hover:underline"
                           onClick={() =>
-                            setSelectedUserId((prev) => (prev === r.userId ? null : r.userId))
+                            setManagerUserIdFilter(managerUserIdFilter === r.userId ? "" : r.userId)
                           }
                         >
                           {r.name}
@@ -393,9 +523,14 @@ export default function StaffOverviewPage() {
             </tbody>
           </table>
         </div>
+        <CrmListPaginationBar
+          page={safeOverviewPage}
+          total={filteredOverviewRows.length}
+          onPageChange={setOverviewListPage}
+        />
       </div>
 
-      {selectedUserId ? (
+      {managerUserIdFilter ? (
         <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-lg font-bold text-slate-900 dark:text-zinc-50">
@@ -403,14 +538,16 @@ export default function StaffOverviewPage() {
             </h2>
             <div className="flex flex-wrap gap-2">
               <Link
-                href={`/operations/staff/${selectedUserId}`}
+                href={`/operations/staff/${managerUserIdFilter}`}
                 className="inline-flex items-center rounded-xl border border-violet-300 bg-violet-50 px-4 py-2 text-[13px] font-semibold text-violet-900 dark:border-violet-500/40 dark:bg-violet-950/50 dark:text-violet-100"
               >
                 전체 화면으로
               </Link>
               <button
                 type="button"
-                onClick={() => downloadStaffLeadsExcel(selectedUserId, selectedName, leadsForSelected)}
+                onClick={() =>
+                  downloadStaffLeadsExcel(managerUserIdFilter, selectedName, leadsForSelected)
+                }
                 disabled={!leadsForSelected.length}
                 className="inline-flex items-center rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"
               >
@@ -442,9 +579,7 @@ export default function StaffOverviewPage() {
                     </td>
                   </tr>
                 ) : (
-                  [...leadsForSelected]
-                    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
-                    .map((l) => {
+                  pagedDetailLeads.map((l) => {
                       const consult = lastConsultByLead.get(l.id);
                       const recent =
                         consult && consult > lastContactReferenceIso(l)
@@ -498,6 +633,11 @@ export default function StaffOverviewPage() {
               </tbody>
             </table>
           </div>
+          <CrmListPaginationBar
+            page={safeDetailPage}
+            total={sortedDetailLeads.length}
+            onPageChange={setDetailListPage}
+          />
         </section>
       ) : null}
 

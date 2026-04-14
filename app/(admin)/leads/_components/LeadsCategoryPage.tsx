@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   CONSULT_RESULT_OPTIONS,
@@ -32,7 +32,7 @@ import {
   loadLeadsFromStorage,
   updateLead,
 } from "../../_lib/leaseCrmStorage";
-import { getSupabaseConfigStatus } from "../../_lib/supabaseClient";
+import { getSupabaseConfigStatus, supabase } from "../../_lib/supabaseClient";
 import LeadCreateModal from "./LeadCreateModal";
 import { useLeadDetailModal, useLeadListSearch } from "@/app/_components/admin/AdminShell";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
@@ -41,6 +41,12 @@ import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
 import { AnimatedStatNumber, LeadTableSkeleton, TapButton } from "@/app/_components/ui/crm-motion";
 import { downloadXlsxRows, formatDateOnlyForExcel, todayYmdKst } from "../../_lib/excelExport";
+import {
+  CrmListPaginationBar,
+  CRM_LIST_PAGE_SIZE,
+  crmSlicePage,
+  crmTotalPages,
+} from "@/app/_components/ui/CrmListPagination";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -156,7 +162,8 @@ function LeadsCategoryView({
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const { openLeadById } = useLeadDetailModal();
   const { query: searchInput, setQuery: setSearchInput } = useLeadListSearch();
-  const [sortBy, setSortBy] = useState<SortKey>("lastContactOldest");
+  const [sortBy, setSortBy] = useState<SortKey>("latest");
+  const [listPage, setListPage] = useState(1);
   const [createOwnerOptions, setCreateOwnerOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [failReasonModal, setFailReasonModal] = useState<{
     lead: Lead;
@@ -331,6 +338,58 @@ function LeadsCategoryView({
     });
   }, [byCategory, searchInput, sortBy, searchParams, categoryKey]);
 
+  const canExportDeliveredExcel = profile?.role === "admin";
+
+  useEffect(() => {
+    setListPage(1);
+  }, [searchInput, sortBy, categoryKey, pathname]);
+
+  const safeListPage = Math.min(Math.max(1, listPage), crmTotalPages(filtered.length, CRM_LIST_PAGE_SIZE));
+  const pagedFiltered = useMemo(
+    () => crmSlicePage(filtered, safeListPage, CRM_LIST_PAGE_SIZE),
+    [filtered, safeListPage]
+  );
+
+  useEffect(() => {
+    setListPage((p) => Math.min(Math.max(1, p), crmTotalPages(filtered.length, CRM_LIST_PAGE_SIZE)));
+  }, [filtered.length]);
+
+  const handleDeliveryExcelDownload = useCallback(async () => {
+    if (profile?.role !== "admin") {
+      toast.error("관리자만 엑셀 다운로드가 가능합니다.");
+      return;
+    }
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) {
+      toast.error("로그인이 필요합니다.");
+      return;
+    }
+    const res = await fetch("/api/admin/delivered-export-permission", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) {
+      toast.error("관리자만 엑셀 다운로드가 가능합니다.");
+      return;
+    }
+    const delivered = filtered.filter((l) => l.counselingStatus === "인도완료");
+    const rows = delivered.map((l) => ({
+      "고객명": l.base.name,
+      "연락처": l.base.phone,
+      "담당자": l.base.ownerStaff,
+      "차량명": l.contract?.vehicleName || l.base.desiredVehicle,
+      "계약일": formatDateOnlyForExcel(l.contract?.contractDate ?? ""),
+      "인도일": formatDateOnlyForExcel(l.deliveredAt ?? l.exportProgress?.deliveredAt ?? ""),
+      "보증금": l.base.depositOrPrepaymentAmount || "",
+      "계약기간": l.base.contractTerm || "",
+    }));
+    downloadXlsxRows(rows, "완료고객", `delivered_customers_${todayYmdKst()}`);
+    toast.success("인도완료 고객 엑셀 다운로드가 완료되었습니다.");
+  }, [profile?.role, filtered]);
+
   const automation = useMemo(() => {
     if (!leads) return null;
     return computeAutomationCounts(leads);
@@ -340,21 +399,6 @@ function LeadsCategoryView({
     () => filtered.filter((l) => l.nextContactAt && isToday(l.nextContactAt)),
     [filtered]
   );
-
-  function handleDeliveryExcelDownload() {
-    const delivered = filtered.filter((l) => l.counselingStatus === "인도완료");
-    const rows = delivered.map((l) => ({
-      등록일: formatDateOnlyForExcel(l.createdAt),
-      고객명: l.base.name,
-      연락처: l.base.phone,
-      담당자: l.base.ownerStaff,
-      상담결과: l.counselingStatus,
-      차량: l.contract?.vehicleName || l.base.desiredVehicle,
-      인도완료일: formatDateOnlyForExcel(l.deliveredAt ?? l.exportProgress?.deliveredAt ?? ""),
-    }));
-    downloadXlsxRows(rows, "완료고객", `delivered_customers_${todayYmdKst()}`);
-    toast.success("인도완료 고객 엑셀 다운로드가 완료되었습니다.");
-  }
 
   function commitLeads(next: Lead[]) {
     setLeads(next);
@@ -571,10 +615,10 @@ function LeadsCategoryView({
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {categoryKey === "delivery-complete" ? (
+          {categoryKey === "delivery-complete" && canExportDeliveredExcel ? (
             <TapButton
               type="button"
-              onClick={handleDeliveryExcelDownload}
+              onClick={() => void handleDeliveryExcelDownload()}
               className="rounded-xl border border-emerald-600/80 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
             >
               엑셀 다운로드
@@ -613,7 +657,8 @@ function LeadsCategoryView({
             type="button"
             onClick={() => {
               setSearchInput("");
-              setSortBy("lastContactOldest");
+              setSortBy("latest");
+              setListPage(1);
             }}
             className="crm-btn-secondary"
           >
@@ -697,7 +742,7 @@ function LeadsCategoryView({
                   </td>
                 </tr>
               ) : (
-                filtered.map((row) => {
+                pagedFiltered.map((row) => {
                   const isTodayFollowUp = !!row.nextContactAt && isToday(row.nextContactAt);
                   const isNewOverdue = categoryKey === "new-db" && row.counselingStatus === "신규" && daysAgo(row.createdAt) >= 3;
                   const isDeliverySoon =
@@ -867,6 +912,13 @@ function LeadsCategoryView({
             </tbody>
           </table>
         </div>
+        {leads && filtered.length > 0 ? (
+          <CrmListPaginationBar
+            page={safeListPage}
+            total={filtered.length}
+            onPageChange={setListPage}
+          />
+        ) : null}
       </div>
       </div>
 

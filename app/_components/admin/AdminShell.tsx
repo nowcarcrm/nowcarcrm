@@ -181,7 +181,6 @@ const SECTION_META: Record<NavSectionKey, { title: string; subtitle?: string }> 
 /** 긴 경로를 먼저 두어 prefix 매칭이 겹치지 않게 함 */
 const PAGE_TITLE_ROUTES: { prefix: string; title: string }[] = [
   { prefix: "/leads/counseling-progress", title: "상담중" },
-  { prefix: "/leads/export-progress", title: "출고" },
   { prefix: "/leads/contract-progress", title: "계약" },
   { prefix: "/leads/delivery-complete", title: "인도완료" },
   { prefix: "/leads/unresponsive", title: "부재" },
@@ -373,7 +372,15 @@ function SidebarContents({
     if (!showAdminManagerFilter) return;
     if (typeof window === "undefined") return;
     const sp = new URLSearchParams(window.location.search);
-    setSelectedUserId(sp.get("managerUserId") ?? "");
+    const fromQuery = sp.get("managerUserId") ?? "";
+    const fromStorage = window.localStorage.getItem("crm.admin.managerUserId") ?? "";
+    const next = fromQuery || fromStorage;
+    setSelectedUserId(next);
+    if (!fromQuery && next) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("managerUserId", next);
+      router.replace(`${url.pathname}${url.search}`, { scroll: false });
+    }
   }, [showAdminManagerFilter, pathname]);
   const activeHref = useMemo(() => {
     if (!pathname) return "";
@@ -405,15 +412,6 @@ function SidebarContents({
     }
     return out;
   }, [currentUser?.role]);
-
-  useEffect(() => {
-    console.log("sidebar profile", {
-      userId: currentUser?.userId,
-      role: currentUser?.role,
-      name: currentUser?.name,
-      email: currentUser?.email,
-    });
-  }, [currentUser?.userId, currentUser?.role, currentUser?.name, currentUser?.email]);
 
   return (
     <div className="relative z-10 flex h-full flex-col">
@@ -452,8 +450,10 @@ function SidebarContents({
                 const url = new URL(window.location.href);
                 if (nextId) {
                   url.searchParams.set("managerUserId", nextId);
+                  window.localStorage.setItem("crm.admin.managerUserId", nextId);
                 } else {
                   url.searchParams.delete("managerUserId");
+                  window.localStorage.removeItem("crm.admin.managerUserId");
                 }
                 router.push(`${url.pathname}${url.search}`, { scroll: false });
               }}

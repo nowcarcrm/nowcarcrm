@@ -112,7 +112,7 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead }) {
         onClick={() => setOpen(true)}
         whileHover={{ scale: 1.04 }}
         whileTap={{ scale: 0.97 }}
-        className="fixed bottom-5 right-5 z-[70] flex h-12 w-12 items-center justify-center rounded-full border border-sky-200 bg-sky-600 text-lg text-white shadow-lg shadow-sky-900/25 transition-shadow hover:shadow-xl hover:shadow-sky-900/30"
+        className="fixed bottom-5 right-5 z-[45] flex h-12 w-12 items-center justify-center rounded-full border border-sky-200 bg-sky-600 text-lg text-white shadow-lg shadow-sky-900/25 transition-shadow hover:shadow-xl hover:shadow-sky-900/30 md:bottom-6 md:right-6"
         aria-label="AI 상담 어시스트 열기"
       >
         🤖
@@ -122,14 +122,14 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead }) {
         {open ? (
           <>
             <motion.div
-              className="fixed inset-0 z-[72] bg-black/20 md:hidden"
+              className="fixed inset-0 z-[46] bg-black/20 md:hidden"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setOpen(false)}
             />
             <motion.section
-              className="fixed bottom-0 z-[73] w-full border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 md:bottom-20 md:right-5 md:w-[360px] md:max-w-[calc(100vw-2rem)] md:rounded-2xl md:border"
+              className="fixed bottom-0 z-[47] w-full border-zinc-200 bg-white shadow-2xl dark:border-zinc-700 dark:bg-zinc-900 md:bottom-20 md:right-6 md:w-[360px] md:max-w-[calc(100vw-2rem)] md:rounded-2xl md:border"
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
