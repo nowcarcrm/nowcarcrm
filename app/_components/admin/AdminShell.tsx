@@ -772,7 +772,7 @@ export default function AdminShell({
               }}
             />
           ) : null}
-          <AiCounselAssistPopup />
+          <AiCounselAssistPopup lead={modalLead} />
         </div>
       </LeadDetailModalContext.Provider>
     </LeadListSearchContext.Provider>
