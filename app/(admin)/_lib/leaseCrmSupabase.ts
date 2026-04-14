@@ -1649,52 +1649,63 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
   }
 
   const contract = toContractRow(lead);
-  if (shouldSyncContracts && contract) {
-    logContractDeliveryDateResolution(lead);
-    const cleanPayload = Object.fromEntries(
-      Object.entries(contract).filter(([, v]) => v !== undefined && v !== null)
-    );
-    console.log("=== 계약고객 저장 시작 ===");
-    console.log("leadId:", leadId);
-    console.log("raw payload:", contract);
-    console.log("cleanPayload:", cleanPayload);
-    console.log("update payload:", cleanPayload);
-    devLog("[Supabase] contracts UPSERT 의도 payload (cleanPayload)", cleanPayload);
-    try {
-      const { data, error } = await supabase
+  if (shouldSyncContracts) {
+    if (!contract) {
+      const { error: contractDelErr } = await supabase
         .from("contracts")
-        .upsert(cleanPayload, { onConflict: "lead_id" })
-        .select("id, lead_id, fee, contract_date, status")
-        .single();
-      console.log("contract update result:", data);
-      if (error) {
-        console.error("contract update error:", error);
-        console.error("contract update error parsed:", postgrestLikeFields(error));
-        throw error;
-      }
-      const { data: contractsRowsAfterWrite, error: contractsRowsAfterWriteErr } = await supabase
-        .from("contracts")
-        .select("*")
+        .delete()
         .eq("lead_id", leadId);
-      if (contractsRowsAfterWriteErr) {
-        console.error("contract update error:", contractsRowsAfterWriteErr);
-        throw contractsRowsAfterWriteErr;
+      if (contractDelErr) {
+        console.error("[Supabase] contracts delete failed", contractDelErr);
+        throw contractDelErr;
       }
-      const rows = (contractsRowsAfterWrite ?? []) as ContractRow[];
-      console.log("contracts direct refetch after save:", rows);
-      if (rows.length !== 1) {
-        throw new Error(
-          `계약 저장 검증 실패: lead_id(${leadId}) row 개수가 1이 아닙니다. 현재 ${rows.length}건`
-        );
+    } else {
+      logContractDeliveryDateResolution(lead);
+      const cleanPayload = Object.fromEntries(
+        Object.entries(contract).filter(([, v]) => v !== undefined && v !== null)
+      );
+      console.log("=== 계약고객 저장 시작 ===");
+      console.log("leadId:", leadId);
+      console.log("raw payload:", contract);
+      console.log("cleanPayload:", cleanPayload);
+      console.log("update payload:", cleanPayload);
+      devLog("[Supabase] contracts UPSERT 의도 payload (cleanPayload)", cleanPayload);
+      try {
+        const { data, error } = await supabase
+          .from("contracts")
+          .upsert(cleanPayload, { onConflict: "lead_id" })
+          .select("id, lead_id, fee, contract_date, status")
+          .single();
+        console.log("contract update result:", data);
+        if (error) {
+          console.error("contract update error:", error);
+          console.error("contract update error parsed:", postgrestLikeFields(error));
+          throw error;
+        }
+        const { data: contractsRowsAfterWrite, error: contractsRowsAfterWriteErr } = await supabase
+          .from("contracts")
+          .select("*")
+          .eq("lead_id", leadId);
+        if (contractsRowsAfterWriteErr) {
+          console.error("contract update error:", contractsRowsAfterWriteErr);
+          throw contractsRowsAfterWriteErr;
+        }
+        const rows = (contractsRowsAfterWrite ?? []) as ContractRow[];
+        console.log("contracts direct refetch after save:", rows);
+        if (rows.length !== 1) {
+          throw new Error(
+            `계약 저장 검증 실패: lead_id(${leadId}) row 개수가 1이 아닙니다. 현재 ${rows.length}건`
+          );
+        }
+        console.log("review status refetch contracts:", {
+          leadId,
+          status: rows[0]?.status ?? null,
+          review_status: (rows[0] as Record<string, unknown> | undefined)?.review_status ?? null,
+        });
+      } catch (kErr) {
+        console.error("계약 저장 오류", kErr, contract);
+        throw kErr;
       }
-      console.log("review status refetch contracts:", {
-        leadId,
-        status: rows[0]?.status ?? null,
-        review_status: (rows[0] as Record<string, unknown> | undefined)?.review_status ?? null,
-      });
-    } catch (kErr) {
-      console.error("계약 저장 오류", kErr, contract);
-      throw kErr;
     }
   }
   const exportProgress = toExportRow(lead);

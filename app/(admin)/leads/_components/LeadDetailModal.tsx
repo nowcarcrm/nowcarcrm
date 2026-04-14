@@ -55,7 +55,6 @@ import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
-import AiCounselAssistPopup from "./AiCounselAssistPopup";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -354,26 +353,15 @@ export default function LeadDetailModal({
   const [activeTab, setActiveTab] = useState<TabKey>("basic");
   const [draft, setDraft] = useState<Lead>(lead);
   const [saving, setSaving] = useState(false);
+  const [refreshingAfterSave, setRefreshingAfterSave] = useState(false);
   /** 상담기록 추가 시 함께 바꿀 상담결과 — 빈 문자열이면 유지 */
   const [recordCounselingStatusSideEffect, setRecordCounselingStatusSideEffect] = useState<
     "" | CounselingStatus
   >("");
   const initializedRef = useRef(false);
   const initializedLeadIdRef = useRef<string | null>(null);
-  const renderRef = useRef(0);
-  const instanceIdRef = useRef<string | null>(null);
   const usersLoadedForRoleRef = useRef<string>("");
   const { profile } = useAuth();
-  if (!instanceIdRef.current) {
-    instanceIdRef.current = `ldm-${Math.random().toString(36).slice(2, 9)}`;
-  }
-  renderRef.current += 1;
-  console.log("[LeadDetailModal render]", renderRef.current, {
-    instanceId: instanceIdRef.current,
-    open,
-    leadId: lead?.id,
-  });
-  const staffContractLocked = profile?.role === "staff";
   /** 담당 직원 변경은 Admin만 (staff·manager는 UI·저장 모두 본인/고정). */
   const canReassignLeadOwner = profile?.role === "admin";
   /** 상담기록의「상담 담당자」는 admin만 변경 가능(staff·manager는 읽기 전용). */
@@ -411,11 +399,6 @@ export default function LeadDetailModal({
           setCounselorOptions(names.length > 0 ? names : [...EMPLOYEES]);
         }
         usersLoadedForRoleRef.current = roleKey;
-        console.log("[LeadDetailModal] users loaded once", {
-          leadId: lead.id,
-          roleKey,
-          count: users.length,
-        });
       })
       .catch(() => {
         if (cancelled) return;
@@ -484,12 +467,6 @@ export default function LeadDetailModal({
     const leadChanged =
       initializedLeadIdRef.current !== null && initializedLeadIdRef.current !== incomingLeadId;
     if (!firstInit && !leadChanged) return;
-    console.log("[LeadDetailModal] incoming lead -> form init", {
-      incomingLeadId,
-      firstInit,
-      leadChanged,
-      creditReviewStatus: lead.creditReviewStatus ?? null,
-    });
     setDraft(ensureLeadShape(lead));
     setActiveTab("basic");
     setQuoteDraft(emptyQuoteForm());
@@ -510,13 +487,7 @@ export default function LeadDetailModal({
   }, [lead.id]);
 
   useEffect(() => {
-    console.log("[effect] init form", { open, leadId: lead?.id });
-  }, [open, lead?.id]);
-
-  useEffect(() => {
-    console.log("[LeadDetailModal] mounted", { leadId: lead.id });
     return () => {
-      console.log("[LeadDetailModal] unmounted", { leadId: lead.id });
       initializedRef.current = false;
       initializedLeadIdRef.current = null;
       usersLoadedForRoleRef.current = "";
@@ -536,13 +507,19 @@ export default function LeadDetailModal({
     };
   }, []);
 
-  useEffect(() => {
-    console.log("[effect] users changed", leadOwnerOptions?.length);
-  }, [leadOwnerOptions]);
-
-  useEffect(() => {
-    console.log("[effect] form changed");
-  }, [draft]);
+  async function refetchAfterSave(leadId: string, fallback: Lead) {
+    if (!profile) {
+      setDraft(fallback);
+      return;
+    }
+    setRefreshingAfterSave(true);
+    try {
+      const fresh = await fetchLeadById(leadId, { role: profile.role, userId: profile.userId });
+      setDraft(ensureLeadShape(fresh ?? fallback));
+    } finally {
+      setRefreshingAfterSave(false);
+    }
+  }
 
   const sortedQuotes = useMemo(
     () => [...(draft.quoteHistory ?? [])].sort((a, b) => b.quotedAt.localeCompare(a.quotedAt)),
@@ -563,19 +540,13 @@ export default function LeadDetailModal({
   async function persist(next: Lead) {
     const payload = leadPayloadForServer(ensureLeadShape(next));
     devLog("[LeadDetailModal] persist 저장 직전 payload", payload);
-    console.log("[LeadDetailModal] persist payload", payload);
     setSaving(true);
     try {
       await Promise.resolve(
         onUpdate(payload, { syncConsultations: true, syncContracts: false, syncExportProgress: false })
       );
-      if (profile) {
-        const fresh = await fetchLeadById(payload.id, { role: profile.role, userId: profile.userId });
-        setDraft(ensureLeadShape(fresh ?? payload));
-      } else {
-        setDraft(payload);
-      }
-      toast.success("저장했습니다.");
+      await refetchAfterSave(payload.id, payload);
+      toast.success("견적 저장 완료");
     } catch (error) {
       console.error("[LeadDetailModal] persist 저장 실패", formatSupabaseError(error), error, payload);
       toast.error("저장하지 못했습니다.");
@@ -585,10 +556,6 @@ export default function LeadDetailModal({
   }
 
   async function saveBase() {
-    console.log("review status ui value:", draft.creditReviewStatus);
-    console.log("selectedUserId:", draft.managerUserId ?? null);
-    console.log("saveBase payload:", draft);
-    console.log("saveBase should sync contracts?:", false);
     if (canReassignLeadOwner && !draft.managerUserId) {
       toast.error("담당 직원을 선택해 주세요.");
       return;
@@ -631,19 +598,8 @@ export default function LeadDetailModal({
       await Promise.resolve(
         onUpdate(next, { syncConsultations: true, syncContracts: false, syncExportProgress: false })
       );
-      if (profile) {
-        const fresh = await fetchLeadById(next.id, { role: profile.role, userId: profile.userId });
-        if (fresh) {
-          setDraft(ensureLeadShape(fresh));
-          console.log("review status after save refetch:", {
-            leadId: fresh.id,
-            reviewStatus: fresh.creditReviewStatus ?? null,
-          });
-        }
-      } else {
-        setDraft(next);
-      }
-      toast.success("저장했습니다.");
+      await refetchAfterSave(next.id, next);
+      toast.success("기본정보 저장 완료");
     } catch (error) {
       console.error("[LeadDetailModal] 기본정보 저장 실패", formatSupabaseError(error), error, next);
       toast.error("저장하지 못했습니다.");
@@ -653,12 +609,6 @@ export default function LeadDetailModal({
   }
 
   async function saveContract(nextContract: ContractInfo | null, nextCounselingStatus?: CounselingStatus) {
-    console.log("review status ui value:", draft.creditReviewStatus);
-    console.log("saveContract payload:", {
-      nextContract,
-      nextCounselingStatus,
-      reviewStatus: draft.creditReviewStatus,
-    });
     const nextIso = new Date().toISOString();
     const fallbackTerm = draft.base.contractTerm || "36개월";
     const today = new Date().toISOString().slice(0, 10);
@@ -726,17 +676,6 @@ export default function LeadDetailModal({
       updatedAt: nextIso,
       lastHandledAt: nextIso,
     });
-    console.log("contract payload:", payload);
-    console.log("[contract payload fields]", {
-      commission: payload.contract?.fee ?? null,
-      commission_rate: payload.contract?.feePercent ?? null,
-      fee: payload.contract?.fee ?? null,
-      contract_date: payload.contract?.contractDate ?? null,
-      delivered_at: payload.deliveredAt ?? payload.exportProgress?.deliveredAt ?? null,
-      category: null,
-      customer_stage: payload.counselingStatus,
-      consultation_result: payload.counselingStatus,
-    });
     devLog("[계약 저장] 최종 Lead payload (모달 → onUpdate / handleUpdateLead)", payload);
     devLog("[계약 저장] 계약 탭 contract 필드만", payload.contract);
     devLog(
@@ -752,26 +691,13 @@ export default function LeadDetailModal({
         leadId: toSave.id,
         contract: toSave.contract,
       });
-      let extra = false;
-      if (contract && shouldPersistContractAmountSnapshot(counselingForSnap)) {
-        if (!priorMonetary && afterMonetary) {
-          toast.success("최종 계약 금액이 확정되었습니다.");
-          extra = true;
-        } else if (priorMonetary && !priorDelivery && afterDelivery) {
-          toast.success("확정 스냅샷에 출고 유형이 반영되었습니다.");
-          extra = true;
-        }
-      }
-      if (!extra) toast.success("계약 고객 정보가 저장되었습니다.");
-      setDraft(toSave);
-      if (profile) {
-        try {
-          const fresh = await fetchLeadById(toSave.id, { role: profile.role, userId: profile.userId });
-          if (fresh) setDraft(ensureLeadShape(fresh));
-        } catch (reloadErr) {
-          console.warn("[LeadDetailModal] 계약 저장 후 재조회 실패", reloadErr);
-        }
-      }
+      void priorMonetary;
+      void priorDelivery;
+      void afterMonetary;
+      void afterDelivery;
+      void shouldPersistContractAmountSnapshot(counselingForSnap);
+      await refetchAfterSave(toSave.id, toSave);
+      toast.success("계약 저장 완료");
     } catch (error) {
       console.error("계약 저장 오류", error, payload);
       if (isMissingRelationTableError(error)) {
@@ -806,8 +732,8 @@ export default function LeadDetailModal({
       await Promise.resolve(
         onUpdate(toSave, { syncConsultations: false, syncContracts: false, syncExportProgress: true })
       );
-      setDraft(toSave);
-      toast.success("저장했습니다.");
+      await refetchAfterSave(toSave.id, toSave);
+      toast.success("출고 저장 완료");
     } catch (error) {
       console.error("출고 저장 오류", error, payload);
       toast.error("저장하지 못했습니다.");
@@ -828,6 +754,13 @@ export default function LeadDetailModal({
             className="pointer-events-auto relative w-full max-w-5xl overflow-hidden rounded-[26px] border border-[var(--crm-border)] bg-white/98 shadow-[0_32px_80px_rgba(8,20,38,0.3)] dark:border-zinc-800 dark:bg-zinc-950"
             onClick={(e) => e.stopPropagation()}
           >
+            {refreshingAfterSave ? (
+              <div className="absolute inset-0 z-20 grid place-items-center bg-white/65 backdrop-blur-sm dark:bg-zinc-950/65">
+                <div className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-medium text-zinc-700 shadow-sm dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200">
+                  저장 반영 중...
+                </div>
+              </div>
+            ) : null}
             <div className="max-h-[calc(100dvh-72px)] overflow-y-auto">
               <div className="shrink-0 p-6 pb-0">
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
@@ -1148,7 +1081,6 @@ export default function LeadDetailModal({
                         onChange={(e) => {
                           const selectedUserId = e.target.value;
                           const selected = leadOwnerSelectChoices.find((u) => u.id === selectedUserId);
-                          console.log("selectedUserId:", selectedUserId || null);
                           setDraft((p) => ({
                             ...p,
                             managerUserId: selectedUserId || null,
@@ -1289,7 +1221,7 @@ export default function LeadDetailModal({
                     className="crm-btn-primary disabled:opacity-50"
                     disabled={saving}
                   >
-                    {saving ? "저장 중…" : "기본정보 저장"}
+                    {saving ? "저장 중..." : "기본정보 저장"}
                   </TapButton>
                 </div>
               </div>
@@ -1438,8 +1370,10 @@ export default function LeadDetailModal({
                               syncExportProgress: false,
                             })
                           );
-                          setDraft(toSave);
+                          setSaving(true);
+                          await refetchAfterSave(toSave.id, toSave);
                           setRecordCounselingStatusSideEffect("");
+                          toast.success("기록 저장 완료");
                         } catch (err) {
                           console.error(
                             "[LeadDetailModal] 상담기록 추가 저장 실패",
@@ -1448,6 +1382,8 @@ export default function LeadDetailModal({
                             nextLead
                           );
                           toast.error("저장하지 못했습니다.");
+                        } finally {
+                          setSaving(false);
                         }
                       })();
                     }}
@@ -1629,7 +1565,7 @@ export default function LeadDetailModal({
                         className="crm-btn-primary disabled:opacity-50"
                         disabled={saving}
                       >
-                        {saving ? "저장 중…" : "기록 추가"}
+                        {saving ? "저장 중..." : "기록 추가"}
                       </button>
                     </div>
                   </form>
@@ -2067,7 +2003,7 @@ export default function LeadDetailModal({
                     </div>
                     <div className="sm:col-span-2 flex justify-end">
                       <button type="submit" className="crm-btn-primary disabled:opacity-50" disabled={saving}>
-                        {saving ? "저장 중…" : "견적 저장"}
+                        {saving ? "저장 중..." : "견적 저장"}
                       </button>
                     </div>
                   </form>
@@ -2078,7 +2014,6 @@ export default function LeadDetailModal({
             {activeTab === "contract" ? (
               <ContractTab
                 draft={draft}
-                readOnlyContract={staffContractLocked}
                 saving={saving}
                 onSave={(nextContract, nextStatus) => void saveContract(nextContract, nextStatus)}
               />
@@ -2097,7 +2032,6 @@ export default function LeadDetailModal({
           </div>
         </div>
       </div>
-      <AiCounselAssistPopup lead={draft} />
     </>
   );
 }
@@ -2113,12 +2047,10 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function ContractTab({
   draft,
-  readOnlyContract,
   saving = false,
   onSave,
 }: {
   draft: Lead;
-  readOnlyContract?: boolean;
   saving?: boolean;
   onSave: (nextContract: ContractInfo | null, nextStatus?: CounselingStatus) => void;
 }) {
@@ -2126,9 +2058,6 @@ function ContractTab({
   useEffect(() => {
     if (!draft.contract) window.setTimeout(() => setMode("edit"), 0);
   }, [draft.contract]);
-  useEffect(() => {
-    if (readOnlyContract) window.setTimeout(() => setMode("view"), 0);
-  }, [readOnlyContract]);
 
   const [local, setLocal] = useState<ContractInfo>(
     draft.contract ?? {
@@ -2161,7 +2090,6 @@ function ContractTab({
     window.setTimeout(() => {
       if (c) {
         const normalized = sanitizeContractForSave(c, term);
-        console.log("normalized contract form:", normalized);
         setLocal(normalized);
       }
       else {
@@ -2191,7 +2119,6 @@ function ContractTab({
             },
             term
           );
-        console.log("normalized contract form:", normalized);
         setLocal(normalized);
       }
     }, 0);
@@ -2205,7 +2132,7 @@ function ContractTab({
     return Number.isFinite(d) && d >= 0 ? Math.round(d) : 0;
   }, [local.depositAmount]);
 
-  const fieldDisabled = !!readOnlyContract || mode === "view";
+  const fieldDisabled = mode === "view";
 
   const latestQuote = useMemo(() => {
     const qh = draft.quoteHistory ?? [];
@@ -2223,7 +2150,7 @@ function ContractTab({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {latestQuote && !readOnlyContract && mode === "edit" ? (
+          {latestQuote && mode === "edit" ? (
             <button
               type="button"
               onClick={() => {
@@ -2237,23 +2164,19 @@ function ContractTab({
               최신 견적 금액 반영
             </button>
           ) : null}
-          {readOnlyContract ? null : (
-            <button
-              type="button"
-              onClick={() => setMode((p) => (p === "edit" ? "view" : "edit"))}
-              className="crm-btn-secondary py-1.5 text-xs"
-            >
-              {mode === "edit" ? "보기 전환" : "편집 전환"}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setMode((p) => (p === "edit" ? "view" : "edit"))}
+            className="crm-btn-secondary py-1.5 text-xs"
+          >
+            {mode === "edit" ? "보기 전환" : "편집 전환"}
+          </button>
         </div>
       </div>
 
-      {readOnlyContract ? (
-        <div className="rounded-lg border border-amber-200/90 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/35 dark:bg-amber-500/10 dark:text-amber-100">
-          직원 권한으로 계약 내용은 <strong>조회만</strong> 가능합니다. 저장·삭제는 매니저·관리자만 할 수 있습니다.
-        </div>
-      ) : null}
+      <div className="rounded-lg border border-zinc-200/90 bg-zinc-50/90 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-400">
+        계약 정보를 입력하고 저장할 수 있습니다.
+      </div>
 
       {shouldPersistContractAmountSnapshot(draft.counselingStatus) && draft.contract && !hasLockedMonetarySnapshot(local) ? (
         <div className="rounded-lg border border-sky-200/90 bg-sky-50/80 px-3 py-2 text-xs text-sky-950 dark:border-sky-500/35 dark:bg-sky-500/10 dark:text-sky-100">
@@ -2688,7 +2611,7 @@ function ContractTab({
           disabled={fieldDisabled || saving}
           className="crm-btn-primary disabled:opacity-50"
         >
-          {saving ? "저장 중…" : "계약 저장"}
+          {saving ? "저장 중..." : "계약 저장"}
         </button>
         {draft.contract ? (
           <button
@@ -3028,7 +2951,7 @@ function ExportTab({
           disabled={fieldDisabled || saving}
           className="crm-btn-primary disabled:opacity-50"
         >
-          {saving ? "저장 중…" : "출고 저장"}
+          {saving ? "저장 중..." : "출고 저장"}
         </button>
         <button
           type="button"
