@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
   CONSULT_RESULT_OPTIONS,
@@ -163,6 +163,7 @@ function LeadsCategoryView({
   const { openLeadById } = useLeadDetailModal();
   const { query: searchInput, setQuery: setSearchInput } = useLeadListSearch();
   const [sortBy, setSortBy] = useState<SortKey>("latest");
+  const hydratedRegRef = useRef(false);
   const [listPage, setListPage] = useState(1);
   const [createOwnerOptions, setCreateOwnerOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [failReasonModal, setFailReasonModal] = useState<{
@@ -259,12 +260,69 @@ function LeadsCategoryView({
     void openLeadById(leadIdFromQuery);
   }, [searchParams, selectedLeadId, openLeadById]);
 
+  const regYear = (searchParams.get("regYear") ?? "").trim();
+  const regMonth = (searchParams.get("regMonth") ?? "").trim();
+
+  useEffect(() => {
+    hydratedRegRef.current = false;
+  }, [categoryKey]);
+
+  const setRegistrationPeriodFilter = useCallback(
+    (nextYear: string, nextMonth: string) => {
+      const next = new URLSearchParams(searchParams.toString());
+      if (nextYear) {
+        next.set("regYear", nextYear);
+        if (nextMonth) next.set("regMonth", nextMonth);
+        else next.delete("regMonth");
+      } else {
+        next.delete("regYear");
+        next.delete("regMonth");
+      }
+      const qs = next.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+      try {
+        if (nextYear) {
+          window.localStorage.setItem(
+            `nowcar_leads_reg:${categoryKey}`,
+            JSON.stringify({ year: nextYear, month: nextMonth || "" })
+          );
+        } else {
+          window.localStorage.removeItem(`nowcar_leads_reg:${categoryKey}`);
+        }
+      } catch {
+        /* ignore */
+      }
+    },
+    [categoryKey, pathname, router, searchParams]
+  );
+
+  useEffect(() => {
+    if (hydratedRegRef.current) return;
+    hydratedRegRef.current = true;
+    if (typeof window === "undefined") return;
+    if (searchParams.get("regYear") || searchParams.get("regMonth")) return;
+    try {
+      const raw = window.localStorage.getItem(`nowcar_leads_reg:${categoryKey}`)?.trim();
+      if (!raw) return;
+      const o = JSON.parse(raw) as { year?: string; month?: string };
+      const y = (o?.year ?? "").trim();
+      if (!y) return;
+      const m = (o?.month ?? "").trim();
+      const next = new URLSearchParams(searchParams.toString());
+      next.set("regYear", y);
+      if (m) next.set("regMonth", m);
+      router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+    } catch {
+      /* ignore */
+    }
+  }, [categoryKey, pathname, router, searchParams]);
+
   const byCategory = useMemo(() => {
     if (!leads) return [];
     return computeCategory(leads, categoryKey);
   }, [leads, categoryKey]);
 
-  const filtered = useMemo(() => {
+  const prePeriodFiltered = useMemo(() => {
     const raw = searchInput.trim();
     const query = raw.toLowerCase();
     const queryDigits = raw.replace(/\D/g, "");
@@ -324,7 +382,56 @@ function LeadsCategoryView({
       listForDash = listForDash.filter((l) => isDeliveryDueSoon(l));
     }
 
-    return listForDash.slice().sort((a, b) => {
+    return listForDash;
+  }, [byCategory, searchInput, searchParams, categoryKey]);
+  const yearBuckets = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of prePeriodFiltered) {
+      const d = new Date(l.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const y = String(d.getFullYear());
+      m.set(y, (m.get(y) ?? 0) + 1);
+    }
+    return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [prePeriodFiltered]);
+  const monthBuckets = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of prePeriodFiltered) {
+      const d = new Date(l.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      m.set(key, (m.get(key) ?? 0) + 1);
+    }
+    return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [prePeriodFiltered]);
+  const afterPeriodFiltered = useMemo(() => {
+    let list = prePeriodFiltered;
+    if (regYear) {
+      list = list.filter((l) => {
+        const d = new Date(l.createdAt);
+        return !Number.isNaN(d.getTime()) && String(d.getFullYear()) === regYear;
+      });
+    }
+    if (regMonth) {
+      list = list.filter((l) => {
+        const d = new Date(l.createdAt);
+        if (Number.isNaN(d.getTime())) return false;
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        if (mm !== regMonth) return false;
+        if (regYear && String(d.getFullYear()) !== regYear) return false;
+        return true;
+      });
+    }
+    return list;
+  }, [prePeriodFiltered, regYear, regMonth]);
+
+  const monthBucketsScoped = useMemo(() => {
+    if (!regYear) return monthBuckets;
+    return monthBuckets.filter(([k]) => k.startsWith(`${regYear}-`));
+  }, [monthBuckets, regYear]);
+
+  const filtered = useMemo(() => {
+    return afterPeriodFiltered.slice().sort((a, b) => {
       if (sortBy === "latest") return a.createdAt < b.createdAt ? 1 : -1;
       if (sortBy === "oldest") return a.createdAt > b.createdAt ? 1 : -1;
       if (sortBy === "nextContactSoon") return compareDateAsc(a.nextContactAt, b.nextContactAt);
@@ -336,13 +443,13 @@ function LeadsCategoryView({
       const bDelivery = b.exportProgress?.expectedDeliveryDate ?? b.contract?.pickupPlannedAt ?? null;
       return compareDateAsc(aDelivery, bDelivery);
     });
-  }, [byCategory, searchInput, sortBy, searchParams, categoryKey]);
+  }, [afterPeriodFiltered, sortBy]);
 
   const canExportDeliveredExcel = profile?.role === "admin";
 
   useEffect(() => {
     setListPage(1);
-  }, [searchInput, sortBy, categoryKey, pathname]);
+  }, [searchInput, sortBy, categoryKey, pathname, regYear, regMonth]);
 
   const safeListPage = Math.min(Math.max(1, listPage), crmTotalPages(filtered.length, CRM_LIST_PAGE_SIZE));
   const pagedFiltered = useMemo(
@@ -659,11 +766,103 @@ function LeadsCategoryView({
               setSearchInput("");
               setSortBy("latest");
               setListPage(1);
+              setRegistrationPeriodFilter("", "");
             }}
             className="crm-btn-secondary"
           >
-            검색·정렬 초기화
+            검색·정렬·등록일 필터 초기화
           </TapButton>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-zinc-200/90 bg-white/90 p-5 dark:border-zinc-800 dark:bg-zinc-900/40">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <div className="text-[11px] font-medium uppercase tracking-widest text-zinc-400 dark:text-zinc-500">
+              등록일(created_at) 필터
+            </div>
+            <p className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+              검색·단계·대시보드 조건을 먼저 반영한 뒤, 등록 연·월로 좋합니다. 건수는 아래 목록과 동일합니다.
+            </p>
+          </div>
+          <TapButton
+            type="button"
+            onClick={() => setRegistrationPeriodFilter("", "")}
+            className={cn(
+              "shrink-0 rounded-xl border px-3 py-2 text-xs font-semibold",
+              !regYear && !regMonth
+                ? "border-[var(--crm-blue)] bg-[var(--crm-blue)]/15 text-[var(--crm-blue-deep)] dark:border-sky-500/50 dark:bg-sky-500/15 dark:text-sky-100"
+                : "crm-btn-secondary"
+            )}
+          >
+            전체 보기
+          </TapButton>
+        </div>
+
+        <div className="mt-4">
+          <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">연도별</div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {yearBuckets.length === 0 ? (
+              <span className="text-xs text-zinc-400">표시할 연도가 없습니다.</span>
+            ) : (
+              yearBuckets.map(([y, n]) => {
+                const active = regYear === y && !regMonth;
+                return (
+                  <button
+                    key={y}
+                    type="button"
+                    onClick={() =>
+                      active ? setRegistrationPeriodFilter("", "") : setRegistrationPeriodFilter(y, "")
+                    }
+                    className={cn(
+                      "rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+                      active
+                        ? "border-[var(--crm-blue)] bg-[var(--crm-blue)]/15 text-[var(--crm-blue-deep)] dark:border-sky-500/50 dark:bg-sky-500/15 dark:text-sky-100"
+                        : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900/50 dark:text-zinc-200 dark:hover:border-zinc-600"
+                    )}
+                  >
+                    {y}년 ({n})
+                  </button>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">
+            월별{regYear ? ` · ${regYear}년` : ""}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {monthBucketsScoped.length === 0 ? (
+              <span className="text-xs text-zinc-400">
+                {regYear ? "해당 연도에 등록일이 있는 고객이 없습니다." : "표시할 월이 없습니다."}
+              </span>
+            ) : (
+              monthBucketsScoped.map(([key, n]) => {
+                const [yy, mm] = key.split("-");
+                const monthNum = Number(mm);
+                const active = regYear === yy && regMonth === mm;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() =>
+                      active ? setRegistrationPeriodFilter(yy, "") : setRegistrationPeriodFilter(yy, mm)
+                    }
+                    className={cn(
+                      "rounded-lg border px-2.5 py-1.5 text-xs font-medium transition-colors",
+                      active
+                        ? "border-[var(--crm-blue)] bg-[var(--crm-blue)]/15 text-[var(--crm-blue-deep)] dark:border-sky-500/50 dark:bg-sky-500/15 dark:text-sky-100"
+                        : "border-zinc-200 bg-white text-zinc-700 hover:border-zinc-300 dark:border-zinc-700 dark:bg-zinc-900/50 dark:text-zinc-200 dark:hover:border-zinc-600"
+                    )}
+                  >
+                    {yy}년 {Number.isFinite(monthNum) ? `${monthNum}월` : mm} ({n})
+                  </button>
+                );
+              })
+            )}
+          </div>
         </div>
       </div>
 

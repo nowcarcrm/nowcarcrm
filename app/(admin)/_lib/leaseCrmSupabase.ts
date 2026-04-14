@@ -641,15 +641,31 @@ function mapRowToLead(
 ): Lead {
   const rowLeadId = coerceDbStringId(row.id);
   const forLead = consultations.filter((c) => coerceDbStringId(c.lead_id) === rowLeadId);
-  let extraPayload: LeadExtraPayloadV1 | null = null;
+  const extraParsed: LeadExtraPayloadV1[] = [];
   const visibleConsultations: ConsultationRow[] = [];
   for (const rowC of forLead) {
     const p = parseLeadExtraMemo(rowC.memo ?? "");
     if (p) {
-      if (!extraPayload) extraPayload = p;
+      extraParsed.push(p);
       continue;
     }
     visibleConsultations.push(rowC);
+  }
+  let extraPayload: LeadExtraPayloadV1 | null = null;
+  if (extraParsed.length > 0) {
+    extraPayload = { ...extraParsed[0] };
+    for (let i = 1; i < extraParsed.length; i++) {
+      extraPayload = { ...extraPayload, ...extraParsed[i] };
+    }
+    if (extraParsed.length > 1) {
+      const byQuoteId = new Map<string, QuoteHistoryEntry>();
+      for (const p of extraParsed) {
+        for (const e of normalizeQuoteHistory(p.quoteHistory)) {
+          if (!byQuoteId.has(e.id)) byQuoteId.set(e.id, e);
+        }
+      }
+      extraPayload = { ...extraPayload, quoteHistory: [...byQuoteId.values()] };
+    }
   }
 
   const records: CounselingRecord[] = visibleConsultations.map((c) => {
@@ -890,7 +906,7 @@ function coerceNumericForDb(value: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-function toConsultationRows(lead: Lead): ConsultationInsert[] {
+function parseLeadIdForConsultations(lead: Lead): number {
   const leadIdText = coerceDbStringId(lead.id);
   if (!/^\d+$/.test(leadIdText)) {
     throw new Error(`consultations.lead_id는 bigint여야 합니다. 현재 값: ${leadIdText}`);
@@ -899,6 +915,38 @@ function toConsultationRows(lead: Lead): ConsultationInsert[] {
   if (!Number.isSafeInteger(leadId) || leadId <= 0) {
     throw new Error(`consultations.lead_id bigint 변환 실패: ${leadIdText}`);
   }
+  return leadId;
+}
+
+function toLeadExtraConsultationRow(lead: Lead): ConsultationInsert {
+  const leadId = parseLeadIdForConsultations(lead);
+  const normalized = normalizeLeadForPersistence(lead);
+  const defaultCounselor = normalized.base.ownerStaff?.trim() || "미지정";
+  const createdRaw = normalized.createdAt?.trim();
+  const createdMs = createdRaw ? Date.parse(createdRaw) : NaN;
+  const created_at = Number.isFinite(createdMs)
+    ? new Date(createdMs).toISOString()
+    : new Date().toISOString();
+  return {
+    lead_id: leadId,
+    counselor: defaultCounselor,
+    method: "전화",
+    importance: "보통",
+    reaction: "",
+    desired_progress_at: null,
+    next_action_at: null,
+    next_contact_memo: null,
+    memo: serializeLeadExtraMemo(normalized),
+    created_at,
+  };
+}
+
+function consultationsPayloadForPersist(lead: Lead): ConsultationInsert[] {
+  return [toLeadExtraConsultationRow(lead), ...toConsultationRows(lead)];
+}
+
+function toConsultationRows(lead: Lead): ConsultationInsert[] {
+  const leadId = parseLeadIdForConsultations(lead);
 
   const defaultCounselor = lead.base.ownerStaff?.trim() || "미지정";
   const defaultMethod = "전화";
@@ -934,7 +982,6 @@ function toConsultationRows(lead: Lead): ConsultationInsert[] {
     };
     return sanitizeConsultationRow(row);
   });
-  // consultations에는 상담 레코드 컬럼만 저장한다(CRM_EXTRA 메타 행 제외).
   return rows;
 }
 
@@ -1318,10 +1365,8 @@ export async function fetchLeadById(
   }
   const row = rowData as LeadRow | null;
   if (!row) return null;
-  console.log("fetchLeadById raw row:", row);
   const rowLeadId = coerceDbStringId(row.id);
   const { consultations, contracts, exportRows } = await fetchLeadRelationsByIds([rowLeadId]);
-  console.log("fetchLeadById contracts relation:", contracts[0] ?? null);
   return mapRowToLead(row, consultations, contracts[0] ?? null, exportRows[0] ?? null);
 }
 
@@ -1620,9 +1665,13 @@ async function replaceLeadRelations(lead: Lead, options?: UpdateLeadOptions) {
   }
 
   if (shouldSyncConsultations) {
-    const consultations = toConsultationRows(lead);
-    console.log("consultations payload full:", JSON.stringify(consultations, null, 2));
-    console.log("consultations first row:", consultations?.[0]);
+    const consultations = consultationsPayloadForPersist(lead);
+    devLog("[Supabase] consultations persist", {
+      leadId: lead.id,
+      rowCount: consultations.length,
+      counselingRows: consultations.length > 0 ? consultations.length - 1 : 0,
+      quoteHistoryCount: Array.isArray(lead.quoteHistory) ? lead.quoteHistory.length : 0,
+    });
     if (consultations.length > 0) {
       const { error: cErr } = await supabase.from("consultations").insert(consultations);
       if (cErr) {

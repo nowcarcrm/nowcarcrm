@@ -539,17 +539,29 @@ export default function LeadDetailModal({
 
   async function persist(next: Lead) {
     const payload = leadPayloadForServer(ensureLeadShape(next));
-    devLog("[LeadDetailModal] persist 저장 직전 payload", payload);
+    const qh = payload.quoteHistory ?? [];
+    devLog("[LeadDetailModal] quoteHistory persist", {
+      leadId: payload.id,
+      estimateRowCount: qh.length,
+      estimatePayloadPreview: qh.slice(0, 3),
+    });
     setSaving(true);
     try {
       await Promise.resolve(
         onUpdate(payload, { syncConsultations: true, syncContracts: false, syncExportProgress: false })
       );
+      if (profile) {
+        const fresh = await fetchLeadById(payload.id, { role: profile.role, userId: profile.userId });
+        devLog("[LeadDetailModal] quoteHistory refetch", {
+          leadId: payload.id,
+          estimateLengthAfter: fresh?.quoteHistory?.length ?? 0,
+        });
+      }
       await refetchAfterSave(payload.id, payload);
-      toast.success("견적 저장 완료");
+      toast.success("견적이력이 저장되었습니다.");
     } catch (error) {
       console.error("[LeadDetailModal] persist 저장 실패", formatSupabaseError(error), error, payload);
-      toast.error("저장하지 못했습니다.");
+      toast.error("견적이력 저장에 실패했습니다.");
     } finally {
       setSaving(false);
     }
