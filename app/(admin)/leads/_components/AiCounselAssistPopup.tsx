@@ -29,7 +29,7 @@ const TONE_ACTIONS = [
   { label: "적극적으로", tone: "strong" as const },
 ] as const;
 
-export default function AiCounselAssistPopup({ lead }: { lead: Lead }) {
+export default function AiCounselAssistPopup({ lead }: { lead?: Lead }) {
   const [open, setOpen] = useState(false);
   const [input, setInput] = useState("");
   const [result, setResult] = useState<AssistResult | null>(null);
@@ -60,7 +60,7 @@ export default function AiCounselAssistPopup({ lead }: { lead: Lead }) {
         Authorization: `Bearer ${token}`,
       },
       body: JSON.stringify({
-        leadId: lead.id,
+        leadId: lead?.id,
         question,
       }),
     });

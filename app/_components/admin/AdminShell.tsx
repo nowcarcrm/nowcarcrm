@@ -16,6 +16,8 @@ import {
   updateLead,
 } from "@/app/(admin)/_lib/leaseCrmStorage";
 import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
+import { listActiveUsers } from "@/app/(admin)/_lib/usersSupabase";
+import AiCounselAssistPopup from "@/app/(admin)/leads/_components/AiCounselAssistPopup";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -104,12 +106,6 @@ const NAV_ITEMS: NavItem[] = [
     label: "계약",
     href: "/leads/contract-progress",
     description: "계약완료·확정 (출고 전)",
-  },
-  {
-    section: "sales",
-    label: "출고",
-    href: "/leads/export-progress",
-    description: "상담결과 · 출고 진행",
   },
   {
     section: "sales",
@@ -353,7 +349,32 @@ function SidebarContents({
   searchValue: string;
   onSearchChange: (q: string) => void;
 }) {
+  const router = useRouter();
   const pathname = usePathname();
+  const [staffOptions, setStaffOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const showAdminManagerFilter =
+    currentUser?.role === "admin" && (pathname?.startsWith("/operations/all-customers") ?? false);
+
+  useEffect(() => {
+    if (!showAdminManagerFilter) return;
+    let mounted = true;
+    (async () => {
+      const users = await listActiveUsers();
+      if (!mounted) return;
+      setStaffOptions(users.map((u) => ({ id: u.id, name: u.name?.trim() || "이름없음" })));
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [showAdminManagerFilter]);
+
+  useEffect(() => {
+    if (!showAdminManagerFilter) return;
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams(window.location.search);
+    setSelectedUserId(sp.get("managerUserId") ?? "");
+  }, [showAdminManagerFilter, pathname]);
   const activeHref = useMemo(() => {
     if (!pathname) return "";
     const p = pathname.replace(/\/$/, "") || "/";
@@ -417,6 +438,36 @@ function SidebarContents({
           onChange={onSearchChange}
           className="w-full"
         />
+        {showAdminManagerFilter ? (
+          <div className="mt-3">
+            <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.12em] text-slate-400">
+              담당 직원 필터
+            </label>
+            <select
+              value={selectedUserId}
+              onChange={(e) => {
+                const nextId = e.target.value;
+                setSelectedUserId(nextId);
+                if (typeof window === "undefined") return;
+                const url = new URL(window.location.href);
+                if (nextId) {
+                  url.searchParams.set("managerUserId", nextId);
+                } else {
+                  url.searchParams.delete("managerUserId");
+                }
+                router.push(`${url.pathname}${url.search}`, { scroll: false });
+              }}
+              className="crm-field crm-field-select w-full text-[13px]"
+            >
+              <option value="">전체 직원</option>
+              {staffOptions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : null}
       </div>
 
       <nav className="flex-1 overflow-y-auto overscroll-contain px-3 pb-4 pt-5">
@@ -721,6 +772,7 @@ export default function AdminShell({
               }}
             />
           ) : null}
+          <AiCounselAssistPopup />
         </div>
       </LeadDetailModalContext.Provider>
     </LeadListSearchContext.Provider>

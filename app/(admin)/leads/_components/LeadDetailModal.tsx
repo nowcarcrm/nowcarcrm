@@ -563,12 +563,18 @@ export default function LeadDetailModal({
   async function persist(next: Lead) {
     const payload = leadPayloadForServer(ensureLeadShape(next));
     devLog("[LeadDetailModal] persist 저장 직전 payload", payload);
+    console.log("[LeadDetailModal] persist payload", payload);
     setSaving(true);
     try {
       await Promise.resolve(
         onUpdate(payload, { syncConsultations: true, syncContracts: false, syncExportProgress: false })
       );
-      setDraft(payload);
+      if (profile) {
+        const fresh = await fetchLeadById(payload.id, { role: profile.role, userId: profile.userId });
+        setDraft(ensureLeadShape(fresh ?? payload));
+      } else {
+        setDraft(payload);
+      }
       toast.success("저장했습니다.");
     } catch (error) {
       console.error("[LeadDetailModal] persist 저장 실패", formatSupabaseError(error), error, payload);
@@ -653,10 +659,6 @@ export default function LeadDetailModal({
       nextCounselingStatus,
       reviewStatus: draft.creditReviewStatus,
     });
-    if (profile?.role === "staff") {
-      toast.error("직원 권한에서는 계약을 저장할 수 없습니다.");
-      return;
-    }
     const nextIso = new Date().toISOString();
     const fallbackTerm = draft.base.contractTerm || "36개월";
     const today = new Date().toISOString().slice(0, 10);

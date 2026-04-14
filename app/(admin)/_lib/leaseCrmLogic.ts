@@ -65,7 +65,7 @@ export function resolveLeadStageKeyFromCounselingResult(result: CounselingStatus
     case "확정":
       return "contract-progress";
     case "출고":
-      return "export-progress";
+      return "contract-progress";
     case "인도완료":
       return "delivery-complete";
     case "보류":

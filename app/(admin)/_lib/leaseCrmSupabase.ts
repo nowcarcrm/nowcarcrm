@@ -412,6 +412,9 @@ type LeadRow = {
   summary_text?: string | null;
   next_action?: string | null;
   customer_intent?: string | null;
+  memo?: string | null;
+  contract_period?: string | null;
+  deposit?: number | null;
   created_at: string;
 };
 
@@ -752,7 +755,11 @@ function mapRowToLead(
 
   const ext = extraPayload;
   const depositAmt =
-    typeof ext?.depositOrPrepaymentAmount === "string" ? ext.depositOrPrepaymentAmount : "";
+    (typeof row.deposit === "number" && Number.isFinite(row.deposit)
+      ? String(row.deposit)
+      : typeof ext?.depositOrPrepaymentAmount === "string"
+        ? ext.depositOrPrepaymentAmount
+        : "") ?? "";
   const lead: Lead = {
     id: rowLeadId,
     managerUserId: nullableDbStringId(row.manager_user_id),
@@ -770,11 +777,11 @@ function mapRowToLead(
         typeof ext?.wantedMonthlyPayment === "number" && Number.isFinite(ext.wantedMonthlyPayment)
           ? ext.wantedMonthlyPayment
           : 0,
-      contractTerm: (ext?.contractTerm ?? "").trim() || "36개월",
+      contractTerm: (row.contract_period ?? ext?.contractTerm ?? "").trim() || "36개월",
       hasDepositOrPrepayment: !!(ext?.hasDepositOrPrepayment || depositAmt.trim().length > 0),
       depositOrPrepaymentAmount: depositAmt,
       ownerStaff: row.manager,
-      memo: typeof ext?.memo === "string" ? ext.memo : "",
+      memo: (row.memo ?? (typeof ext?.memo === "string" ? ext.memo : "") ?? "").trim(),
     },
     counselingStatus: normalizeCounselingStatus(row.status),
     statusUpdatedAt: row.created_at,
@@ -822,6 +829,9 @@ function toLeadInsertRow(lead: Lead) {
     manager_user_id: nullableDbStringId(lead.managerUserId),
     next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
     review_status: lead.creditReviewStatus,
+    memo: lead.base.memo,
+    contract_period: lead.base.contractTerm,
+    deposit: coerceNumericForDb(lead.base.depositOrPrepaymentAmount),
     created_at: lead.createdAt,
   };
 }
@@ -838,6 +848,9 @@ function toLeadUpdateRow(lead: Lead) {
     manager_user_id: nullableDbStringId(lead.managerUserId),
     next_contact_at: normalizeNextContactAtForLeadColumn(lead.nextContactAt),
     review_status: lead.creditReviewStatus,
+    memo: lead.base.memo,
+    contract_period: lead.base.contractTerm,
+    deposit: coerceNumericForDb(lead.base.depositOrPrepaymentAmount),
   };
 }
 

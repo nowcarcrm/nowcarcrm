@@ -40,6 +40,7 @@ import { listActiveUsers } from "../../_lib/usersSupabase";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
 import { AnimatedStatNumber, LeadTableSkeleton, TapButton } from "@/app/_components/ui/crm-motion";
+import { downloadXlsxRows, formatDateOnlyForExcel, todayYmdKst } from "../../_lib/excelExport";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -340,6 +341,21 @@ function LeadsCategoryView({
     [filtered]
   );
 
+  function handleDeliveryExcelDownload() {
+    const delivered = filtered.filter((l) => l.counselingStatus === "인도완료");
+    const rows = delivered.map((l) => ({
+      등록일: formatDateOnlyForExcel(l.createdAt),
+      고객명: l.base.name,
+      연락처: l.base.phone,
+      담당자: l.base.ownerStaff,
+      상담결과: l.counselingStatus,
+      차량: l.contract?.vehicleName || l.base.desiredVehicle,
+      인도완료일: formatDateOnlyForExcel(l.deliveredAt ?? l.exportProgress?.deliveredAt ?? ""),
+    }));
+    downloadXlsxRows(rows, "완료고객", `delivered_customers_${todayYmdKst()}`);
+    toast.success("인도완료 고객 엑셀 다운로드가 완료되었습니다.");
+  }
+
   function commitLeads(next: Lead[]) {
     setLeads(next);
   }
@@ -554,9 +570,20 @@ function LeadsCategoryView({
             ) : null}
           </div>
         </div>
-        <TapButton type="button" onClick={() => setCreateOpen(true)} className="crm-btn-primary shrink-0 self-start">
-          고객 추가
-        </TapButton>
+        <div className="flex items-center gap-2">
+          {categoryKey === "delivery-complete" ? (
+            <TapButton
+              type="button"
+              onClick={handleDeliveryExcelDownload}
+              className="rounded-xl border border-emerald-600/80 bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700"
+            >
+              엑셀 다운로드
+            </TapButton>
+          ) : null}
+          <TapButton type="button" onClick={() => setCreateOpen(true)} className="crm-btn-primary shrink-0 self-start">
+            고객 추가
+          </TapButton>
+        </div>
       </div>
 
       <div className="flex flex-col gap-3 rounded-2xl border border-zinc-200/90 bg-[linear-gradient(180deg,#f8fbff,#f1f6fc)] p-5 sm:flex-row sm:items-end sm:justify-between dark:border-zinc-800 dark:bg-zinc-900/25">

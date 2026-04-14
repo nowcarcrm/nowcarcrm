@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import {
@@ -31,6 +31,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 
 export default function AllCustomersOperationalPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [lastConsultByLead, setLastConsultByLead] = useState<Map<string, string>>(
@@ -44,7 +45,11 @@ export default function AllCustomersOperationalPage() {
   );
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [yearFilter, setYearFilter] = useState("");
+  const [monthFilter, setMonthFilter] = useState("");
+  const [dayFilter, setDayFilter] = useState("");
   const { openLeadById } = useLeadDetailModal();
+  const selectedUserId = (searchParams.get("managerUserId") ?? "").trim();
 
   const opScope = useMemo(() => {
     if (!profile || profile.role !== "admin") return null;
@@ -100,8 +105,15 @@ export default function AllCustomersOperationalPage() {
   const filteredLeads = useMemo(() => {
     const q = search.trim().toLowerCase();
     const qd = search.replace(/\D/g, "");
-    if (!q) return sortedLeads;
     return sortedLeads.filter((l) => {
+      if (selectedUserId && (l.managerUserId ?? "") !== selectedUserId) return false;
+      const created = new Date(l.createdAt);
+      if (!Number.isNaN(created.getTime())) {
+        if (yearFilter && String(created.getFullYear()) !== yearFilter) return false;
+        if (monthFilter && String(created.getMonth() + 1).padStart(2, "0") !== monthFilter) return false;
+        if (dayFilter && String(created.getDate()).padStart(2, "0") !== dayFilter) return false;
+      }
+      if (!q) return true;
       const name = l.base.name.toLowerCase();
       const phone = l.base.phone.toLowerCase();
       const phoneD = l.base.phone.replace(/\D/g, "");
@@ -112,7 +124,18 @@ export default function AllCustomersOperationalPage() {
       if (qd.length >= 2 && phoneD.includes(qd)) return true;
       return false;
     });
-  }, [sortedLeads, search, managerNameById]);
+  }, [sortedLeads, search, managerNameById, selectedUserId, yearFilter, monthFilter, dayFilter]);
+
+  const monthlyBuckets = useMemo(() => {
+    const bucket = new Map<string, number>();
+    for (const lead of sortedLeads) {
+      const d = new Date(lead.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      bucket.set(key, (bucket.get(key) ?? 0) + 1);
+    }
+    return [...bucket.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [sortedLeads]);
 
   const openLead = useCallback(
     async (id: string) => {
@@ -194,6 +217,58 @@ export default function AllCustomersOperationalPage() {
             className="crm-field w-full text-[14px]"
             placeholder="검색어 입력"
           />
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <select value={yearFilter} onChange={(e) => setYearFilter(e.target.value)} className="crm-field crm-field-select text-[13px]">
+            <option value="">연도 전체</option>
+            {Array.from(new Set(sortedLeads.map((l) => String(new Date(l.createdAt).getFullYear()))))
+              .filter((y) => y !== "NaN")
+              .sort((a, b) => (a < b ? 1 : -1))
+              .map((y) => (
+                <option key={y} value={y}>
+                  {y}년
+                </option>
+              ))}
+          </select>
+          <select value={monthFilter} onChange={(e) => setMonthFilter(e.target.value)} className="crm-field crm-field-select text-[13px]">
+            <option value="">월 전체</option>
+            {Array.from({ length: 12 }).map((_, i) => {
+              const mm = String(i + 1).padStart(2, "0");
+              return (
+                <option key={mm} value={mm}>
+                  {i + 1}월
+                </option>
+              );
+            })}
+          </select>
+          <select value={dayFilter} onChange={(e) => setDayFilter(e.target.value)} className="crm-field crm-field-select text-[13px]">
+            <option value="">일 전체</option>
+            {Array.from({ length: 31 }).map((_, i) => {
+              const dd = String(i + 1).padStart(2, "0");
+              return (
+                <option key={dd} value={dd}>
+                  {i + 1}일
+                </option>
+              );
+            })}
+          </select>
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {monthlyBuckets.slice(0, 12).map(([month, count]) => (
+            <button
+              key={month}
+              type="button"
+              onClick={() => {
+                const [y, m] = month.split("-");
+                setYearFilter(y);
+                setMonthFilter(m);
+                setDayFilter("");
+              }}
+              className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-[12px] font-medium text-slate-700 hover:bg-slate-50"
+            >
+              {month} ({count})
+            </button>
+          ))}
         </div>
       </header>
 
