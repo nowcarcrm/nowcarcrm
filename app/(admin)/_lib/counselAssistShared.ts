@@ -4,13 +4,19 @@ export const COUNSEL_ASSIST_UI_TONES = ["친절형", "설득형", "단호형", "
 export type CounselAssistUiTone = (typeof COUNSEL_ASSIST_UI_TONES)[number];
 
 export const COUNSEL_ASSIST_PURPOSES = [
-  "첫 응대",
-  "비교견적 응대",
-  "망설이는 고객 설득",
-  "계약 전환 유도",
-  "재컨택 멘트",
-  "출고 지연 안내",
-  "클레임 진정",
+  "첫인사",
+  "재컨택",
+  "견적안내",
+  "프로모션안내",
+  "클로징",
+  "이탈방지",
+  "장기미응답",
+  "문자카톡용(짧게)",
+  "추가혜택안내",
+  "계약후감사",
+  "소개요청",
+  "출고안내",
+  "경쟁사대응",
 ] as const;
 export type CounselAssistPurpose = (typeof COUNSEL_ASSIST_PURPOSES)[number];
 
@@ -186,7 +192,7 @@ export function defaultCounselAssistManualInput(lead?: Lead | null): CounselAssi
 export function defaultCounselAssistRequestOptions(): CounselAssistRequestOptions {
   return {
     uiTone: "친절형",
-    purpose: "재컨택 멘트",
+    purpose: "재컨택",
   };
 }
 

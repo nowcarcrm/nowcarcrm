@@ -10,8 +10,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 }
 
 export type DashboardKpiValues = {
-  expectedCommissionWon: number;
-  confirmedCommissionThisMonthWon: number;
+  thisMonthSalesRevenueWon: number;
   thisMonthRegisteredCount: number;
   assignedCustomerCount: number;
 };
@@ -79,28 +78,16 @@ type PrimaryDef = {
 
 const PRIMARY: PrimaryDef[] = [
   {
-    key: "expected",
-    label: "이번달 예상 총수익",
-    hint: "수수료 + 대리점 수당 - 총 지원 비용",
+    key: "salesRevenue",
+    label: "이번달 매출수익",
+    hint: "계약 고객 수수료 기준 월 매출 합계",
     href: "/leads/contract-progress",
     accent: "bg-[#1a365d]",
     tier: 1,
     valueTone: "up",
     featured: true,
     suffix: "원",
-    value: (v) => v.expectedCommissionWon,
-  },
-  {
-    key: "confirmed",
-    label: "이번달 확정 총수익",
-    hint: "계약일 기준 확정 수익 합계",
-    href: "/leads/delivery-complete",
-    accent: "bg-indigo-700",
-    tier: 1,
-    valueTone: "up",
-    featured: true,
-    suffix: "원",
-    value: (v) => v.confirmedCommissionThisMonthWon,
+    value: (v) => v.thisMonthSalesRevenueWon,
   },
   {
     key: "monthReg",
@@ -154,15 +141,6 @@ const PIPELINE: {
     accent: "bg-indigo-600",
     valueKey: "contract",
     valueTone: "up",
-  },
-  {
-    key: "export",
-    label: "출고",
-    hint: "출고 일정 진행 고객",
-    href: "/leads/contract-progress",
-    accent: "bg-violet-600",
-    valueKey: "exportProgress",
-    valueTone: "neutral",
   },
   {
     key: "delivery",

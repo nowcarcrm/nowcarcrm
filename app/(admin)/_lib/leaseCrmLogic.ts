@@ -1,4 +1,3 @@
-import { calculateExpectedCommission, expectedFeeWonForLead } from "./leaseCrmCommissionMetrics";
 import { effectiveContractNetProfitForMetrics } from "./leaseCrmContractPersist";
 import type {
   CounselingStatus,
@@ -660,10 +659,10 @@ export function computeDashboardMetrics(leads: Lead[]) {
   ).length;
 
   /**
-   * 이번 달 수수료: 계약 파이프라인 고객 중 계약일(contractDate) 기준으로 합산.
-   * 계약 탭 저장(금액/퍼센트)과 대시보드 집계 기준을 동일하게 맞춘다.
+   * 이번 달 매출수익: 계약 고객(contract) 수수료 기준으로 계약일(contractDate) 월 합산.
+   * 견적 이력 수수료는 대시보드 집계에서 제외한다.
    */
-  const thisMonthConfirmedCommissionWon = leads.reduce((sum, l) => {
+  const thisMonthSalesRevenueWon = leads.reduce((sum, l) => {
     if (!isContractPipelineCounselingStatus(l.counselingStatus)) return sum;
     if (!l.contract) return sum;
     const contractDate = String(l.contract.contractDate ?? "").trim();
@@ -672,9 +671,6 @@ export function computeDashboardMetrics(leads: Lead[]) {
     const fee = effectiveContractNetProfitForMetrics(l.contract);
     return sum + fee;
   }, 0);
-
-  /** 취소 제외·계약 또는 최신 견적 수수료 합산 — 대시보드「예상 수수료」 */
-  const expectedCommissionTotal = calculateExpectedCommission(leads);
 
   const commissionSourceRows = leads
     .filter((l) => !!l.contract)
@@ -689,8 +685,7 @@ export function computeDashboardMetrics(leads: Lead[]) {
   console.log("dashboard commission sum column:", "effectiveContractNetProfitForMetrics(contract)");
   console.log("dashboard date column:", "contract.contractDate (YYYY-MM)");
   console.log("dashboard computed result:", {
-    expectedCommissionTotal,
-    thisMonthConfirmedCommissionWon,
+    thisMonthSalesRevenueWon,
   });
 
   const staff = new Map<
@@ -725,8 +720,9 @@ export function computeDashboardMetrics(leads: Lead[]) {
     thisMonthContractCompleted,
     thisMonthExpectedFee,
     thisMonthRegisteredCount,
-    thisMonthConfirmedCommissionWon,
-    expectedCommissionTotal,
+    thisMonthSalesRevenueWon,
+    thisMonthConfirmedCommissionWon: thisMonthSalesRevenueWon,
+    expectedCommissionTotal: thisMonthSalesRevenueWon,
     staff: Array.from(staff.values()).sort((a, b) => b.counselingCount - a.counselingCount),
     unprocessedNewDb: automation.unprocessedNewDb,
     followUpPlanned: leads.filter((l) => l.counselingStatus === "상담중" && !!l.nextContactAt).length,

@@ -2,19 +2,15 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { supabase } from "../../_lib/supabaseClient";
 import type { Lead } from "../../_lib/leaseCrmTypes";
 import {
   COUNSEL_ASSIST_OBJECTION_OPTIONS,
   COUNSEL_ASSIST_PURPOSES,
   COUNSEL_ASSIST_UI_TONES,
-  buildCounselAssistPayload,
   defaultCounselAssistManualInput,
   defaultCounselAssistRequestOptions,
   type CounselAssistManualInput,
-  type CounselAssistMessageTone,
   type CounselAssistPurpose,
-  type CounselAssistResult,
   type CounselAssistUiTone,
 } from "../../_lib/counselAssistShared";
 import { getDataAccessScopeByRank } from "../../_lib/rolePermissions";
@@ -30,6 +26,20 @@ type RequestOptions = {
   purpose: CounselAssistPurpose;
 };
 
+type GenerateMentResult = {
+  mainMent: string;
+  altMent1: string;
+  altMent2: string;
+  analysis: {
+    customerTemperature: "HOT" | "WARM" | "COLD";
+    urgencyLevel: "긴급" | "보통" | "여유";
+    keyPoint: string;
+    cautionNote: string;
+    nextAction: string;
+  };
+  timing: string;
+};
+
 const COPY_OK = "복사되었습니다.";
 const COPY_FAIL = "복사에 실패했습니다.";
 
@@ -37,18 +47,11 @@ function leadDraftKey(leadId: string) {
   return `nowcar_ai_assist_draft:${leadId}`;
 }
 
-function ScoreBar({ label, value }: { label: string; value: number }) {
-  const v = Math.min(100, Math.max(0, value));
+function InfoTag({ label }: { label: string }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between text-[11px] font-medium text-zinc-600 dark:text-zinc-400">
-        <span>{label}</span>
-        <span className="tabular-nums text-zinc-900 dark:text-zinc-100">{v}</span>
-      </div>
-      <div className="h-2 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
-        <div className="h-full rounded-full bg-gradient-to-r from-sky-500 to-indigo-600" style={{ width: `${v}%` }} />
-      </div>
-    </div>
+    <span className="rounded-full border border-zinc-300 bg-zinc-100 px-2 py-1 text-[11px] font-medium text-zinc-700 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-200">
+      {label}
+    </span>
   );
 }
 
@@ -88,8 +91,9 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorText, setErrorText] = useState("");
-  const [result, setResult] = useState<CounselAssistResult | null>(null);
-  const [copyFlash, setCopyFlash] = useState<CounselAssistMessageTone | "oneLine" | "all" | null>(null);
+  const [result, setResult] = useState<GenerateMentResult | null>(null);
+  const [copyFlash, setCopyFlash] = useState<"mainMent" | "altMent1" | "altMent2" | null>(null);
+  const [expandedAlt, setExpandedAlt] = useState<"altMent1" | "altMent2" | null>(null);
 
   const [options, setOptions] = useState<RequestOptions>(defaultCounselAssistRequestOptions());
   const [manualInput, setManualInput] = useState<CounselAssistManualInput>(defaultCounselAssistManualInput(lead));
@@ -153,16 +157,52 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
     }
   }, [lead?.id, manualInput, options]);
 
-  const payloadPreview = useMemo(() => {
-    if (!result) return "";
-    return [
-      `현재 단계: ${result.customerStage}`,
-      `지금 추천 액션: ${result.recommendedAction}`,
-      `한 줄 답변: ${result.oneLineReply}`,
-      `전환 코멘트: ${result.conversionLikelihoodNote}`,
-      `Push/Pause: ${result.pushOrPauseAdvice}`,
-    ].join("\n");
-  }, [result]);
+  const customerInfo = useMemo(() => {
+    if (!lead) return {};
+    return {
+      leadId: lead.id,
+      name: lead.base.name,
+      phone: lead.base.phone,
+      desiredVehicle: manualInput.desiredVehicle || lead.base.desiredVehicle,
+      source: lead.base.source,
+      budget: manualInput.upfrontBudgetRange || lead.base.depositOrPrepaymentAmount,
+      monthlyPayment: lead.base.wantedMonthlyPayment,
+      status: lead.counselingStatus,
+      leadPriority: lead.leadPriority,
+      leadTemperature: lead.base.leadTemperature,
+      reactionSummary: manualInput.reactionSummary,
+      lastCustomerReaction: manualInput.lastCustomerReaction,
+      urgency: manualInput.urgency,
+      recentChannel: manualInput.recentChannel,
+      objections: manualInput.objections,
+      objectionsFreeText: manualInput.objectionsFreeText,
+    };
+  }, [lead, manualInput]);
+
+  const consultationHistory = useMemo(() => {
+    if (!lead?.counselingRecords?.length) return [];
+    return lead.counselingRecords.slice(0, 12).map((record) => ({
+      occurredAt: record.occurredAt,
+      method: record.method,
+      counselor: record.counselor,
+      content: record.content,
+      reaction: record.reaction,
+      nextContactAt: record.nextContactAt,
+    }));
+  }, [lead]);
+
+  const autoInfoTags = useMemo(() => {
+    if (!lead) return [];
+    const tags = [
+      lead.base.desiredVehicle ? `[${lead.base.desiredVehicle}]` : "",
+      lead.base.customerType ? `[${lead.base.customerType}]` : "",
+      lead.base.depositOrPrepaymentAmount ? `[${lead.base.depositOrPrepaymentAmount}]` : "",
+      lead.base.source ? `[${lead.base.source}]` : "",
+      lead.counselingStatus ? `[${lead.counselingStatus}]` : "",
+      lead.nextContactAt ? `[마지막연락:${lead.nextContactAt.slice(0, 10)}]` : "",
+    ].filter(Boolean);
+    return tags.slice(0, 8);
+  }, [lead]);
 
   const handleToggleObjection = (value: (typeof COUNSEL_ASSIST_OBJECTION_OPTIONS)[number]) => {
     setManualInput((prev) => {
@@ -188,26 +228,20 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
       setLoading(true);
       setErrorText("");
       try {
-        const {
-          data: { session },
-        } = await supabase.auth.getSession();
-        const token = session?.access_token;
-        if (!token) throw new Error("로그인이 필요합니다.");
-
-        const response = await fetch("/api/ai/counsel-assist", {
+        const response = await fetch("/api/ai/generate-ment", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
-            context: buildCounselAssistPayload(lead),
-            options: requestOptions,
-            manualInput,
+            tone: requestOptions.uiTone,
+            purpose: requestOptions.purpose,
+            customerInfo,
+            consultationHistory,
           }),
         });
 
-        const data = (await response.json()) as { ok?: boolean; result?: CounselAssistResult; error?: string };
+        const data = (await response.json()) as { ok?: boolean; result?: GenerateMentResult; error?: string };
 
         if (!response.ok) {
           throw new Error(data.error ?? "AI 분석 요청에 실패했습니다.");
@@ -217,6 +251,7 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
         }
 
         setResult(data.result);
+        setExpandedAlt(null);
         if (data.ok === false && data.error) toast(data.error, { icon: "⚠️" });
       } catch (e) {
         const msg = e instanceof Error ? e.message : "AI 요청 실패";
@@ -227,14 +262,14 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
         setLoading(false);
       }
     },
-    [lead, deniedByUi, denyReason, options, manualInput]
+    [lead, deniedByUi, denyReason, options, customerInfo, consultationHistory]
   );
 
-  const copyText = async (text: string, key: CounselAssistMessageTone | "oneLine" | "all") => {
+  const copyText = async (text: string, key: "mainMent" | "altMent1" | "altMent2") => {
     try {
       await navigator.clipboard.writeText(text);
       setCopyFlash(key);
-      window.setTimeout(() => setCopyFlash(null), 1300);
+      window.setTimeout(() => setCopyFlash(null), 2000);
       toast.success(COPY_OK);
     } catch {
       toast.error(COPY_FAIL);
@@ -341,6 +376,16 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
                           );
                         })}
                       </div>
+                      {autoInfoTags.length > 0 ? (
+                        <div className="space-y-2">
+                          <div className="text-[11px] font-semibold text-zinc-500 dark:text-zinc-400">자동 연동 고객 정보</div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {autoInfoTags.map((tag) => (
+                              <InfoTag key={tag} label={tag} />
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                       <div className="grid grid-cols-2 gap-2">
                         <input
                           value={manualInput.desiredVehicle}
@@ -401,7 +446,7 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
                       <textarea
                         value={manualInput.objectionsFreeText}
                         onChange={(e) => setManualInput((p) => ({ ...p, objectionsFreeText: e.target.value }))}
-                        placeholder="objection 자유 입력"
+                        placeholder="추가 특이사항을 입력하세요 (예: 색상 고집, 급한 출고 등)"
                         className="h-14 w-full resize-none rounded-lg border border-zinc-300 px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900"
                       />
                     </>
@@ -432,6 +477,9 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
 
                   {loading ? (
                     <div className="space-y-2">
+                      <div className="rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-xs font-medium text-sky-800 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-100">
+                        AI가 최적의 멘트를 분석 중입니다...
+                      </div>
                       <div className="h-20 animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800" />
                       <div className="h-28 animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800" />
                       <div className="h-24 animate-pulse rounded-xl bg-zinc-200 dark:bg-zinc-800" />
@@ -446,109 +494,110 @@ export default function AiCounselAssistPopup({ lead }: { lead?: Lead | null }) {
 
                   {result ? (
                     <>
-                      <SectionCard title="고객 상태 요약">
-                        <ul className="list-inside list-disc space-y-1 text-sm text-zinc-800 dark:text-zinc-100">
-                          {result.summary.map((line, i) => (
-                            <li key={i}>{line}</li>
-                          ))}
-                        </ul>
-                        <div className="mt-3 text-sm font-semibold text-zinc-900 dark:text-zinc-100">{result.customerStage}</div>
-                        <div className="mt-2 flex flex-wrap gap-1.5">
-                          {result.riskSignals.map((r) => (
-                            <span
-                              key={r}
-                              className="rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] dark:border-amber-500/30 dark:bg-amber-500/10"
-                            >
-                              {r}
-                            </span>
-                          ))}
-                        </div>
-                        <div className="mt-3 space-y-2">
-                          <ScoreBar label="구매 의도" value={result.purchaseIntentScore} />
-                          <ScoreBar label="가격 민감도" value={result.priceSensitivityScore} />
-                          <ScoreBar label="이탈 위험" value={result.responseRiskScore} />
-                        </div>
-                      </SectionCard>
-
-                      <SectionCard title="추천 액션 / 포인트">
-                        <p className="text-sm font-semibold text-indigo-900 dark:text-indigo-200">{result.recommendedAction}</p>
-                        <ul className="mt-2 list-inside list-decimal space-y-1 text-sm">
-                          {result.recommendedActions.map((a, i) => (
-                            <li key={i}>{a}</li>
-                          ))}
-                        </ul>
-                        <div className="mt-3">
-                          <div className="text-xs font-semibold">상담 포인트</div>
-                          <ul className="mt-1 list-inside list-disc text-sm">
-                            {result.talkPoints.map((p, i) => (
-                              <li key={i}>{p}</li>
-                            ))}
-                          </ul>
-                        </div>
-                        <div className="mt-3 space-y-1 text-xs text-zinc-600 dark:text-zinc-300">
-                          <div>전환 코멘트: {result.conversionLikelihoodNote}</div>
-                          <div>Push/Pause: {result.pushOrPauseAdvice}</div>
-                        </div>
-                      </SectionCard>
-
-                      <SectionCard title="추천 답변 3개">
-                        <div className="space-y-2">
-                          {result.messageSuggestions.map((m) => (
-                            <div key={m.tone} className="rounded-lg border border-zinc-200 bg-zinc-50 p-3 dark:border-zinc-700 dark:bg-zinc-900">
-                              <div className="flex items-center justify-between">
-                                <div className="text-xs font-bold text-sky-700 dark:text-sky-300">{m.tone}</div>
-                                <button
-                                  type="button"
-                                  onClick={() => void copyText(m.text, m.tone)}
-                                  className="rounded-md bg-sky-600 px-2 py-1 text-[11px] font-semibold text-white"
-                                >
-                                  {copyFlash === m.tone ? "복사완료" : "복사"}
-                                </button>
-                              </div>
-                              <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed">{m.text}</p>
-                            </div>
-                          ))}
-                        </div>
-                      </SectionCard>
-
-                      <SectionCard title="한 줄 카톡 / 다음 질문 / 주의 표현">
+                      <SectionCard title="메인 추천 멘트">
                         <div className="rounded-lg border border-zinc-200 bg-white p-3 dark:border-zinc-700 dark:bg-zinc-900">
-                          <div className="flex items-center justify-between gap-2">
-                            <p className="text-sm font-medium">{result.oneLineReply}</p>
+                          <p className="whitespace-pre-wrap text-base font-semibold leading-relaxed text-zinc-900 dark:text-zinc-100">
+                            {result.mainMent}
+                          </p>
+                          <div className="mt-3 flex justify-end">
                             <button
                               type="button"
-                              onClick={() => void copyText(result.oneLineReply, "oneLine")}
-                              className="rounded-md border border-zinc-300 px-2 py-1 text-[11px] dark:border-zinc-600"
+                              onClick={() => void copyText(result.mainMent, "mainMent")}
+                              className="rounded-md bg-sky-600 px-3 py-1.5 text-xs font-semibold text-white"
                             >
-                              {copyFlash === "oneLine" ? "복사완료" : "복사"}
+                              {copyFlash === "mainMent" ? "복사됨 ✓" : "복사"}
                             </button>
                           </div>
                         </div>
-                        <div className="mt-2 text-sm">
-                          <div className="font-semibold">다음 질문 2개</div>
-                          <ol className="list-inside list-decimal">
-                            {result.nextQuestions.map((q, i) => (
-                              <li key={i}>{q}</li>
-                            ))}
-                          </ol>
-                        </div>
-                        <div className="mt-2 text-sm">
-                          <div className="font-semibold">주의할 표현</div>
-                          <ul className="list-inside list-disc">
-                            {result.cautionPhrases.map((c, i) => (
-                              <li key={i}>{c}</li>
-                            ))}
-                          </ul>
+                      </SectionCard>
+
+                      <SectionCard title="대안 멘트">
+                        <div className="space-y-2">
+                          <div className="rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/60">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedAlt((prev) => (prev === "altMent1" ? null : "altMent1"))}
+                              className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-semibold"
+                            >
+                              <span>대안 멘트 1</span>
+                              <span className="text-xs text-zinc-500">{expandedAlt === "altMent1" ? "접기" : "펼치기"}</span>
+                            </button>
+                            {expandedAlt === "altMent1" ? (
+                              <div className="border-t border-zinc-200 px-3 py-3 dark:border-zinc-700">
+                                <p className="whitespace-pre-wrap text-sm leading-relaxed">{result.altMent1}</p>
+                                <div className="mt-3 flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => void copyText(result.altMent1, "altMent1")}
+                                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-semibold dark:border-zinc-600"
+                                  >
+                                    {copyFlash === "altMent1" ? "복사됨 ✓" : "복사"}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                          <div className="rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900/60">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedAlt((prev) => (prev === "altMent2" ? null : "altMent2"))}
+                              className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-semibold"
+                            >
+                              <span>대안 멘트 2</span>
+                              <span className="text-xs text-zinc-500">{expandedAlt === "altMent2" ? "접기" : "펼치기"}</span>
+                            </button>
+                            {expandedAlt === "altMent2" ? (
+                              <div className="border-t border-zinc-200 px-3 py-3 dark:border-zinc-700">
+                                <p className="whitespace-pre-wrap text-sm leading-relaxed">{result.altMent2}</p>
+                                <div className="mt-3 flex justify-end">
+                                  <button
+                                    type="button"
+                                    onClick={() => void copyText(result.altMent2, "altMent2")}
+                                    className="rounded-md border border-zinc-300 px-3 py-1.5 text-xs font-semibold dark:border-zinc-600"
+                                  >
+                                    {copyFlash === "altMent2" ? "복사됨 ✓" : "복사"}
+                                  </button>
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
                         </div>
                       </SectionCard>
 
-                      <button
-                        type="button"
-                        onClick={() => void copyText(payloadPreview, "all")}
-                        className="w-full rounded-lg border border-zinc-300 bg-white py-2 text-sm font-semibold hover:bg-zinc-100 dark:border-zinc-600 dark:bg-zinc-900"
-                      >
-                        {copyFlash === "all" ? "전체 복사완료" : "핵심 전체 복사"}
-                      </button>
+                      <SectionCard title="분석 요약">
+                        <div className="space-y-3 text-sm">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-semibold text-zinc-500">고객 온도</span>
+                            <span className="rounded-full border border-zinc-300 bg-white px-2 py-0.5 text-xs font-semibold dark:border-zinc-600 dark:bg-zinc-900">
+                              {result.analysis.customerTemperature === "HOT"
+                                ? "HOT 🔥"
+                                : result.analysis.customerTemperature === "WARM"
+                                  ? "WARM 🟡"
+                                  : "COLD 🔵"}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold text-zinc-500">긴급도</span>
+                            <p className="mt-1 font-medium">{result.analysis.urgencyLevel}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold text-zinc-500">핵심 포인트</span>
+                            <p className="mt-1">{result.analysis.keyPoint}</p>
+                          </div>
+                          <div className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-2 dark:border-indigo-500/30 dark:bg-indigo-500/10">
+                            <div className="text-xs font-semibold text-indigo-700 dark:text-indigo-200">다음 액션</div>
+                            <p className="mt-1 text-sm text-indigo-900 dark:text-indigo-100">{result.analysis.nextAction}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold text-zinc-500">주의할 점</span>
+                            <p className="mt-1">{result.analysis.cautionNote}</p>
+                          </div>
+                          <div>
+                            <span className="text-xs font-semibold text-zinc-500">멘트 타이밍</span>
+                            <p className="mt-1">{result.timing}</p>
+                          </div>
+                        </div>
+                      </SectionCard>
                     </>
                   ) : null}
                 </div>

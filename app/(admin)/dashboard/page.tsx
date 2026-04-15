@@ -114,8 +114,7 @@ export default function DashboardPage() {
   const kpiValues = useMemo((): DashboardKpiValues | null => {
     if (!leads || !metrics) return null;
     return {
-      expectedCommissionWon: metrics.expectedCommissionTotal,
-      confirmedCommissionThisMonthWon: metrics.thisMonthConfirmedCommissionWon,
+      thisMonthSalesRevenueWon: metrics.thisMonthSalesRevenueWon,
       thisMonthRegisteredCount: metrics.thisMonthRegisteredCount,
       assignedCustomerCount: leads.length,
     };
@@ -129,17 +128,14 @@ export default function DashboardPage() {
       to: now.toISOString().slice(0, 10),
     };
     const statusFilter = {
-      expected: "취소 제외 + 계약/견적 총수익",
-      confirmed: "계약 파이프라인 + contract_date 이번달 총수익",
+      salesRevenue: "계약 파이프라인 + contract_date 이번달 매출수익",
     };
     const sumColumn = {
-      expected: "contract(수수료+대리점수당-지원비)/quoteHistory.feeAmount",
-      confirmed: "contract(수수료+대리점수당-지원비)",
+      salesRevenue: "contract(수수료+대리점수당-지원비)",
     };
     console.log("dashboard commission query params:", { dateRange, statusFilter, sumColumn });
     console.log("dashboard commission result:", {
-      expectedCommissionWon: metrics.expectedCommissionTotal,
-      confirmedCommissionThisMonthWon: metrics.thisMonthConfirmedCommissionWon,
+      thisMonthSalesRevenueWon: metrics.thisMonthSalesRevenueWon,
       thisMonthRegisteredCount: metrics.thisMonthRegisteredCount,
       leadCount: leads.length,
     });
