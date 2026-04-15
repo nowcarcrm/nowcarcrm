@@ -1488,6 +1488,7 @@ export async function fetchLeadById(leadId: string, scope?: LeadSupabaseScope): 
   const row = rowData as LeadRow | null;
   if (!row) throw new LeadNotFoundError();
   if (
+    !hasOperationalFullAccess(scope) &&
     !canAccessLeadDetail(
       viewer,
       nonEmptyUserId(viewer.id),
@@ -1581,7 +1582,7 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
   if (ownerErr) throw new Error(`담당 권한 확인 실패: ${formatSupabaseError(ownerErr)}`);
   if (!ownerRow) throw new LeadNotFoundError();
   const dbManager = (ownerRow as { manager_user_id: string | null }).manager_user_id;
-  if (!canAccessLeadDetail(viewer, scopeUid, nullableDbStringId(dbManager))) {
+  if (!hasOperationalFullAccess(scope) && !canAccessLeadDetail(viewer, scopeUid, nullableDbStringId(dbManager))) {
     throw new LeadPermissionDeniedError();
   }
   const leadLocked = await prepareLeadForSupabaseWrite(lead, scope);
@@ -1670,7 +1671,7 @@ export async function deleteLead(leadId: string, scope?: ViewerScope) {
   if (ownerError) throw new Error(`삭제 권한 확인 실패: ${formatSupabaseError(ownerError)}`);
   if (!data) throw new LeadNotFoundError();
   const ownerId = nullableDbStringId((data as { manager_user_id?: string | null }).manager_user_id ?? null);
-  if (!canAccessLeadDetail(viewer, scopeUid, ownerId)) {
+  if (!hasOperationalFullAccess(scope) && !canAccessLeadDetail(viewer, scopeUid, ownerId)) {
     throw new LeadPermissionDeniedError();
   }
   await Promise.all([
