@@ -165,7 +165,9 @@ function LeadsCategoryView({
   const { profile, loading: authLoading } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
+  const safePathname = pathname ?? "/leads/new-db";
   const searchParams = useSearchParams();
+  const safeSearchParams = searchParams ?? new URLSearchParams();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
@@ -326,24 +328,24 @@ function LeadsCategoryView({
   }, [profile?.userId, authLoading]);
 
   useEffect(() => {
-    if (searchParams.get("create") === "1") {
+    if (safeSearchParams.get("create") === "1") {
       setCreateOpen(true);
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       next.delete("create");
       const q = next.toString();
-      router.replace(q ? `${pathname}?${q}` : pathname, { scroll: false });
+      router.replace(q ? `${safePathname}?${q}` : safePathname, { scroll: false });
     }
-  }, [searchParams, pathname, router]);
+  }, [safeSearchParams, pathname, router]);
 
   useEffect(() => {
-    const leadIdFromQuery = searchParams.get("leadId");
+    const leadIdFromQuery = safeSearchParams.get("leadId");
     if (!leadIdFromQuery || selectedLeadId === leadIdFromQuery) return;
     setSelectedLeadId(leadIdFromQuery);
     void openLeadById(leadIdFromQuery);
-  }, [searchParams, selectedLeadId, openLeadById]);
+  }, [safeSearchParams, selectedLeadId, openLeadById]);
 
-  const regYear = (searchParams.get("regYear") ?? "").trim();
-  const regMonth = (searchParams.get("regMonth") ?? "").trim();
+  const regYear = (safeSearchParams.get("regYear") ?? "").trim();
+  const regMonth = (safeSearchParams.get("regMonth") ?? "").trim();
 
   useEffect(() => {
     hydratedRegRef.current = false;
@@ -351,7 +353,7 @@ function LeadsCategoryView({
 
   const setRegistrationPeriodFilter = useCallback(
     (nextYear: string, nextMonth: string) => {
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       if (nextYear) {
         next.set("regYear", nextYear);
         if (nextMonth) next.set("regMonth", nextMonth);
@@ -361,7 +363,7 @@ function LeadsCategoryView({
         next.delete("regMonth");
       }
       const qs = next.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+      router.replace(qs ? `${safePathname}?${qs}` : safePathname, { scroll: false });
       try {
         if (nextYear) {
           window.localStorage.setItem(
@@ -375,14 +377,14 @@ function LeadsCategoryView({
         /* ignore */
       }
     },
-    [categoryKey, pathname, router, searchParams]
+    [categoryKey, pathname, router, safeSearchParams]
   );
 
   useEffect(() => {
     if (hydratedRegRef.current) return;
     hydratedRegRef.current = true;
     if (typeof window === "undefined") return;
-    if (searchParams.get("regYear") || searchParams.get("regMonth")) return;
+    if (safeSearchParams.get("regYear") || safeSearchParams.get("regMonth")) return;
     try {
       const raw = window.localStorage.getItem(`nowcar_leads_reg:${categoryKey}`)?.trim();
       if (!raw) return;
@@ -390,14 +392,14 @@ function LeadsCategoryView({
       const y = (o?.year ?? "").trim();
       if (!y) return;
       const m = (o?.month ?? "").trim();
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       next.set("regYear", y);
       if (m) next.set("regMonth", m);
-      router.replace(`${pathname}?${next.toString()}`, { scroll: false });
+      router.replace(`${safePathname}?${next.toString()}`, { scroll: false });
     } catch {
       /* ignore */
     }
-  }, [categoryKey, pathname, router, searchParams]);
+  }, [categoryKey, pathname, router, safeSearchParams]);
 
   const byCategory = useMemo(() => {
     if (!leads) return [];
@@ -420,7 +422,7 @@ function LeadsCategoryView({
       : byCategory;
 
     const todayKey = toDateKey(new Date().toISOString());
-    const fromDash = searchParams.get("fromDash");
+    const fromDash = safeSearchParams.get("fromDash");
     let listForDash = bySearch;
 
     if (categoryKey === "new-db" && fromDash === "todayNew") {

@@ -49,6 +49,7 @@ export default function AllCustomersOperationalPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const safeSearchParams = searchParams ?? new URLSearchParams();
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [lastConsultByLead, setLastConsultByLead] = useState<Map<string, string>>(
@@ -69,7 +70,7 @@ export default function AllCustomersOperationalPage() {
   const [listPage, setListPage] = useState(1);
   const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
-  const selectedUserId = (searchParams.get("managerUserId") ?? "").trim();
+  const selectedUserId = (safeSearchParams.get("managerUserId") ?? "").trim();
   const adminOverviewViewer = {
     id: profile?.userId,
     role: profile?.role,
@@ -235,7 +236,7 @@ export default function AllCustomersOperationalPage() {
 
   const setSelectedManagerUserId = useCallback(
     (id: string) => {
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       if (id) next.set("managerUserId", id);
       else next.delete("managerUserId");
       const qs = next.toString();
@@ -248,26 +249,26 @@ export default function AllCustomersOperationalPage() {
         /* ignore */
       }
     },
-    [pathname, router, searchParams]
+    [pathname, router, safeSearchParams]
   );
 
   useEffect(() => {
     if (hydratedManagerRef.current) return;
     hydratedManagerRef.current = true;
     if (typeof window === "undefined") return;
-    const fromUrl = (searchParams.get("managerUserId") ?? "").trim();
+    const fromUrl = (safeSearchParams.get("managerUserId") ?? "").trim();
     if (fromUrl) return;
     try {
       const saved = window.localStorage.getItem(STORAGE_MANAGER_KEY)?.trim();
       if (!saved) return;
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       next.set("managerUserId", saved);
       const base = pathname || "/operations/all-customers";
       router.replace(`${base}?${next.toString()}`, { scroll: false });
     } catch {
       /* ignore */
     }
-  }, [pathname, router, searchParams]);
+  }, [pathname, router, safeSearchParams]);
 
   const yearlyBuckets = useMemo(() => {
     const bucket = new Map<string, number>();

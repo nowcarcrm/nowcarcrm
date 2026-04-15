@@ -15,15 +15,16 @@ function safeInternalPath(raw: string | null, fallback: string): string {
 function AuthCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const safeSearchParams = searchParams ?? new URLSearchParams();
   const [status, setStatus] = useState<"working" | "error">("working");
   const [message, setMessage] = useState("인증을 처리하는 중…");
 
   useEffect(() => {
-    const next = safeInternalPath(searchParams.get("next"), "/reset-password");
-    const code = searchParams.get("code");
+    const next = safeInternalPath(safeSearchParams.get("next"), "/reset-password");
+    const code = safeSearchParams.get("code");
     const err =
-      searchParams.get("error_description")?.replace(/\+/g, " ") ??
-      searchParams.get("error");
+      safeSearchParams.get("error_description")?.replace(/\+/g, " ") ??
+      safeSearchParams.get("error");
 
     if (err) {
       queueMicrotask(() => {
@@ -60,7 +61,7 @@ function AuthCallbackContent() {
     return () => {
       cancelled = true;
     };
-  }, [router, searchParams]);
+  }, [router, safeSearchParams]);
 
   return (
     <div className="flex min-h-dvh flex-col items-center justify-center bg-zinc-50 px-4 dark:bg-zinc-950">

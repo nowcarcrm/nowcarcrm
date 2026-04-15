@@ -42,7 +42,7 @@ import {
 export default function StaffCustomerDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const userId = typeof params.userId === "string" ? params.userId : "";
+  const userId = typeof params?.userId === "string" ? params.userId : "";
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [staffName, setStaffName] = useState("");

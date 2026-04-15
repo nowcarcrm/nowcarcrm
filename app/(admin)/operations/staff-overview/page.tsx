@@ -80,6 +80,7 @@ export default function StaffOverviewPage() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const safeSearchParams = searchParams ?? new URLSearchParams();
   const { profile, loading: authLoading } = useAuth();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [overviewRows, setOverviewRows] = useState<StaffOverviewRow[]>([]);
@@ -95,7 +96,7 @@ export default function StaffOverviewPage() {
   const [detailListPage, setDetailListPage] = useState(1);
   const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
-  const managerUserIdFilter = (searchParams.get("managerUserId") ?? "").trim();
+  const managerUserIdFilter = (safeSearchParams.get("managerUserId") ?? "").trim();
   const adminOverviewViewer = {
     id: profile?.userId,
     role: profile?.role,
@@ -221,7 +222,7 @@ export default function StaffOverviewPage() {
 
   const setManagerUserIdFilter = useCallback(
     (id: string) => {
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       if (id) next.set("managerUserId", id);
       else next.delete("managerUserId");
       const qs = next.toString();
@@ -234,26 +235,26 @@ export default function StaffOverviewPage() {
         /* ignore */
       }
     },
-    [pathname, router, searchParams]
+    [pathname, router, safeSearchParams]
   );
 
   useEffect(() => {
     if (hydratedManagerRef.current) return;
     hydratedManagerRef.current = true;
     if (typeof window === "undefined") return;
-    const fromUrl = (searchParams.get("managerUserId") ?? "").trim();
+    const fromUrl = (safeSearchParams.get("managerUserId") ?? "").trim();
     if (fromUrl) return;
     try {
       const saved = window.localStorage.getItem(STORAGE_STAFF_OVERVIEW_MANAGER_KEY)?.trim();
       if (!saved) return;
-      const next = new URLSearchParams(searchParams.toString());
+      const next = new URLSearchParams(safeSearchParams.toString());
       next.set("managerUserId", saved);
       const base = pathname || "/operations/staff-overview";
       router.replace(`${base}?${next.toString()}`, { scroll: false });
     } catch {
       /* ignore */
     }
-  }, [pathname, router, searchParams]);
+  }, [pathname, router, safeSearchParams]);
 
   const staffSelectOptions = useMemo(() => {
     return [...overviewRows]

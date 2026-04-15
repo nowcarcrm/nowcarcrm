@@ -231,7 +231,7 @@ export async function runDailyAiBatch(params?: { employeeId?: string; forceDate?
   const snapshots = await loadEmployeeSnapshots(params?.employeeId);
   if (snapshots.length === 0) return { analysisDate, analyzed: 0, employees: 0 };
 
-  const drafts = snapshots.map((s) => {
+  const drafts: AnalysisDraft[] = snapshots.map((s): AnalysisDraft => {
     const temperature = scoreToTemperature(s);
     const urgency = scoreToUrgency(s, temperature);
     const next_action = nextActionFor(s, temperature, urgency);
@@ -245,7 +245,7 @@ export async function runDailyAiBatch(params?: { employeeId?: string; forceDate?
       priority_score,
       next_action,
       pre_generated_ment: null,
-    } satisfies AnalysisDraft;
+    };
   });
 
   const sortedByEmployee = new Map<string, AnalysisDraft[]>();

@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import AiSecretaryPanel from "./AiSecretaryPanel";
 import { NOW_AI_OPEN_EVENT, type AiSecretaryTabKey, type NowAiOpenDetail } from "./events";
@@ -21,26 +21,14 @@ export default function AiFloatingButton({ lead }: { lead?: LeadContext }) {
   const [open, setOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<AiSecretaryTabKey>("chat");
   const [eventLeadId, setEventLeadId] = useState<string | null>(null);
-  const [eventLeadSummary, setEventLeadSummary] = useState<NowAiOpenDetail["leadSummary"] | null>(null);
   const currentLeadId = searchParams?.get("leadId");
   const contextualLeadId = eventLeadId ?? currentLeadId ?? lead?.id ?? null;
-  const contextualLeadSummary = useMemo(
-    () =>
-      eventLeadSummary ?? {
-        name: lead?.base?.name,
-        desiredVehicle: lead?.base?.desiredVehicle,
-        source: lead?.base?.source,
-        temperature: lead?.base?.leadTemperature,
-      },
-    [eventLeadSummary, lead?.base?.desiredVehicle, lead?.base?.leadTemperature, lead?.base?.name, lead?.base?.source]
-  );
 
   useEffect(() => {
     const handleOpen = (event: Event) => {
       const custom = event as CustomEvent<NowAiOpenDetail>;
       if (custom.detail?.tab) setActiveTab(custom.detail.tab);
       setEventLeadId(custom.detail?.leadId ?? null);
-      setEventLeadSummary(custom.detail?.leadSummary ?? null);
       setOpen(true);
     };
     window.addEventListener(NOW_AI_OPEN_EVENT, handleOpen);
@@ -62,7 +50,6 @@ export default function AiFloatingButton({ lead }: { lead?: LeadContext }) {
         open={open}
         activeTab={activeTab}
         currentLeadId={contextualLeadId}
-        leadSummary={contextualLeadSummary ?? undefined}
         onClose={() => setOpen(false)}
         onChangeTab={setActiveTab}
       />

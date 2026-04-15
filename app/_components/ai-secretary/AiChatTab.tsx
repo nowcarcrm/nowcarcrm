@@ -70,12 +70,13 @@ export default function AiChatTab({
         reply?: string;
         error?: string;
       };
+      const replyText = data.reply ?? "";
 
-      if (!response.ok || !data.ok || !data.reply) {
+      if (!response.ok || !data.ok || !replyText) {
         throw new Error(data.error ?? "AI 응답을 가져오지 못했습니다.");
       }
 
-      setMessages((prev) => [...prev, { role: "assistant", content: data.reply }]);
+      setMessages((prev) => [...prev, { role: "assistant", content: replyText }]);
     } catch (error) {
       const messageText = error instanceof Error ? error.message : "AI 요청에 실패했습니다.";
       setErrorText(messageText);

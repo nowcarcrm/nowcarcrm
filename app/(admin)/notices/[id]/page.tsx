@@ -26,7 +26,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 export default function NoticeDetailPage() {
   const params = useParams();
   const router = useRouter();
-  const id = typeof params.id === "string" ? params.id : "";
+  const id = typeof params?.id === "string" ? params.id : "";
   const [notice, setNotice] = useState<Notice | null>(null);
   const [loading, setLoading] = useState(true);
   const [authorName, setAuthorName] = useState("—");

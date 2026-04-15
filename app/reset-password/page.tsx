@@ -37,7 +37,7 @@ type Phase = "loading" | "invalid" | "ready";
 function ResetPasswordForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const authCode = searchParams.get("code");
+  const authCode = (searchParams ?? new URLSearchParams()).get("code");
   const [phase, setPhase] = useState<Phase>("loading");
   const [loadDetail, setLoadDetail] = useState("링크를 확인하는 중…");
   const [password, setPassword] = useState("");
