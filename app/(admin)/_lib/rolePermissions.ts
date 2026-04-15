@@ -18,6 +18,8 @@ export type UserRank = SelectableUserRank | "총괄대표";
 export type DisplayUserRank = UserRank;
 export type UserTeam = (typeof USER_TEAMS)[number];
 export type UserDivision = (typeof USER_DIVISIONS)[number];
+export const ADMIN_RANKS = ["총괄대표", "대표", "본부장", "팀장"] as const;
+export type AdminRank = (typeof ADMIN_RANKS)[number];
 
 type MaybeUserLike = {
   email?: string | null;
@@ -71,8 +73,8 @@ export function isSuperAdmin(user: MaybeUserLike | null | undefined): boolean {
 
 export function isAdmin(user: MaybeUserLike | null | undefined): boolean {
   if (!user) return false;
-  const role = effectiveRole(user);
-  return role === "super_admin" || role === "admin";
+  if (isSuperAdmin(user)) return true;
+  return isAdminRank(effectiveRank(user));
 }
 
 export function isStaff(user: MaybeUserLike | null | undefined): boolean {
@@ -86,6 +88,11 @@ export function canEditRank(user: MaybeUserLike | null | undefined): boolean {
 
 export function isExecutiveRank(rank: string | null | undefined): boolean {
   return rank === "대표" || rank === "총괄대표";
+}
+
+export function isAdminRank(rank: string | null | undefined): rank is AdminRank {
+  const normalized = (rank ?? "").trim();
+  return (ADMIN_RANKS as readonly string[]).includes(normalized);
 }
 
 export function isExecutive(user: MaybeUserLike | null | undefined): boolean {
@@ -113,6 +120,24 @@ export function canViewAll(user: MaybeUserLike | null | undefined): boolean {
   if (isSuperAdmin(user)) return true;
   const rank = effectiveRank(user);
   return rank === "대표" || rank === "총괄대표";
+}
+
+export function canAccessAdminPage(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  if (isSuperAdmin(user)) return true;
+  return isAdminRank(effectiveRank(user));
+}
+
+export function canAccessAdminDetail(user: MaybeUserLike | null | undefined): boolean {
+  return canAccessAdminPage(user);
+}
+
+export function canViewAllConsultations(user: MaybeUserLike | null | undefined): boolean {
+  return canAccessAdminPage(user);
+}
+
+export function canViewStaffDetail(user: MaybeUserLike | null | undefined): boolean {
+  return canAccessAdminDetail(user);
 }
 
 export function canViewTeam(user: MaybeUserLike | null | undefined): boolean {

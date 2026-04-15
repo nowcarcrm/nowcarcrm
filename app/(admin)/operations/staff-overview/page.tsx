@@ -141,6 +141,11 @@ export default function StaffOverviewPage() {
   useEffect(() => {
     if (authLoading) return;
     if (!profile || !canAccessOverviewPage) {
+      console.warn("[staff-overview] access denied", {
+        role: profile?.role ?? null,
+        rank: profile?.rank ?? null,
+      });
+      toast.error("권한 없음: 직원 현황 페이지 접근 권한이 없습니다.");
       router.replace("/dashboard");
       return;
     }

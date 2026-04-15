@@ -34,6 +34,7 @@ import {
   splitContractNote,
 } from "./leaseCrmContractPersist";
 import {
+  canAccessAdminPage,
   canAccessLeadDetail,
   canViewLead,
   getVisibleTeamScope,
@@ -468,21 +469,19 @@ export type UpdateLeadOptions = {
 /** 운영 화면 전체 접근: 관리자 + 명시 플래그만 인정 */
 export function hasOperationalFullAccess(scope?: ViewerScope): boolean {
   if (!scope || scope.operationalFullAccess !== true) return false;
-  if (scope.role === "super_admin") return true;
-  if (scope.role !== "admin") return false;
-  return (
-    scope.rank === "본부장" ||
-    scope.rank === "대표" ||
-    scope.rank === "총괄대표" ||
-    (scope.rank === "팀장" && !!normalizeUserTeam(scope.teamName))
-  );
+  return canAccessAdminPage({
+    role: scope.role,
+    rank: scope.rank ?? null,
+    email: scope.email ?? null,
+    team_name: scope.teamName ?? null,
+  });
 }
 
 /** 전사 데이터·수수료·상담일 집계 등: 클라이언트 위조 방지 + 명시적 가드 */
 export function assertAdminOperationalScope(
   scope: ViewerScope | undefined,
   context: string
-): asserts scope is ViewerScope & { role: "admin"; operationalFullAccess: true } {
+): asserts scope is ViewerScope & { operationalFullAccess: true } {
   if (!hasOperationalFullAccess(scope)) {
     throw new Error(`${context}: 관리자(운영) 권한이 필요합니다.`);
   }

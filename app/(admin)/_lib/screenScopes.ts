@@ -1,4 +1,4 @@
-﻿import { effectiveRank, normalizeUserTeam } from "./rolePermissions";
+﻿import { canAccessAdminPage, effectiveRank, normalizeUserTeam } from "./rolePermissions";
 
 type Viewer = {
   id?: string | null;
@@ -52,8 +52,7 @@ export function getAdminOverviewScope(viewer: Viewer): ScreenScope {
 }
 
 export function canAccessAdminOverview(viewer: Viewer): boolean {
-  const scope = getAdminOverviewScope(viewer);
-  return scope === "all" || scope === "all_except_executive" || scope === "team";
+  return canAccessAdminPage(viewer);
 }
 
 export function getPersonalPipelineScope(_viewer: Viewer): "self" {

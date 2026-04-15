@@ -19,7 +19,9 @@ export default function LeaveApprovalList({ requests, onApprove, onReject }: Pro
         <div className="space-y-2 text-sm">
           {requests.map((r) => (
             <div key={r.id} className="flex items-center justify-between gap-2 rounded-xl border border-zinc-200 px-3 py-2">
-              <span className="text-zinc-800">{r.requesterName} / {r.requesterRank || "-"} / {r.requesterTeam || "-"} / {r.fromDate}~{r.toDate}</span>
+              <span className="text-zinc-800">
+                {r.requesterName} / {r.requesterRank || "-"} / {r.requesterTeam || "-"} / {r.fromDate}~{r.toDate} / {r.requestType === "half" ? "반차 0.5회" : r.requestType === "sick" ? "병가 차감 없음" : "연차 1회"}
+              </span>
               <div className="flex gap-2">
                 <TapButton onClick={() => onApprove(r.id)} className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white">승인</TapButton>
                 <TapButton onClick={() => onReject(r.id)} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700">반려</TapButton>

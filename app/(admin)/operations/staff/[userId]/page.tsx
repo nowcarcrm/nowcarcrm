@@ -25,6 +25,13 @@ import { lastContactReferenceIso } from "../../../_lib/leaseCrmLogic";
 import { effectiveContractNetProfitForMetrics } from "../../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
+import { canViewStaffDetail } from "../../../_lib/rolePermissions";
+import {
+  extractVisibleUserIds,
+  filterUsersByScreenScope,
+  getAdminOverviewScope,
+  getTeamLeaderOverviewScope,
+} from "../../../_lib/screenScopes";
 import {
   CrmListPaginationBar,
   CRM_LIST_PAGE_SIZE,
@@ -49,26 +56,43 @@ export default function StaffCustomerDetailPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [listPage, setListPage] = useState(1);
   const { openLeadById } = useLeadDetailModal();
+  const canAccessPage = !!profile && canViewStaffDetail(profile);
+  const isMissingUserId = !userId;
 
   const opScope = useMemo(() => {
-    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) return null;
+    if (!profile || !canViewStaffDetail(profile)) return null;
+    const adminOverviewScope = getAdminOverviewScope({
+      id: profile.userId,
+      role: profile.role,
+      rank: profile.rank,
+      team_name: profile.teamName,
+      name: profile.name,
+    });
     return {
       role: profile.role,
       userId: profile.userId,
       email: profile.email ?? null,
       rank: profile.rank ?? null,
       teamName: profile.teamName ?? null,
-      operationalFullAccess: true,
+      operationalFullAccess:
+        adminOverviewScope === "all" ||
+        adminOverviewScope === "all_except_executive" ||
+        adminOverviewScope === "team",
     };
   }, [profile]);
 
   useEffect(() => {
     if (authLoading) return;
-    if (!profile || (profile.role !== "admin" && profile.role !== "super_admin")) {
-      router.replace("/dashboard");
+    if (!profile) return;
+    if (!canAccessPage) {
+      console.warn("[staff-detail] blocked by role", { role: profile.role, rank: profile.rank });
       return;
     }
-    if (!opScope || !userId) return;
+    if (!userId) {
+      console.warn("[staff-detail] missing route param");
+      return;
+    }
+    if (!opScope) return;
     let mounted = true;
     (async () => {
       try {
@@ -79,8 +103,34 @@ export default function StaffCustomerDetailPage() {
           email: profile.email,
           team_name: profile.teamName,
         });
+        const viewer = {
+          id: profile.userId,
+          role: profile.role,
+          rank: profile.rank,
+          team_name: profile.teamName,
+          name: profile.name,
+        };
+        const adminOverviewScope = getAdminOverviewScope(viewer);
+        const scopedUsers = filterUsersByScreenScope(users, viewer, adminOverviewScope);
+        const teamLeaderVisibleIds = getTeamLeaderOverviewScope(viewer, users);
+        const visibleUserIds = new Set(
+          adminOverviewScope === "team" ? teamLeaderVisibleIds : extractVisibleUserIds(scopedUsers)
+        );
+        if (!visibleUserIds.has(userId)) {
+          console.warn("[staff-detail] blocked by visible scope", {
+            role: profile.role,
+            rank: profile.rank,
+            scope: adminOverviewScope,
+            viewerId: profile.userId,
+            targetUserId: userId,
+            visibleUserIds: [...visibleUserIds],
+          });
+          toast.error("권한 없음: 이 직원 상세를 볼 수 없습니다.");
+          setLeads([]);
+          return;
+        }
         const u = users.find((x) => x.id === userId);
-        const loaded = await loadLeadsFromStorage(opScope);
+        const loaded = await loadLeadsFromStorage({ ...opScope, visibleUserIds: [...visibleUserIds] });
         const mine = loaded.filter((l) => (l.managerUserId ?? "").trim() === userId);
         const ids = mine.map((l) => l.id);
         const [contracts, consultMap] = await Promise.all([
@@ -96,7 +146,8 @@ export default function StaffCustomerDetailPage() {
         setLeads(mine);
       } catch (e) {
         if (!mounted) return;
-        setLoadError(e instanceof Error ? e.message : String(e));
+        const message = e instanceof Error ? e.message : String(e);
+        setLoadError(message);
         toast.error("데이터를 불러오지 못했습니다.");
         setLeads([]);
       }
@@ -172,8 +223,12 @@ export default function StaffCustomerDetailPage() {
     return <div className="py-16 text-center text-sm text-slate-500">로딩 중…</div>;
   }
 
-  if (profile.role !== "admin" && profile.role !== "super_admin") {
-    return null;
+  if (isMissingUserId) {
+    return <div className="py-16 text-center text-sm text-rose-600">라우팅 오류: 직원 식별자가 없습니다.</div>;
+  }
+
+  if (!canAccessPage) {
+    return <div className="py-16 text-center text-sm text-rose-600">권한 없음: 관리자 상세 접근 권한이 없습니다.</div>;
   }
 
   return (

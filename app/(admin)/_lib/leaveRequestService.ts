@@ -1,6 +1,7 @@
 ﻿import { supabase } from "./supabaseClient";
 
 export type LeaveRequestStatus = "pending" | "approved" | "rejected";
+export type LeaveRequestType = "annual" | "half" | "sick";
 
 export type LeaveRequestItem = {
   id: string;
@@ -18,12 +19,28 @@ export type LeaveRequestItem = {
   rejectedAt: string | null;
   rejectedBy: string | null;
   rejectionReason: string | null;
+  requestType: LeaveRequestType;
+  usedAmount: number;
+};
+
+export type LeaveBalanceItem = {
+  userId: string;
+  name: string;
+  rank: string | null;
+  teamName: string | null;
+  remainingAnnualLeave: number;
+  usedAnnualLeave: number;
+  usedAnnualCount: number;
+  usedHalfCount: number;
+  usedSickCount: number;
 };
 
 export type LeaveRequestsPayload = {
   myRequests: LeaveRequestItem[];
   pendingRequests: LeaveRequestItem[];
   canApprove: boolean;
+  myRemainingAnnualLeave: number;
+  visibleAnnualLeaveBalances: LeaveBalanceItem[];
 };
 
 async function getAccessToken(): Promise<string> {
@@ -49,6 +66,7 @@ export async function createLeaveRequest(input: {
   fromDate: string;
   toDate: string;
   reason: string;
+  requestType: LeaveRequestType;
 }): Promise<LeaveRequestItem> {
   const token = await getAccessToken();
   const res = await fetch("/api/attendance/leave-requests", {

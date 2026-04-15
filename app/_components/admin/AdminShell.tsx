@@ -24,6 +24,7 @@ import { listActiveUsers } from "@/app/(admin)/_lib/usersSupabase";
 import AiCounselAssistPopup from "@/app/(admin)/leads/_components/AiCounselAssistPopup";
 import UserRankSummary from "@/app/_components/ui/UserRankSummary";
 import UserRankCard from "@/app/_components/ui/UserRankCard";
+import { canAccessAdminPage } from "@/app/(admin)/_lib/rolePermissions";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -360,7 +361,11 @@ function SidebarContents({
   const [staffOptions, setStaffOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const showAdminManagerFilter =
-    (currentUser?.role === "super_admin" || currentUser?.role === "admin") &&
+    canAccessAdminPage({
+      role: currentUser?.role ?? null,
+      rank: currentUser?.rank ?? null,
+      email: currentUser?.email ?? null,
+    }) &&
     (pathname?.startsWith("/operations/all-customers") ?? false);
 
   useEffect(() => {
@@ -410,7 +415,16 @@ function SidebarContents({
   const visibleNavSections = useMemo((): NavSection[] => {
     /** 관리자 전용 메뉴: users.role 이 정확히 "admin" 일 때만 (DB·프로필 불일치 시 운영에서 숨겨질 수 있음) */
     const visible = NAV_ITEMS.filter((i) => {
-      if (i.adminOnly && currentUser?.role !== "admin" && currentUser?.role !== "super_admin") return false;
+      if (
+        i.adminOnly &&
+        !canAccessAdminPage({
+          role: currentUser?.role ?? null,
+          rank: currentUser?.rank ?? null,
+          email: currentUser?.email ?? null,
+        })
+      ) {
+        return false;
+      }
       return true;
     });
     const order: NavSectionKey[] = ["sales", "operations"];
@@ -572,7 +586,11 @@ export default function AdminShell({
   const modalScope = useMemo(() => {
     if (!currentUser) return null;
     if (
-      (currentUser.role === "super_admin" || currentUser.role === "admin") &&
+      canAccessAdminPage({
+        role: currentUser.role,
+        rank: currentUser.rank ?? null,
+        email: currentUser.email ?? null,
+      }) &&
       pathname?.startsWith("/operations")
     ) {
       return {

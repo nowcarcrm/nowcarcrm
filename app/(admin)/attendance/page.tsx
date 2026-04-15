@@ -6,7 +6,8 @@ import {
   checkOut,
   getLocalDateKey,
   getTodayAttendance,
-  listAttendance,
+  listAttendanceByMonth,
+  listTodayAttendanceByUserIds,
   type AttendanceRow,
 } from "../_lib/attendanceSupabase";
 import {
@@ -14,6 +15,7 @@ import {
   createLeaveRequest,
   listLeaveRequests,
   rejectLeaveRequest,
+  type LeaveRequestType,
   type LeaveRequestItem,
 } from "../_lib/leaveRequestService";
 import { ensureDefaultUsers, listActiveUsers, type UserRow } from "../_lib/usersSupabase";
@@ -25,6 +27,7 @@ import LeaveApprovalList from "./_components/LeaveApprovalList";
 import LeaveRequestModal from "./_components/LeaveRequestModal";
 import TodayAttendanceList from "./_components/TodayAttendanceList";
 import AttendanceRuleCard from "./_components/AttendanceRuleCard";
+import MonthlyAttendanceSummary from "./_components/MonthlyAttendanceSummary";
 import toast from "react-hot-toast";
 
 const CURRENT_USER_KEY = "crm.current_user_id.v2";
@@ -49,6 +52,13 @@ function dt(iso: string | null | undefined) {
   return `${d.toLocaleDateString("ko-KR")} ${d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+function getCurrentMonthKey() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  return `${y}-${m}`;
+}
+
 async function readGps(): Promise<{ latitude: number; longitude: number }> {
   if (!("geolocation" in navigator)) throw new Error("이 브라우저는 위치 정보를 지원하지 않습니다.");
   return new Promise((resolve, reject) => {
@@ -66,6 +76,9 @@ export default function AttendancePage() {
   const canViewAll = attendanceScope === "all" || attendanceScope === "all_except_executive";
   const canViewTeam = attendanceScope === "team";
   const canApproveLeave = canApproveLeaveByRank(profile?.rank);
+  const canViewMonthlyAttendance =
+    profile?.rank === "본부장" || profile?.rank === "대표" || profile?.rank === "총괄대표";
+  const canRequestSickLeave = profile?.rank === "팀장";
   const todayDate = getLocalDateKey();
 
   const [currentUserId, setCurrentUserId] = useState("");
@@ -74,17 +87,63 @@ export default function AttendancePage() {
   const [rows, setRows] = useState<AttendanceRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [leaveModalOpen, setLeaveModalOpen] = useState(false);
+  const [leaveRequestType, setLeaveRequestType] = useState<LeaveRequestType>("annual");
   const [leaveFromDate, setLeaveFromDate] = useState(getLocalDateKey());
   const [leaveToDate, setLeaveToDate] = useState(getLocalDateKey());
   const [leaveReason, setLeaveReason] = useState("");
   const [leaveSaving, setLeaveSaving] = useState(false);
   const [myLeaveRequests, setMyLeaveRequests] = useState<LeaveRequestItem[]>([]);
   const [pendingLeaveRequests, setPendingLeaveRequests] = useState<LeaveRequestItem[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey());
+  const [monthlyRows, setMonthlyRows] = useState<
+    Array<{
+      userId: string;
+      name: string;
+      rank: string | null;
+      teamName: string | null;
+      total: number;
+      normal: number;
+      late: number;
+      earlyLeave: number;
+      leave: number;
+      absent: number;
+      external: number;
+    }>
+  >([]);
+  const [myRemainingAnnualLeave, setMyRemainingAnnualLeave] = useState(12);
+  const [visibleAnnualLeaveBalances, setVisibleAnnualLeaveBalances] = useState<
+    Array<{
+      userId: string;
+      name: string;
+      rank: string | null;
+      teamName: string | null;
+      remainingAnnualLeave: number;
+      usedAnnualLeave: number;
+      usedAnnualCount: number;
+      usedHalfCount: number;
+      usedSickCount: number;
+    }>
+  >([]);
 
   const isCheckedIn = !!today?.check_in;
   const isCheckedOut = !!today?.check_out;
   const approvedLeaveToday = myLeaveRequests.some((r) => r.status === "approved" && r.fromDate <= todayDate && r.toDate >= todayDate);
-  const statusText = approvedLeaveToday ? "승인된 연차" : isCheckedOut ? "근무 완료" : isCheckedIn ? "출근 완료" : "미출근";
+  const lateThreshold = useMemo(() => {
+    const d = new Date();
+    d.setHours(9, 30, 0, 0);
+    return d.getTime();
+  }, []);
+  const isPastLateThreshold = Date.now() > lateThreshold;
+  const isLateWithoutCheckIn = !approvedLeaveToday && !isCheckedIn && isPastLateThreshold;
+  const statusText = approvedLeaveToday
+    ? "승인된 연차"
+    : isCheckedOut
+      ? "근무 완료"
+      : isCheckedIn
+        ? "출근 완료"
+        : isLateWithoutCheckIn
+          ? "지각"
+          : "미출근";
   const userMetaMap = useMemo(
     () =>
       new Map(
@@ -97,17 +156,70 @@ export default function AttendancePage() {
     const payload = await listLeaveRequests();
     setMyLeaveRequests(payload.myRequests);
     setPendingLeaveRequests(payload.pendingRequests);
+    setMyRemainingAnnualLeave(payload.myRemainingAnnualLeave);
+    setVisibleAnnualLeaveBalances(payload.visibleAnnualLeaveBalances);
   }
 
   async function refresh() {
     if (!currentUserId) return;
     const allowedIds = userOptions.map((u) => u.id);
-    const [t, list] = await Promise.all([
+    const [t, list, monthList] = await Promise.all([
       getTodayAttendance(currentUserId, todayDate),
-      canViewAll || canViewTeam ? listAttendance(200, allowedIds) : Promise.resolve([]),
+      canViewAll || canViewTeam ? listTodayAttendanceByUserIds(allowedIds) : Promise.resolve([]),
+      canViewMonthlyAttendance ? listAttendanceByMonth(selectedMonth, allowedIds) : Promise.resolve([]),
     ]);
     setToday(t);
     setRows(list);
+    if (canViewMonthlyAttendance) {
+      const perUser = new Map<
+        string,
+        {
+          userId: string;
+          name: string;
+          rank: string | null;
+          teamName: string | null;
+          total: number;
+          normal: number;
+          late: number;
+          earlyLeave: number;
+          leave: number;
+          absent: number;
+          external: number;
+        }
+      >();
+      for (const user of userOptions) {
+        perUser.set(user.id, {
+          userId: user.id,
+          name: user.name || "직원",
+          rank: user.rank ?? null,
+          teamName: user.team_name ?? null,
+          total: 0,
+          normal: 0,
+          late: 0,
+          earlyLeave: 0,
+          leave: 0,
+          absent: 0,
+          external: 0,
+        });
+      }
+      for (const row of monthList) {
+        const item = perUser.get(row.user_id);
+        if (!item) continue;
+        item.total += 1;
+        const status = row.status ?? "";
+        if (status === "정상 출근" || status === "휴무일 근무") item.normal += 1;
+        else if (status === "지각") item.late += 1;
+        else if (status === "조기 퇴근") item.earlyLeave += 1;
+        else if (status === "휴가") item.leave += 1;
+        else if (status === "결근") item.absent += 1;
+        else if (status === "외근") item.external += 1;
+      }
+      setMonthlyRows(
+        Array.from(perUser.values())
+          .filter((r) => r.total > 0)
+          .sort((a, b) => a.name.localeCompare(b.name, "ko"))
+      );
+    }
   }
 
   useEffect(() => {
@@ -127,7 +239,7 @@ export default function AttendancePage() {
     window.localStorage.setItem(CURRENT_USER_KEY, currentUserId);
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId, canViewAll, canViewTeam]);
+  }, [currentUserId, canViewAll, canViewTeam, canViewMonthlyAttendance, selectedMonth, userOptions]);
 
   async function onCheckIn() {
     setLoading(true);
@@ -157,13 +269,27 @@ export default function AttendancePage() {
     }
   }
 
+  function openLeaveModal(type: LeaveRequestType) {
+    const today = getLocalDateKey();
+    setLeaveRequestType(type);
+    setLeaveFromDate(today);
+    setLeaveToDate(today);
+    setLeaveReason("");
+    setLeaveModalOpen(true);
+  }
+
   async function submitLeaveRequest() {
     if (!leaveFromDate || !leaveToDate) return toast.error("시작일과 종료일은 필수입니다.");
     if (leaveToDate < leaveFromDate) return toast.error("종료일은 시작일보다 빠를 수 없습니다.");
     setLeaveSaving(true);
     try {
-      await createLeaveRequest({ fromDate: leaveFromDate, toDate: leaveToDate, reason: leaveReason.trim() });
-      toast.success("연차요청이 접수되었습니다.");
+      await createLeaveRequest({
+        fromDate: leaveFromDate,
+        toDate: leaveToDate,
+        reason: leaveReason.trim(),
+        requestType: leaveRequestType,
+      });
+      toast.success(leaveRequestType === "half" ? "반차요청이 접수되었습니다." : "연차요청이 접수되었습니다.");
       setLeaveModalOpen(false);
       setLeaveReason("");
       await refreshLeaveRequests();
@@ -192,7 +318,10 @@ export default function AttendancePage() {
             canCheckOut={!approvedLeaveToday && isCheckedIn && !isCheckedOut}
             onCheckIn={() => void onCheckIn()}
             onCheckOut={() => void onCheckOut()}
-            onOpenLeaveModal={() => setLeaveModalOpen(true)}
+            onOpenLeaveModal={() => openLeaveModal("annual")}
+            onOpenHalfLeaveModal={() => openLeaveModal("half")}
+            canRequestSickLeave={canRequestSickLeave}
+            onOpenSickLeaveModal={() => openLeaveModal("sick")}
           />
 
           <LeaveRequestCard requests={myLeaveRequests} />
@@ -206,17 +335,32 @@ export default function AttendancePage() {
           ) : null}
 
           {(canViewAll || canViewTeam) ? (
-            <TodayAttendanceList rows={rows} users={userMetaMap} formatDateTime={dt} />
+            <TodayAttendanceList
+              rows={rows}
+              users={userMetaMap}
+              formatDateTime={dt}
+              isPastLateThreshold={isPastLateThreshold}
+              leaveBalances={visibleAnnualLeaveBalances}
+            />
+          ) : null}
+
+          {canViewMonthlyAttendance ? (
+            <MonthlyAttendanceSummary
+              month={selectedMonth}
+              rows={monthlyRows}
+              onChangeMonth={setSelectedMonth}
+            />
           ) : null}
         </div>
 
         <div className="space-y-5">
-          <AttendanceRuleCard />
+          <AttendanceRuleCard remainingAnnualLeave={myRemainingAnnualLeave} />
         </div>
       </div>
 
       <LeaveRequestModal
         open={leaveModalOpen}
+        requestType={leaveRequestType}
         fromDate={leaveFromDate}
         toDate={leaveToDate}
         reason={leaveReason}

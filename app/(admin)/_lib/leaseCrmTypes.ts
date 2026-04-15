@@ -111,8 +111,6 @@ export const COUNSELING_STATUS_OPTIONS: CounselingStatus[] = [
   "상담중",
   "부재",
   "계약완료",
-  "확정",
-  "출고",
   "인도완료",
   "보류",
   "취소",
@@ -120,6 +118,32 @@ export const COUNSELING_STATUS_OPTIONS: CounselingStatus[] = [
 
 /** UI·드롭다운 공통 — 값은 DB `status`와 동일하게 `인도완료` 한글 붙여 쓰기 */
 export const CONSULT_RESULT_OPTIONS: CounselingStatus[] = COUNSELING_STATUS_OPTIONS;
+export const LEGACY_TO_COUNSELING_STATUS: Record<string, CounselingStatus> = {
+  "부재/연락안됨": "부재",
+  부재: "부재",
+  "신규 디비": "신규",
+  종료: "취소",
+  인도완료: "인도완료",
+  "인도 완료": "인도완료",
+  계약진행: "계약완료",
+  "계약 진행": "계약완료",
+  출고진행: "계약완료",
+  "출고 진행": "계약완료",
+  사후관리: "계약완료",
+  "재연락예정": "상담중",
+  "재연락 예정": "상담중",
+  "1차 상담완료": "상담중",
+  "견적 발송": "상담중",
+  "회신 대기": "상담중",
+  "재상담 예정": "상담중",
+  관심낮음: "상담중",
+  계약진행중: "상담중",
+  출고진행중: "상담중",
+  확정: "계약완료",
+  출고: "계약완료",
+  "확정 출고": "계약완료",
+  확정출고: "계약완료",
+};
 
 export function requiresFailureReasonStatus(status: CounselingStatus): boolean {
   return status === "보류" || status === "취소";
@@ -131,31 +155,7 @@ export function normalizeCounselingStatus(raw: string | null | undefined): Couns
   if ((COUNSELING_STATUS_OPTIONS as readonly string[]).includes(s)) {
     return s as CounselingStatus;
   }
-  if (s === "부재/연락안됨" || s === "부재") return "부재";
-  if (s === "신규 디비") return "신규";
-  if (s === "종료") return "취소";
-  if (s === "인도완료" || s === "인도 완료") return "인도완료";
-  if (
-    s === "계약진행" ||
-    s === "계약 진행" ||
-    s === "출고진행" ||
-    s === "출고 진행" ||
-    s === "사후관리"
-  ) {
-    return "계약완료";
-  }
-  if (s === "재연락예정" || s === "재연락 예정") return "상담중";
-  if (
-    s === "1차 상담완료" ||
-    s === "견적 발송" ||
-    s === "회신 대기" ||
-    s === "재상담 예정" ||
-    s === "관심낮음" ||
-    s === "계약진행중" ||
-    s === "출고진행중"
-  ) {
-    return "상담중";
-  }
+  if (LEGACY_TO_COUNSELING_STATUS[s]) return LEGACY_TO_COUNSELING_STATUS[s];
   return "신규";
 }
 

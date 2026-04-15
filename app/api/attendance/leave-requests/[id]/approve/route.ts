@@ -11,6 +11,17 @@ function canApproveByRank(rank: string | null | undefined): boolean {
   return rank === "본부장" || rank === "대표" || rank === "총괄대표";
 }
 
+const ANNUAL_LEAVE_QUOTA = 12;
+
+function thisYearRange() {
+  const now = new Date();
+  const year = now.getFullYear();
+  return {
+    start: `${year}-01-01`,
+    end: `${year}-12-31`,
+  };
+}
+
 async function getRequester(authUserId: string) {
   const { data, error } = await supabaseAdmin
     .from("users")
@@ -51,6 +62,34 @@ export async function POST(
 
     const { id } = await params;
     if (!id?.trim()) return NextResponse.json({ error: "요청 ID가 필요합니다." }, { status: 400 });
+
+    const { data: targetRow, error: targetErr } = await supabaseAdmin
+      .from("leave_requests")
+      .select("id,user_id,used_amount,from_date,status")
+      .eq("id", id)
+      .maybeSingle();
+    if (targetErr) throw new Error(targetErr.message);
+    if (!targetRow || targetRow.status !== "pending") {
+      return NextResponse.json({ error: "대기 상태 요청만 승인할 수 있습니다." }, { status: 400 });
+    }
+
+    const { start, end } = thisYearRange();
+    const { data: usedRows, error: usedErr } = await supabaseAdmin
+      .from("leave_requests")
+      .select("used_amount")
+      .eq("user_id", targetRow.user_id)
+      .eq("status", "approved")
+      .gte("from_date", start)
+      .lte("from_date", end);
+    if (usedErr) throw new Error(usedErr.message);
+    const approvedUsed = ((usedRows ?? []) as Array<{ used_amount: number | null }>).reduce(
+      (sum, row) => sum + Number(row.used_amount ?? 0),
+      0
+    );
+    const nextUsed = approvedUsed + Number(targetRow.used_amount ?? 1);
+    if (nextUsed > ANNUAL_LEAVE_QUOTA) {
+      return NextResponse.json({ error: "승인 시 잔여 연차가 부족합니다." }, { status: 400 });
+    }
 
     const now = new Date().toISOString();
     const { data, error } = await supabaseAdmin

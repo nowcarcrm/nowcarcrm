@@ -13,6 +13,9 @@ type Props = {
   onCheckIn: () => void;
   onCheckOut: () => void;
   onOpenLeaveModal: () => void;
+  onOpenHalfLeaveModal: () => void;
+  canRequestSickLeave: boolean;
+  onOpenSickLeaveModal: () => void;
 };
 
 export default function AttendanceStatusCard(props: Props) {
@@ -36,6 +39,10 @@ export default function AttendanceStatusCard(props: Props) {
         <TapButton onClick={props.onCheckIn} disabled={props.loading || !props.canCheckIn} className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">출근</TapButton>
         <TapButton onClick={props.onCheckOut} disabled={props.loading || !props.canCheckOut} className="rounded-xl bg-zinc-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">퇴근</TapButton>
         <TapButton onClick={props.onOpenLeaveModal} className="rounded-xl border border-violet-200 bg-violet-50 px-4 py-2 text-sm font-semibold text-violet-700">연차요청</TapButton>
+        <TapButton onClick={props.onOpenHalfLeaveModal} className="rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-700">반차요청</TapButton>
+        {props.canRequestSickLeave ? (
+          <TapButton onClick={props.onOpenSickLeaveModal} className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2 text-sm font-semibold text-rose-700">병가요청</TapButton>
+        ) : null}
       </div>
     </section>
   );

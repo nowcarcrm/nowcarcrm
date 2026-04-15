@@ -98,6 +98,11 @@ export default function AllCustomersOperationalPage() {
   useEffect(() => {
     if (authLoading) return;
     if (!profile || !canAccessOverviewPage) {
+      console.warn("[all-customers] access denied", {
+        role: profile?.role ?? null,
+        rank: profile?.rank ?? null,
+      });
+      toast.error("권한 없음: 전체 상담 고객 페이지 접근 권한이 없습니다.");
       router.replace("/dashboard");
       return;
     }

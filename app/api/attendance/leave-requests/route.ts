@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
 
 type LeaveStatus = "pending" | "approved" | "rejected";
+type LeaveRequestType = "annual" | "half" | "sick";
+const ANNUAL_LEAVE_QUOTA = 12;
+const ANNUAL_LEAVE_VIEWABLE_RANKS = new Set(["주임", "대리", "과장", "차장", "팀장"]);
 
 type UserRow = {
   id: string;
@@ -25,6 +28,8 @@ type LeaveRow = {
   rejected_at: string | null;
   rejection_reason: string | null;
   created_at: string;
+  request_type: LeaveRequestType;
+  used_amount: number;
 };
 
 function getBearerToken(req: Request) {
@@ -39,6 +44,52 @@ function isApproved(status: string | null | undefined): boolean {
 
 function canApproveByRank(rank: string | null | undefined): boolean {
   return rank === "본부장" || rank === "대표" || rank === "총괄대표";
+}
+
+function canViewAllowanceByRank(rank: string | null | undefined): boolean {
+  return rank === "팀장" || rank === "본부장" || rank === "대표" || rank === "총괄대표";
+}
+
+function thisYearRange() {
+  const now = new Date();
+  const year = now.getFullYear();
+  return {
+    start: `${year}-01-01`,
+    end: `${year}-12-31`,
+  };
+}
+
+async function getApprovedUsageMap(userIds: string[]): Promise<Map<string, number>> {
+  if (!userIds.length) return new Map();
+  const { start, end } = thisYearRange();
+  const { data, error } = await supabaseAdmin
+    .from("leave_requests")
+    .select("user_id,used_amount")
+    .eq("status", "approved")
+    .gte("from_date", start)
+    .lte("from_date", end)
+    .in("user_id", userIds);
+  if (error) throw new Error(error.message);
+  const map = new Map<string, number>();
+  for (const row of (data ?? []) as Array<{ user_id: string; used_amount: number | null }>) {
+    const prev = map.get(row.user_id) ?? 0;
+    map.set(row.user_id, prev + Number(row.used_amount ?? 0));
+  }
+  return map;
+}
+
+async function getApprovedUsageRows(userIds: string[]) {
+  if (!userIds.length) return [] as Array<{ user_id: string; used_amount: number | null; request_type: LeaveRequestType | null }>;
+  const { start, end } = thisYearRange();
+  const { data, error } = await supabaseAdmin
+    .from("leave_requests")
+    .select("user_id,used_amount,request_type")
+    .eq("status", "approved")
+    .gte("from_date", start)
+    .lte("from_date", end)
+    .in("user_id", userIds);
+  if (error) throw new Error(error.message);
+  return (data ?? []) as Array<{ user_id: string; used_amount: number | null; request_type: LeaveRequestType | null }>;
 }
 
 async function getRequester(authUserId: string): Promise<UserRow | null> {
@@ -61,6 +112,8 @@ async function getRequester(authUserId: string): Promise<UserRow | null> {
 
 function mapLeaveRow(row: LeaveRow, userMap: Map<string, UserRow>) {
   const user = userMap.get(row.user_id);
+  const requestType: LeaveRequestType =
+    row.request_type === "half" ? "half" : row.request_type === "sick" ? "sick" : "annual";
   return {
     id: row.id,
     userId: row.user_id,
@@ -77,6 +130,8 @@ function mapLeaveRow(row: LeaveRow, userMap: Map<string, UserRow>) {
     rejectedAt: row.rejected_at,
     rejectionReason: row.rejection_reason,
     createdAt: row.created_at,
+    requestType,
+    usedAmount: Number(row.used_amount ?? 1),
   };
 }
 
@@ -100,7 +155,7 @@ export async function GET(req: Request) {
     const { data: myRows, error: myErr } = await supabaseAdmin
       .from("leave_requests")
       .select(
-        "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at"
+        "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at,request_type,used_amount"
       )
       .eq("user_id", requester.id)
       .order("created_at", { ascending: false });
@@ -111,7 +166,7 @@ export async function GET(req: Request) {
       const { data, error } = await supabaseAdmin
         .from("leave_requests")
         .select(
-          "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at"
+          "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at,request_type,used_amount"
         )
         .eq("status", "pending")
         .order("created_at", { ascending: true });
@@ -129,10 +184,65 @@ export async function GET(req: Request) {
     if (usersErr) throw new Error(usersErr.message);
     const userMap = new Map<string, UserRow>((usersData ?? []).map((u) => [u.id, u as UserRow]));
 
+    const usageMap = await getApprovedUsageMap([requester.id]);
+    const myUsed = usageMap.get(requester.id) ?? 0;
+    const myRemainingAnnualLeave = Math.max(0, ANNUAL_LEAVE_QUOTA - myUsed);
+
+    let visibleAnnualLeaveBalances: Array<{
+      userId: string;
+      name: string;
+      rank: string | null;
+      teamName: string | null;
+      remainingAnnualLeave: number;
+      usedAnnualLeave: number;
+    }> = [];
+    if (canViewAllowanceByRank(requester.rank)) {
+      const { data: targetUsers, error: targetErr } = await supabaseAdmin
+        .from("users")
+        .select("id,name,rank,team_name,approval_status")
+        .or("approval_status.eq.approved,approval_status.is.null");
+      if (targetErr) throw new Error(targetErr.message);
+      const filteredTargets = ((targetUsers ?? []) as UserRow[]).filter((u) => {
+        if (!ANNUAL_LEAVE_VIEWABLE_RANKS.has((u.rank ?? "").trim())) return false;
+        if (requester.rank === "팀장") return (u.team_name ?? "") === (requester.team_name ?? "");
+        return true;
+      });
+      const targetIds = filteredTargets.map((u) => u.id).filter(Boolean);
+      const targetUsageMap = await getApprovedUsageMap(targetIds);
+      const usageRows = await getApprovedUsageRows(targetIds);
+      const breakdownMap = new Map<string, { annual: number; half: number; sick: number }>();
+      for (const row of usageRows) {
+        const current = breakdownMap.get(row.user_id) ?? { annual: 0, half: 0, sick: 0 };
+        if (row.request_type === "half") current.half += 1;
+        else if (row.request_type === "sick") current.sick += 1;
+        else current.annual += 1;
+        breakdownMap.set(row.user_id, current);
+      }
+      visibleAnnualLeaveBalances = filteredTargets
+        .map((u) => {
+          const used = targetUsageMap.get(u.id) ?? 0;
+          const breakdown = breakdownMap.get(u.id) ?? { annual: 0, half: 0, sick: 0 };
+          return {
+            userId: u.id,
+            name: u.name ?? "직원",
+            rank: u.rank ?? null,
+            teamName: u.team_name ?? null,
+            usedAnnualLeave: used,
+            remainingAnnualLeave: Math.max(0, ANNUAL_LEAVE_QUOTA - used),
+            usedAnnualCount: breakdown.annual,
+            usedHalfCount: breakdown.half,
+            usedSickCount: breakdown.sick,
+          };
+        })
+        .sort((a, b) => a.name.localeCompare(b.name, "ko"));
+    }
+
     return NextResponse.json({
       myRequests: ((myRows ?? []) as LeaveRow[]).map((row) => mapLeaveRow(row, userMap)),
       pendingRequests: pendingRows.map((row) => mapLeaveRow(row, userMap)),
       canApprove,
+      myRemainingAnnualLeave,
+      visibleAnnualLeaveBalances,
     });
   } catch (error) {
     return NextResponse.json(
@@ -157,16 +267,34 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "승인된 사용자만 연차요청을 생성할 수 있습니다." }, { status: 403 });
     }
 
-    const body = (await req.json()) as { fromDate?: string; toDate?: string; reason?: string };
+    const body = (await req.json()) as {
+      fromDate?: string;
+      toDate?: string;
+      reason?: string;
+      requestType?: LeaveRequestType;
+    };
     const fromDate = (body.fromDate ?? "").trim();
     const toDate = (body.toDate ?? "").trim();
     const reason = (body.reason ?? "").trim();
+    const requestType: LeaveRequestType =
+      body.requestType === "half" ? "half" : body.requestType === "sick" ? "sick" : "annual";
+    const usedAmount = requestType === "half" ? 0.5 : requestType === "sick" ? 0 : 1;
+    if (requestType === "sick" && requester.rank !== "팀장") {
+      return NextResponse.json({ error: "병가 요청은 팀장만 가능합니다." }, { status: 403 });
+    }
 
     if (!fromDate || !toDate) {
       return NextResponse.json({ error: "시작일과 종료일은 필수입니다." }, { status: 400 });
     }
     if (toDate < fromDate) {
       return NextResponse.json({ error: "종료일은 시작일보다 빠를 수 없습니다." }, { status: 400 });
+    }
+
+    const usageMap = await getApprovedUsageMap([requester.id]);
+    const myUsed = usageMap.get(requester.id) ?? 0;
+    const myRemaining = Math.max(0, ANNUAL_LEAVE_QUOTA - myUsed);
+    if (myRemaining < usedAmount) {
+      return NextResponse.json({ error: "잔여 연차가 부족합니다." }, { status: 400 });
     }
 
     const { data, error } = await supabaseAdmin
@@ -177,9 +305,11 @@ export async function POST(req: Request) {
         to_date: toDate,
         reason: reason || null,
         status: "pending",
+        request_type: requestType,
+        used_amount: usedAmount,
       })
       .select(
-        "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at"
+        "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at,request_type,used_amount"
       )
       .single();
 
