@@ -153,11 +153,16 @@ export default function AttendancePage() {
   );
 
   async function refreshLeaveRequests() {
-    const payload = await listLeaveRequests();
-    setMyLeaveRequests(payload.myRequests);
-    setPendingLeaveRequests(payload.pendingRequests);
-    setMyRemainingAnnualLeave(payload.myRemainingAnnualLeave);
-    setVisibleAnnualLeaveBalances(payload.visibleAnnualLeaveBalances);
+    try {
+      const payload = await listLeaveRequests();
+      setMyLeaveRequests(payload.myRequests);
+      setPendingLeaveRequests(payload.pendingRequests);
+      setMyRemainingAnnualLeave(payload.myRemainingAnnualLeave);
+      setVisibleAnnualLeaveBalances(payload.visibleAnnualLeaveBalances);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "연차/반차/병가 요청 목록을 불러오지 못했습니다.";
+      toast.error(message);
+    }
   }
 
   async function refresh() {
@@ -289,10 +294,19 @@ export default function AttendancePage() {
         reason: leaveReason.trim(),
         requestType: leaveRequestType,
       });
-      toast.success(leaveRequestType === "half" ? "반차요청이 접수되었습니다." : "연차요청이 접수되었습니다.");
+      toast.success(
+        leaveRequestType === "half"
+          ? "반차요청이 접수되었습니다."
+          : leaveRequestType === "sick"
+            ? "병가요청이 접수되었습니다."
+            : "연차요청이 접수되었습니다."
+      );
       setLeaveModalOpen(false);
       setLeaveReason("");
       await refreshLeaveRequests();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "요청 접수에 실패했습니다.";
+      toast.error(message);
     } finally {
       setLeaveSaving(false);
     }
