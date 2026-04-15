@@ -2,13 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "framer-motion";
 import toast from "react-hot-toast";
 import { signInWithEmailAndResolveProfile } from "../(admin)/_lib/authSupabase";
 import { getSupabaseAuthTargetInfo } from "../(admin)/_lib/supabaseClient";
 import { authErrorMessageKo, enhanceInvalidLoginWithDiagnose } from "../_lib/authErrorMessages";
-import { AuthFooterNote } from "../_components/auth/AuthMarketingLayout";
 import { NowcarLoginShell } from "../_components/auth/NowcarLoginLayout";
 import { useAuth } from "../_components/auth/AuthProvider";
 import { getPostLoginPath } from "../_lib/authPostLogin";
@@ -105,31 +105,32 @@ export default function LoginPage() {
   return (
     <NowcarLoginShell>
       <motion.div
-        className="crm-auth-card w-full"
+        className="w-full rounded-2xl border border-slate-200 bg-white px-5 py-7 shadow-[0_24px_56px_rgba(15,23,42,0.12)] sm:px-8 sm:py-9"
         initial={cardM.initial}
         animate={cardM.animate}
         transition={cardM.transition}
       >
         <motion.div
-          className="mb-8 text-center"
+          className="mb-7 text-center"
           initial={titleM.initial}
           animate={titleM.animate}
           transition={titleM.transition}
         >
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[var(--nowcar-auth-text-muted)]">
-            B2B Operations
-          </p>
-          <p className="mt-2 text-[1.65rem] font-bold tracking-tight text-[var(--nowcar-auth-navy-mid)] dark:text-slate-100">
-            NOWCAR CRM
-          </p>
+          <Image
+            src="/images/nowcar-ai-logo.png"
+            alt="NOWCAR"
+            width={80}
+            height={28}
+            className="mx-auto h-auto w-[80px]"
+            priority
+          />
+          <p className="mt-3 text-[24px] font-bold tracking-tight text-[#1e293b]">로그인</p>
+          <p className="mt-1 text-[14px] font-medium text-slate-400">계정으로 접속하세요</p>
         </motion.div>
-
-        <h1 className="crm-auth-title">로그인</h1>
-        <p className="crm-auth-desc">계정으로 접속하세요</p>
 
         {error ? (
           <motion.div
-            className="crm-auth-error-soft"
+            className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700"
             role="alert"
             initial={reduce ? false : { opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
@@ -139,7 +140,7 @@ export default function LoginPage() {
           </motion.div>
         ) : null}
         {!error && displayAuthError ? (
-          <div className="crm-auth-error-soft" role="alert">
+          <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700" role="alert">
             {displayAuthError}
           </div>
         ) : null}
@@ -157,7 +158,7 @@ export default function LoginPage() {
           </div>
         ) : null}
 
-        <form onSubmit={onSubmit} className="mt-8">
+        <form onSubmit={onSubmit} className="mt-2">
           <motion.div
             className="space-y-5"
             variants={formStagger}
@@ -165,7 +166,7 @@ export default function LoginPage() {
             animate="show"
           >
             <motion.div variants={formItem}>
-              <label htmlFor="login-email" className="crm-auth-label">
+              <label htmlFor="login-email" className="mb-2 block text-sm font-semibold text-slate-700">
                 이메일
               </label>
               <input
@@ -175,13 +176,13 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
                 autoComplete="email"
                 placeholder="name@company.com"
-                className="crm-auth-field"
+                className="h-[50px] w-full rounded-xl border border-[#e2e8f0] bg-white px-4 text-[15px] text-slate-900 outline-none transition-all duration-200 focus:border-[#3b82f6] focus:ring-[3px] focus:ring-[#3b82f6]/10"
                 required
                 disabled={loading}
               />
             </motion.div>
             <motion.div variants={formItem}>
-              <label htmlFor="login-password" className="crm-auth-label">
+              <label htmlFor="login-password" className="mb-2 block text-sm font-semibold text-slate-700">
                 비밀번호
               </label>
               <input
@@ -191,13 +192,17 @@ export default function LoginPage() {
                 onChange={(e) => setPassword(e.target.value)}
                 autoComplete="current-password"
                 placeholder="비밀번호"
-                className="crm-auth-field"
+                className="h-[50px] w-full rounded-xl border border-[#e2e8f0] bg-white px-4 text-[15px] text-slate-900 outline-none transition-all duration-200 focus:border-[#3b82f6] focus:ring-[3px] focus:ring-[#3b82f6]/10"
                 required
                 disabled={loading}
               />
             </motion.div>
             <motion.div variants={formItem}>
-              <button type="submit" className="crm-auth-btn-primary" disabled={loading}>
+              <button
+                type="submit"
+                className="inline-flex h-[52px] w-full items-center justify-center gap-2 rounded-xl border-0 bg-[linear-gradient(135deg,#1e40af,#3b82f6)] text-base font-semibold text-white transition-all duration-200 hover:brightness-110 hover:shadow-[0_10px_24px_rgba(59,130,246,0.35)] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70"
+                disabled={loading}
+              >
                 {loading ? (
                   <>
                     <span
@@ -214,19 +219,19 @@ export default function LoginPage() {
           </motion.div>
         </form>
 
-        <div className="mt-8 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 border-t border-[var(--nowcar-auth-border)] pt-7">
-          <Link href="/signup" className="crm-auth-link">
+        <div className="mt-7 flex flex-wrap items-center justify-center gap-x-5 gap-y-1 border-t border-slate-200 pt-6">
+          <Link href="/signup" className="text-sm font-semibold text-[#1e40af] hover:text-[#1d368f]">
             회원가입
           </Link>
-          <span className="text-[11px] text-[var(--nowcar-auth-text-muted)]/80" aria-hidden>
+          <span className="text-xs text-slate-400" aria-hidden>
             ·
           </span>
-          <Link href="/forgot-password" className="crm-auth-link">
+          <Link href="/forgot-password" className="text-sm font-semibold text-[#1e40af] hover:text-[#1d368f]">
             비밀번호 재설정
           </Link>
         </div>
 
-        <AuthFooterNote className="crm-auth-footnote !mt-6 border-t-0 pt-0 text-[12px]" />
+        <p className="mt-6 text-center text-[12px] text-slate-500">© 2026 ㈜나우카</p>
       </motion.div>
     </NowcarLoginShell>
   );

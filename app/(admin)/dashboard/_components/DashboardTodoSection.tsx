@@ -122,6 +122,8 @@ export default function DashboardTodoSection({
   recentAdded,
   recentCounseling,
   unresponsiveCount,
+  dailyQueue,
+  dailyInsight,
   onSelectLead,
 }: {
   loading: boolean;
@@ -130,10 +132,64 @@ export default function DashboardTodoSection({
   recentCounseling: Lead[];
   /** 부재 메뉴로 안내용 (0이면 링크 숨김) */
   unresponsiveCount: number;
+  dailyQueue: Array<{
+    rank: number;
+    leadId: string;
+    customerName: string;
+    carModel: string;
+    source: string;
+    temperature: "HOT" | "WARM" | "COLD" | "DEAD";
+    urgency: "긴급" | "보통" | "여유";
+    nextAction: string;
+    priorityScore: number;
+    preGeneratedMent: Record<string, unknown> | null;
+  }>;
+  dailyInsight: string;
   onSelectLead: (id: string) => void;
 }) {
   return (
     <section aria-label="오늘 할 일과 최근 활동">
+      <div className="mb-5 rounded-2xl border border-amber-200/70 bg-[linear-gradient(180deg,#fff9ef,#fff4df)] p-4 dark:border-amber-500/30 dark:bg-amber-500/10">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-[16px] font-bold text-[var(--crm-accent)] dark:text-zinc-50">오늘의 AI 우선순위 큐</h3>
+            <p className="mt-1 text-[13px] text-slate-600 dark:text-zinc-300">
+              우선 연락 고객 {dailyQueue.length}명 · 상위 순서대로 바로 실행하세요.
+            </p>
+          </div>
+          <Link href="/leads/counseling-progress?sort=lastContactOldest" className="crm-pill-secondary text-xs">
+            고객 목록 이동
+          </Link>
+        </div>
+        {dailyQueue.length === 0 ? (
+          <p className="mt-3 text-sm text-zinc-500 dark:text-zinc-400">아직 오늘 AI 큐가 생성되지 않았습니다.</p>
+        ) : (
+          <ul className="mt-3 space-y-2">
+            {dailyQueue.slice(0, 5).map((q) => (
+              <li key={q.leadId}>
+                <button
+                  type="button"
+                  onClick={() => onSelectLead(q.leadId)}
+                  className="flex w-full items-start justify-between gap-3 rounded-xl border border-zinc-200 bg-white/85 px-3 py-2 text-left hover:bg-white dark:border-zinc-700 dark:bg-zinc-900/50"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                      #{q.rank} {q.customerName} - {q.carModel || "차종 미입력"}
+                    </div>
+                    <div className="mt-0.5 truncate text-xs text-zinc-600 dark:text-zinc-400">
+                      {q.temperature} / {q.urgency} · {q.nextAction}
+                    </div>
+                  </div>
+                  <span className="shrink-0 rounded-md bg-zinc-100 px-2 py-1 text-xs font-semibold text-zinc-700 dark:bg-zinc-800 dark:text-zinc-200">
+                    {q.priorityScore}점
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {dailyInsight ? <p className="mt-3 text-xs text-zinc-600 dark:text-zinc-300">🤖 {dailyInsight}</p> : null}
+      </div>
       <div className="mb-4">
         <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">오늘 할 일 · 최근 활동</h2>
         <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">

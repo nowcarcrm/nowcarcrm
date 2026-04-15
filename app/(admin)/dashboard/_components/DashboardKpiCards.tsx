@@ -186,10 +186,12 @@ export default function DashboardKpiCards({
   loading,
   values,
   pipeline,
+  entranceEnabled = false,
 }: {
   loading: boolean;
   values: DashboardKpiValues | null;
   pipeline: PipelineStageCounts | null;
+  entranceEnabled?: boolean;
 }) {
   const reduceMotion = useReducedMotion();
   const reduce = reduceMotion === true;
@@ -199,7 +201,10 @@ export default function DashboardKpiCards({
   return (
     <div className="space-y-10">
       {/* 1단 — 핵심 돈·유입 */}
-      <section aria-label="핵심 성과 지표">
+      <section
+        aria-label="핵심 성과 지표"
+        className={entranceEnabled ? "dashboard-entrance-section entrance-delay-2" : ""}
+      >
         <div className="mb-4">
           <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">핵심 지표</h2>
           <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">
@@ -212,7 +217,7 @@ export default function DashboardKpiCards({
           initial="hidden"
           animate="show"
         >
-          {PRIMARY.map((p) => (
+          {PRIMARY.map((p, idx) => (
             <MotionLink
               key={p.key}
               href={p.href}
@@ -223,8 +228,14 @@ export default function DashboardKpiCards({
               className={cn(
                 cardBase,
                 "min-h-[184px] cursor-pointer",
+                entranceEnabled && "dashboard-kpi-pop",
                 p.featured && "border-[#dbe7fb] shadow-[0_14px_36px_rgba(37,99,235,0.16)]"
               )}
+              style={
+                entranceEnabled
+                  ? { animationDelay: `${1.7 + idx * 0.15}s` }
+                  : undefined
+              }
             >
               {p.featured ? (
                 <div className="h-[3px] w-full shrink-0 bg-[linear-gradient(90deg,#2563eb,#60a5fa)]" aria-hidden />
@@ -252,7 +263,10 @@ export default function DashboardKpiCards({
       </section>
 
       {/* 2단 — 파이프라인 */}
-      <section aria-label="고객 진행 단계">
+      <section
+        aria-label="고객 진행 단계"
+        className={entranceEnabled ? "dashboard-entrance-section entrance-delay-3" : ""}
+      >
         <div className="mb-4">
           <h2 className="text-[18px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-100">진행 현황</h2>
           <p className="mt-1 text-[15px] leading-relaxed text-slate-600 dark:text-zinc-400">

@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { supabaseAdmin } from "@/app/_lib/supabaseAdminServer";
 
 const RequestSchema = z.object({
+  employeeId: z.string().uuid(),
   tone: z.string().min(1),
   purpose: z.string().min(1),
   customerInfo: z
@@ -24,46 +26,65 @@ const ResponseSchema = z.object({
     keyPoint: z.string().min(1),
     cautionNote: z.string().min(1),
     nextAction: z.string().min(1),
+    customerPsychology: z.string().min(1),
   }),
   timing: z.string().min(1),
 });
 
-const SYSTEM_PROMPT = `너는 대한민국 최고의 신차 장기렌트/리스 전문 영업 컨설턴트다.
-회사명: ㈜나우카 (now car)
+const SYSTEM_PROMPT = `너는 대한민국 최고의 신차 장기렌트/리스 영업 전문가이자,
+영업사원의 실시간 코치다.
+
+회사: ㈜나우카 (now car)
 업종: 신차 장기렌트/리스 전문 에이전시 (중고차 아님)
-핵심 시스템: 금융사-고객 직접 연결형 다이렉트 시스템
+핵심: 금융사-고객 직접 연결 다이렉트 시스템
 
-■ 나우카 핵심 셀링포인트 (상황에 맞게 1-2개만 자연스럽게 반영):
-1. 중간 유통 수수료 없는 다이렉트 시스템
-2. 금융사-고객 직접 연결로 약 1,000만원 절감
-3. 투명한 금융사 조건 비교 시스템
-4. 초보자도 쉬운 온라인 견적/계약
+■ 너의 역할:
+영업사원이 고객과의 실제 상담 내용을 알려주면,
+그 상황을 정확히 분석하고 구체적인 솔루션을 제시해야 한다.
+뻔한 인사말이나 일반적인 멘트가 아니라,
+"지금 이 상황에서 정확히 이렇게 말해라"를 알려줘야 한다.
 
-■ 톤별 가이드:
-- 친절형: 따뜻하고 배려. "~해드릴게요", "~도와드릴 수 있어요"
-- 설득형: 논리적, 데이터 기반. "~기준으로 보시면", "비교해보시면"
-- 단호형: 확신, 직접적. "지금 잡으셔야 합니다", "이건 확실합니다"
-- 대표형: 리더/전문가. "제가 직접 확인해봤는데", "업계 상황을 보면"
+■ 분석 순서 (반드시 이 순서로):
+1. 상황 파악: 고객이 지금 어떤 상태인지 정확히 짚어라
+   - 비교 중인지, 망설이는지, 가격 때문인지, 타이밍 때문인지
+   - 고객의 진짜 고민이 뭔지 읽어내라
 
-■ 멘트 규칙:
-- 실제 전화/카톡/문자에서 바로 쓸 수 있는 자연스러운 말투
-- 고객 상황에 맞는 맞춤형 (관심차종, 예산, 단계 반영)
-- 무조건 좋다고만 X, 현실적 시각 + 신뢰감
-- 매번 같은 패턴 반복 금지
+2. 고객 심리 분석: 고객이 이 말을 왜 하는지 해석해라
+   - "생각해보고 연락주겠다" = 거절 시그널? 진짜 고민 중?
+   - "다른 데도 알아보고 있다" = 가격 협상? 진짜 비교 중?
+   - "할인이 별로다" = 더 깎아달라? 경쟁사가 더 싸다?
 
-■ 반드시 아래 JSON 형식으로만 응답해. 다른 텍스트 없이 JSON만:
+3. 전략 제시: 이 상황에서 어떤 전략으로 접근해야 하는지
+   - 밀어야 하는지, 당겨야 하는지
+   - 가격으로 승부할지, 서비스로 승부할지, 긴급성으로 승부할지
+
+4. 실전 멘트: 바로 말할 수 있는 구체적인 대화 멘트
+   - 전화용이면 전화 멘트로
+   - 카톡이면 카톡 스타일로
+   - 실제로 입에서 나올 수 있는 자연스러운 말투로
+
+5. 주의사항: 이 상황에서 하면 안 되는 것
+
+■ 나우카 핵심 무기 (상황에 맞게 활용):
+- 중간 수수료 없는 다이렉트 → 같은 차인데 수백만원 차이
+- 금융사 직접 연결 → 이자율/조건을 투명하게 비교
+- 약 1,000만원 절감 → "같은 차, 같은 조건인데 왜 더 비싸게 하세요?"
+- 온라인 견적 시스템 → 바로 비교 가능
+
+■ 응답 형식 (반드시 JSON):
 {
-  "mainMent": "메인 추천 멘트",
-  "altMent1": "대안 멘트 1",
-  "altMent2": "대안 멘트 2",
+  "mainMent": "가장 강력한 실전 멘트 (바로 복사해서 쓸 수 있는 수준)",
+  "altMent1": "다른 접근법의 멘트 (mainMent와 다른 전략)",
+  "altMent2": "세 번째 접근법 (가장 부드러운 버전)",
   "analysis": {
     "customerTemperature": "HOT/WARM/COLD",
     "urgencyLevel": "긴급/보통/여유",
-    "keyPoint": "핵심 포인트 한줄",
-    "cautionNote": "주의할 점",
-    "nextAction": "다음 행동 추천"
+    "keyPoint": "이 고객의 핵심 포인트 (예: 가격 민감, 비교 중, 출고 급함)",
+    "cautionNote": "이 상황에서 절대 하면 안 되는 것",
+    "nextAction": "이 통화/대화 끝나고 다음에 해야 할 구체적 행동",
+    "customerPsychology": "고객이 지금 이 말을 하는 진짜 이유 분석"
   },
-  "timing": "멘트 보내기 좋은 타이밍"
+  "timing": "이 멘트를 언제 보내면 가장 효과적인지"
 }`;
 
 function stringifyInput(input: unknown) {
@@ -75,10 +96,60 @@ function stringifyInput(input: unknown) {
   }
 }
 
+function toRecord(input: unknown): Record<string, unknown> {
+  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  return input as Record<string, unknown>;
+}
+
+function toStringValue(value: unknown, fallback = "미입력") {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed || fallback;
+  }
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((item) => (typeof item === "string" ? item.trim() : String(item ?? "")))
+      .filter(Boolean)
+      .join(", ");
+    return joined || fallback;
+  }
+  if (value == null) return fallback;
+  return String(value);
+}
+
 function parseModelContent(raw: string) {
   const trimmed = raw.trim();
   const parsed = JSON.parse(trimmed);
   return ResponseSchema.parse(parsed);
+}
+
+type LearningType = "successful_ment" | "rejected_ment" | "feedback";
+
+async function fetchLearningTexts(employeeId: string, learningType: LearningType, limit: number) {
+  const { data, error } = await supabaseAdmin
+    .from("ai_employee_learnings")
+    .select("content")
+    .eq("employee_id", employeeId)
+    .eq("learning_type", learningType)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    console.error("[generate-ment] learning fetch failed", { employeeId, learningType, error: error.message });
+    return [] as string[];
+  }
+
+  return (data ?? [])
+    .map((row) => {
+      const content = (row as { content?: string | null }).content ?? "";
+      return content.trim();
+    })
+    .filter(Boolean);
+}
+
+function numberedLines(lines: string[]) {
+  if (lines.length === 0) return ["- 없음"];
+  return lines.map((line, idx) => `${idx + 1}. ${line}`);
 }
 
 export async function POST(req: Request) {
@@ -86,7 +157,7 @@ export async function POST(req: Request) {
     const body = RequestSchema.safeParse(await req.json());
     if (!body.success) {
       return NextResponse.json(
-        { ok: false, error: "요청 형식이 올바르지 않습니다. { tone, purpose, customerInfo, consultationHistory }를 확인해 주세요." },
+        { ok: false, error: "요청 형식이 올바르지 않습니다. { employeeId, tone, purpose, customerInfo, consultationHistory }를 확인해 주세요." },
         { status: 400 }
       );
     }
@@ -96,17 +167,61 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, error: "OPENAI_API_KEY가 설정되지 않았습니다." }, { status: 503 });
     }
 
-    const { tone, purpose, customerInfo, consultationHistory } = body.data;
+    const { employeeId, tone, purpose, customerInfo, consultationHistory } = body.data;
+    const customer = toRecord(customerInfo);
+    const customerName = toStringValue(customer.name);
+    const interestedCar = toStringValue(customer.desiredVehicle);
+    const source = toStringValue(customer.source);
+    const channel = toStringValue(customer.recentChannel, "미확인");
+    const selectedTags = toStringValue(customer.objections, "없음");
+    const consultationDetail = toStringValue(customer.reactionSummary, stringifyInput(consultationHistory));
+    const additionalNotes = toStringValue(customer.objectionsFreeText, "없음");
+    const [successfulMents, rejectedMents, feedbacks] = await Promise.all([
+      fetchLearningTexts(employeeId, "successful_ment", 5),
+      fetchLearningTexts(employeeId, "rejected_ment", 3),
+      fetchLearningTexts(employeeId, "feedback", 3),
+    ]);
+
     const userPrompt = [
-      "아래 고객 정보를 바탕으로 멘트 3개와 분석을 JSON으로 생성해줘.",
-      `- 선택 톤: ${tone}`,
-      `- 상담 목적: ${purpose}`,
+      "[상담 상황]",
+      `고객명: ${customerName}`,
+      `관심차종: ${interestedCar}`,
+      `유입경로: ${source}`,
+      `상담채널: ${channel} (전화/카톡/문자)`,
+      `고객 현재 반응 태그: ${selectedTags}`,
       "",
-      "[customerInfo]",
-      stringifyInput(customerInfo),
+      "[직원이 입력한 상담 내용]",
+      consultationDetail,
       "",
-      "[consultationHistory]",
-      stringifyInput(consultationHistory),
+      "[추가 특이사항]",
+      additionalNotes,
+      "",
+      "[요청]",
+      `톤: ${tone}`,
+      `목적: ${purpose}`,
+      "",
+      "위 상담 상황을 분석하고, 이 고객에게 지금 바로 쓸 수 있는",
+      "실전 멘트를 만들어줘. 뻔한 인사말이 아니라",
+      "이 상황에 딱 맞는 구체적인 솔루션과 대화 멘트가 필요해.",
+      "",
+      "[참고 원본 데이터]",
+      `customerInfo: ${stringifyInput(customerInfo)}`,
+      `consultationHistory: ${stringifyInput(consultationHistory)}`,
+      "",
+      "[이 영업사원의 스타일 학습 데이터]",
+      "",
+      "선호하는 멘트 패턴 (이전에 복사해서 사용한 멘트들):",
+      ...numberedLines(successfulMents),
+      "",
+      "선호하지 않는 패턴 (사용 안 한 멘트들):",
+      ...numberedLines(rejectedMents),
+      "",
+      "직원 직접 피드백:",
+      ...numberedLines(feedbacks),
+      "",
+      "위 학습 데이터를 참고해서, 이 영업사원의 스타일에 맞는",
+      "멘트를 생성해줘. 선호하는 패턴과 비슷하게,",
+      "선호하지 않는 패턴은 피하면서 작성해.",
     ].join("\n");
 
     const controller = new AbortController();

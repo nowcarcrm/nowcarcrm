@@ -1562,6 +1562,14 @@ export async function createLead(lead: Lead, scope?: ViewerScope): Promise<Lead>
 
   console.log("[createLead] returning createdLead", createdLead);
 
+  if (createdLead.managerUserId) {
+    void dispatchLeadNotification({
+      leadId: createdLead.id,
+      eventType: "new-lead-assigned",
+      toUserId: createdLead.managerUserId,
+    });
+  }
+
   // logActivity / logStatusHistory 미호출 — crm_activity_logs·lead_status_history 요청 없음(leads insert만).
   return createdLead;
 }
@@ -1587,6 +1595,8 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
   }
   const leadLocked = await prepareLeadForSupabaseWrite(lead, scope);
   const leadForUpdate = normalizeLeadForPersistence(leadLocked);
+  const previousManagerId = nullableDbStringId(dbManager);
+  const nextManagerId = nullableDbStringId(leadForUpdate.managerUserId ?? null);
   if (!coerceDbStringId(leadForUpdate.id)) {
     throw new Error("leadId 없음");
   }
@@ -1652,6 +1662,15 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
     }
     throw relError;
   }
+
+  if (nextManagerId && nextManagerId !== previousManagerId) {
+    void dispatchLeadNotification({
+      leadId: leadForUpdate.id,
+      eventType: "lead-reassigned",
+      toUserId: nextManagerId,
+      previousUserId: previousManagerId,
+    });
+  }
 }
 
 export async function deleteLead(leadId: string, scope?: ViewerScope) {
@@ -1715,6 +1734,37 @@ function parseContractNetProfitWonFromDb(row: {
       : extra?.dt;
   const dealerAllowance = deliveryType === "대리점 출고" ? allowance : 0;
   return Math.max(0, feeWon + dealerAllowance - supportCost);
+}
+
+async function dispatchLeadNotification(params: {
+  leadId: string;
+  eventType: "new-lead-assigned" | "lead-reassigned";
+  toUserId?: string | null;
+  previousUserId?: string | null;
+}) {
+  if (typeof window === "undefined") return;
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) return;
+    await fetch("/api/notifications/dispatch-lead", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        leadId: params.leadId,
+        eventType: params.eventType,
+        toUserId: params.toUserId ?? undefined,
+        previousUserId: params.previousUserId ?? undefined,
+      }),
+    });
+  } catch {
+    // 알림 트리거 실패는 저장 흐름을 막지 않음
+  }
 }
 
 /**

@@ -114,7 +114,15 @@ type SortKey =
   | "nextContactSoon"
   | "deliverySoon"
   | "lastContactOldest"
-  | "lastContactNewest";
+  | "lastContactNewest"
+  | "aiPriority";
+
+type AiRow = {
+  temperature: "HOT" | "WARM" | "COLD" | "DEAD";
+  urgency: "긴급" | "보통" | "여유";
+  nextAction: string;
+  priorityScore: number;
+};
 
 function toDateKey(isoLike: string | null | undefined) {
   if (!isoLike) return "";
@@ -174,6 +182,7 @@ function LeadsCategoryView({
     note: string;
   } | null>(null);
   const [leadsLoadError, setLeadsLoadError] = useState<string | null>(null);
+  const [aiByLeadId, setAiByLeadId] = useState<Record<string, AiRow>>({});
 
   useEffect(() => {
     if (authLoading) return;
@@ -271,6 +280,50 @@ function LeadsCategoryView({
       mounted = false;
     };
   }, [profile, authLoading]);
+
+  useEffect(() => {
+    if (authLoading || !profile?.userId) return;
+    let mounted = true;
+    (async () => {
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        const token = session?.access_token;
+        if (!token) return;
+        const res = await fetch(`/api/ai/daily-queue?userId=${encodeURIComponent(profile.userId)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const json = (await res.json()) as {
+          ok?: boolean;
+          queue?: Array<{
+            leadId: string;
+            temperature: "HOT" | "WARM" | "COLD" | "DEAD";
+            urgency: "긴급" | "보통" | "여유";
+            nextAction: string;
+            priorityScore: number;
+          }>;
+        };
+        if (!mounted || !json.ok) return;
+        const nextMap: Record<string, AiRow> = {};
+        for (const q of json.queue ?? []) {
+          nextMap[q.leadId] = {
+            temperature: q.temperature,
+            urgency: q.urgency,
+            nextAction: q.nextAction,
+            priorityScore: q.priorityScore,
+          };
+        }
+        setAiByLeadId(nextMap);
+      } catch {
+        if (!mounted) return;
+        setAiByLeadId({});
+      }
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, [profile?.userId, authLoading]);
 
   useEffect(() => {
     if (searchParams.get("create") === "1") {
@@ -468,11 +521,17 @@ function LeadsCategoryView({
         return compareIsoAsc(lastContactReferenceIso(a), lastContactReferenceIso(b));
       if (sortBy === "lastContactNewest")
         return compareIsoAsc(lastContactReferenceIso(b), lastContactReferenceIso(a));
+      if (sortBy === "aiPriority") {
+        const as = aiByLeadId[a.id]?.priorityScore ?? -1;
+        const bs = aiByLeadId[b.id]?.priorityScore ?? -1;
+        if (as === bs) return a.createdAt < b.createdAt ? 1 : -1;
+        return bs - as;
+      }
       const aDelivery = a.exportProgress?.expectedDeliveryDate ?? a.contract?.pickupPlannedAt ?? null;
       const bDelivery = b.exportProgress?.expectedDeliveryDate ?? b.contract?.pickupPlannedAt ?? null;
       return compareDateAsc(aDelivery, bDelivery);
     });
-  }, [afterPeriodFiltered, sortBy]);
+  }, [afterPeriodFiltered, sortBy, aiByLeadId]);
 
   const canExportDeliveredExcel = profile?.role === "admin";
 
@@ -786,6 +845,7 @@ function LeadsCategoryView({
           >
             <option value="lastContactOldest">최근 연락 · 오래된 순</option>
             <option value="lastContactNewest">최근 연락 · 최신 순</option>
+            <option value="aiPriority">AI 우선순위 · 높은 순</option>
             <option value="latest">등록일 · 최신순</option>
             <option value="oldest">등록일 · 오래된순</option>
             <option value="nextContactSoon">다음 연락일 빠른순</option>
@@ -973,6 +1033,7 @@ function LeadsCategoryView({
                 </tr>
               ) : (
                 pagedFiltered.map((row) => {
+                  const ai = aiByLeadId[row.id];
                   const isTodayFollowUp = !!row.nextContactAt && isToday(row.nextContactAt);
                   const isNewOverdue = categoryKey === "new-db" && row.counselingStatus === "신규" && daysAgo(row.createdAt) >= 3;
                   const isDeliverySoon =
@@ -1020,24 +1081,47 @@ function LeadsCategoryView({
                         <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">{row.base.source}</div>
                       </td>
                       <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
-                            tempPillClass(row.base.leadTemperature)
-                          )}
-                        >
-                          {row.base.leadTemperature}
-                        </span>
+                        {ai ? (
+                          <span className="inline-flex items-center rounded-full border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-xs font-semibold text-zinc-800 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-100">
+                            {ai.temperature === "HOT"
+                              ? "🔥 HOT"
+                              : ai.temperature === "WARM"
+                                ? "🟡 WARM"
+                                : ai.temperature === "COLD"
+                                  ? "🔵 COLD"
+                                  : "⚫ DEAD"}
+                          </span>
+                        ) : (
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
+                              tempPillClass(row.base.leadTemperature)
+                            )}
+                          >
+                            {row.base.leadTemperature}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3">
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
-                            priorityPillClass(row.leadPriority ?? "일반")
-                          )}
-                        >
-                          {row.leadPriority ?? "일반"}
-                        </span>
+                        {ai ? (
+                          <div className="space-y-1">
+                            <span className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-800 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200">
+                              {ai.priorityScore}점 · {ai.urgency}
+                            </span>
+                            <div className="max-w-[220px] truncate text-[11px] text-zinc-500 dark:text-zinc-400">
+                              {ai.nextAction}
+                            </div>
+                          </div>
+                        ) : (
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
+                              priorityPillClass(row.leadPriority ?? "일반")
+                            )}
+                          >
+                            {row.leadPriority ?? "일반"}
+                          </span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-xs text-zinc-700 dark:text-zinc-200">
                         {categoryKey === "contract-progress" ? (

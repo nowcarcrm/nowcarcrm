@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname, useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { LayoutGroup, motion, useReducedMotion } from "framer-motion";
@@ -21,10 +22,12 @@ import {
 } from "@/app/(admin)/_lib/leaseCrmStorage";
 import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
 import { listActiveUsers } from "@/app/(admin)/_lib/usersSupabase";
-import AiCounselAssistPopup from "@/app/(admin)/leads/_components/AiCounselAssistPopup";
 import UserRankSummary from "@/app/_components/ui/UserRankSummary";
 import UserRankCard from "@/app/_components/ui/UserRankCard";
 import { canAccessAdminPage } from "@/app/(admin)/_lib/rolePermissions";
+import NotificationBell from "@/app/_components/notifications/NotificationBell";
+import AiFloatingButton from "@/app/_components/ai-secretary/AiFloatingButton";
+import { openNowAi } from "@/app/_components/ai-secretary/events";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -444,8 +447,14 @@ function SidebarContents({
     <div className="relative z-10 flex h-full flex-col">
       <div className="border-b border-white/10 px-5 pb-4 pt-6">
         <div className="flex items-center gap-3.5">
-          <div className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-[#2f7cff] to-[#1f4e9b] text-[10px] font-extrabold tracking-tight text-white shadow-[0_10px_20px_rgba(3,13,34,0.35)] ring-1 ring-white/20">
-            NC
+          <div className="grid h-11 w-[52px] shrink-0 place-items-center rounded-2xl bg-white/10 shadow-[0_10px_20px_rgba(3,13,34,0.35)] ring-1 ring-white/20 backdrop-blur-sm">
+            <Image
+              src="/images/nowcar-ai-logo.png"
+              alt="NOWCAR"
+              width={40}
+              height={14}
+              className="h-auto w-10 object-contain"
+            />
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[17px] font-extrabold tracking-tight text-white">{APP_NAME}</div>
@@ -678,7 +687,12 @@ export default function AdminShell({
           ) : null}
 
           {/* Main column */}
-          <div className="flex min-w-0 flex-1 flex-col">
+          <div className="relative flex min-w-0 flex-1 flex-col">
+            <div
+              className="pointer-events-none fixed left-1/2 top-1/2 z-0 h-[300px] w-[74vw] max-w-[560px] -translate-x-1/2 -translate-y-1/2 bg-center bg-contain bg-no-repeat opacity-[0.035]"
+              style={{ backgroundImage: "url('/images/nowcar-ai-logo.png')" }}
+              aria-hidden
+            />
             <header className="sticky top-0 z-30 border-b border-slate-200/85 bg-white/92 shadow-[0_8px_26px_rgba(15,23,42,0.08)] backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/90">
               <div className="px-4 py-3.5 sm:px-6 lg:px-8">
                 <div className="relative flex flex-wrap items-center gap-3 sm:gap-4 lg:flex-nowrap">
@@ -695,8 +709,14 @@ export default function AdminShell({
                     href="/dashboard"
                     className="flex min-w-0 max-w-[55%] items-center gap-2.5 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-[var(--crm-blue)]/35 focus-visible:ring-offset-2 sm:max-w-none lg:min-w-[200px] lg:max-w-[280px]"
                   >
-                    <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-[var(--crm-blue-deep)] text-[10px] font-extrabold tracking-tight text-white shadow-sm dark:bg-[#163a5e]">
-                      NC
+                    <span className="grid h-9 w-[46px] shrink-0 place-items-center rounded-lg bg-[var(--crm-blue-deep)]/10 shadow-sm ring-1 ring-slate-200 dark:bg-[#163a5e]/40 dark:ring-zinc-700">
+                      <Image
+                        src="/images/nowcar-ai-logo.png"
+                        alt="NOWCAR"
+                        width={34}
+                        height={12}
+                        className="h-auto w-[34px] object-contain"
+                      />
                     </span>
                     <span className="min-w-0 text-left">
                       <span className="block truncate text-[15px] font-bold tracking-tight text-[var(--crm-accent)] dark:text-zinc-50">
@@ -738,6 +758,7 @@ export default function AdminShell({
                         className="min-w-[170px]"
                       />
                     </div>
+                    <NotificationBell />
                     {onLogout ? (
                       <button
                         type="button"
@@ -746,15 +767,7 @@ export default function AdminShell({
                       >
                         로그아웃
                       </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="inline-flex items-center justify-center rounded-lg p-2 text-slate-600 hover:bg-slate-100 dark:text-zinc-300 dark:hover:bg-zinc-900"
-                        aria-label="알림"
-                      >
-                        <Icon name="bell" className="size-5" />
-                      </button>
-                    )}
+                    ) : null}
                   </div>
                 </div>
 
@@ -773,7 +786,7 @@ export default function AdminShell({
               </div>
             </header>
 
-            <main className="min-w-0 flex-1">
+            <main className="relative z-10 min-w-0 flex-1">
               <div className="mx-auto w-full max-w-[1760px] px-4 py-5 sm:px-6 sm:py-6 lg:px-10 lg:py-8">
                 <CrmPageTransition>{children}</CrmPageTransition>
               </div>
@@ -817,7 +830,27 @@ export default function AdminShell({
               }}
             />
           ) : null}
-          <AiCounselAssistPopup lead={modalLead} />
+          {modalLead ? (
+            <button
+              type="button"
+              onClick={() =>
+                openNowAi({
+                  tab: "chat",
+                  leadId: modalLead.id,
+                  leadSummary: {
+                    name: modalLead.base.name,
+                    desiredVehicle: modalLead.base.desiredVehicle,
+                    source: modalLead.base.source,
+                    temperature: modalLead.base.leadTemperature,
+                  },
+                })
+              }
+              className="fixed bottom-[84px] right-6 z-[93] rounded-full bg-[#1e40af] px-4 py-2 text-xs font-semibold text-white shadow-lg"
+            >
+              나우AI에게 물어보기
+            </button>
+          ) : null}
+          <AiFloatingButton lead={modalLead} />
         </div>
       </LeadDetailModalContext.Provider>
     </LeadListSearchContext.Provider>
