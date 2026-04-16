@@ -20,6 +20,7 @@ export type UserTeam = (typeof USER_TEAMS)[number];
 export type UserDivision = (typeof USER_DIVISIONS)[number];
 export const ADMIN_RANKS = ["총괄대표", "대표", "본부장", "팀장"] as const;
 export type AdminRank = (typeof ADMIN_RANKS)[number];
+export const USER_RANK_CHIEF_EXECUTIVE = ADMIN_RANKS[0];
 
 type MaybeUserLike = {
   email?: string | null;

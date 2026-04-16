@@ -37,7 +37,9 @@ import {
   canAccessAdminPage,
   canAccessLeadDetail,
   canViewLead,
+  effectiveRank,
   getVisibleTeamScope,
+  USER_RANK_CHIEF_EXECUTIVE,
   isExecutive,
   isSuperAdmin,
   normalizeUserTeam,
@@ -1439,14 +1441,28 @@ export async function searchLeads(
   const viewer = toViewerLike(scope, viewerRow);
   const scopedIds =
     scope?.visibleUserIds?.map((id) => String(id).trim()).filter(Boolean) ?? [];
-  const visibleUserIds =
+  let visibleUserIds =
     scope && shouldFilterLeadsByManager(scope)
       ? scopedIds.length > 0
         ? scopedIds
         : await getVisibleUserIds(viewer)
       : null;
 
-  if (scope && shouldFilterLeadsByManager(scope)) {
+  /* Global lead search: chief exec sees only own assigned leads (not org-wide). */
+  const chiefExecGlobalSearchSelfOnly =
+    !!scope &&
+    !isSuperAdmin(viewer) &&
+    effectiveRank(viewer) === USER_RANK_CHIEF_EXECUTIVE &&
+    !!nonEmptyUserId(viewer.id);
+
+  if (chiefExecGlobalSearchSelfOnly) {
+    visibleUserIds = [nonEmptyUserId(viewer.id)!];
+  }
+
+  const applyManagerFilterForSearch =
+    !!scope && (shouldFilterLeadsByManager(scope) || chiefExecGlobalSearchSelfOnly);
+
+  if (applyManagerFilterForSearch) {
     if (visibleUserIds === null) {
       /* 전사 검색: manager_user_id 조건 없음 */
     } else if (visibleUserIds.length === 0) {
