@@ -61,7 +61,9 @@ function playShortBeep() {
 }
 
 function rowToAppNotification(row: Record<string, unknown>): AppNotification | null {
-  if (typeof row.id !== "string" || typeof row.user_id !== "string") return null;
+  const id = row.id != null ? String(row.id) : "";
+  const user_id = row.user_id != null ? String(row.user_id) : "";
+  if (!id || !user_id) return null;
   const raw = row.type;
   const type: AppNotification["type"] =
     raw === "new-lead-assigned" ||
@@ -71,8 +73,8 @@ function rowToAppNotification(row: Record<string, unknown>): AppNotification | n
       ? raw
       : "notification";
   return {
-    id: row.id,
-    user_id: row.user_id,
+    id,
+    user_id,
     type,
     title: typeof row.title === "string" ? row.title : "",
     message: typeof row.message === "string" ? row.message : "",
@@ -135,6 +137,8 @@ function NotificationToastStack({
     </div>
   );
 }
+
+const DISPATCH_POLL_MS = 6000;
 
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
   const { profile } = useAuth();
@@ -306,7 +310,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     };
   }, [socket, applyNotificationFromStream]);
 
-  /** Vercel 등 서버리스: Socket.IO 미동작 → Supabase postgres_changes 로 동일 알림 수신 */
+  /** Serverless: postgres_changes on notifications (RLS limits visible INSERTs). */
   useEffect(() => {
     if (!profile?.userId) return;
 
@@ -318,19 +322,64 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
           event: "INSERT",
           schema: "public",
           table: "notifications",
-          filter: `user_id=eq.${profile.userId}`,
         },
         (payload) => {
           const row = rowToAppNotification(payload.new as Record<string, unknown>);
-          if (row) applyNotificationFromStream(row);
+          if (!row || row.user_id !== profile.userId) return;
+          applyNotificationFromStream(row);
         }
       )
-      .subscribe();
+      .subscribe((status, err) => {
+        if (status === "CHANNEL_ERROR" && process.env.NODE_ENV === "development") {
+          console.warn("[notifications] realtime channel error", err);
+        }
+      });
 
     return () => {
       void supabase.removeChannel(channel);
     };
   }, [profile?.userId, applyNotificationFromStream]);
+
+  /** API poll fallback for dispatch toasts when Realtime is unavailable. */
+  useEffect(() => {
+    if (!profile?.userId) return;
+
+    let cancelled = false;
+    let initialPollDone = false;
+    const knownIds = new Set<string>();
+
+    const tick = async () => {
+      const token = await getToken();
+      if (!token || cancelled) return;
+      const res = await fetch("/api/notifications?limit=15", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const json = (await res.json()) as { items?: AppNotification[] };
+      if (!res.ok || cancelled) return;
+      const list = json.items ?? [];
+
+      if (!initialPollDone) {
+        for (const item of list) knownIds.add(item.id);
+        initialPollDone = true;
+        return;
+      }
+
+      for (const item of [...list].reverse()) {
+        if (knownIds.has(item.id)) continue;
+        knownIds.add(item.id);
+        if (item.type !== "new-lead-assigned" && item.type !== "lead-reassigned") continue;
+        applyNotificationFromStream(item);
+      }
+    };
+
+    const intervalId = window.setInterval(() => void tick(), DISPATCH_POLL_MS);
+    void tick();
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [profile?.userId, getToken, applyNotificationFromStream]);
 
   useEffect(() => {
     if (toasts.length === 0) return;
