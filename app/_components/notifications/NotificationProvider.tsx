@@ -40,6 +40,48 @@ function formatRelative(createdAt: string) {
   return `${Math.floor(hour / 24)}일 전`;
 }
 
+function playShortBeep() {
+  try {
+    const Ctx =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    gain.gain.value = 0.03;
+    osc.start();
+    osc.stop(ctx.currentTime + 0.08);
+  } catch {
+    /* ignore */
+  }
+}
+
+function rowToAppNotification(row: Record<string, unknown>): AppNotification | null {
+  if (typeof row.id !== "string" || typeof row.user_id !== "string") return null;
+  const raw = row.type;
+  const type: AppNotification["type"] =
+    raw === "new-lead-assigned" ||
+    raw === "lead-reassigned" ||
+    raw === "ai-alert" ||
+    raw === "notification"
+      ? raw
+      : "notification";
+  return {
+    id: row.id,
+    user_id: row.user_id,
+    type,
+    title: typeof row.title === "string" ? row.title : "",
+    message: typeof row.message === "string" ? row.message : "",
+    data: row.data && typeof row.data === "object" && !Array.isArray(row.data) ? (row.data as Record<string, unknown>) : {},
+    is_read: row.is_read === true,
+    created_at: typeof row.created_at === "string" ? row.created_at : new Date().toISOString(),
+  };
+}
+
 function NotificationToastStack({
   toasts,
   dismiss,
@@ -170,6 +212,27 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     }
   }, [getToken]);
 
+  const applyNotificationFromStream = useCallback(
+    (notification: AppNotification) => {
+      let added = false;
+      setItems((prev) => {
+        if (prev.some((i) => i.id === notification.id)) return prev;
+        added = true;
+        return [notification, ...prev].slice(0, 20);
+      });
+      if (!added) return;
+      setServerUnreadCount((c) => c + 1);
+      setToasts((prev) =>
+        prev.some((t) => t.id === notification.id) ? prev : [notification, ...prev].slice(0, 3)
+      );
+      playShortBeep();
+      if (typeof window !== "undefined" && document.hidden) {
+        void showDesktopNotification(notification);
+      }
+    },
+    [showDesktopNotification]
+  );
+
   const markRead = useCallback(
     async (id: string) => {
       const token = await getToken();
@@ -235,34 +298,39 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   useEffect(() => {
     if (!socket) return;
     const onNotification = (notification: AppNotification) => {
-      setItems((prev) => [notification, ...prev].slice(0, 20));
-      setServerUnreadCount((prev) => prev + 1);
-      setToasts((prev) => [notification, ...prev].slice(0, 3));
-
-      // short notification beep (file fallback 없이 동작)
-      try {
-        const ctx = new (window.AudioContext || (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext)();
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.value = 880;
-        gain.gain.value = 0.03;
-        osc.start();
-        osc.stop(ctx.currentTime + 0.08);
-      } catch {
-        // ignore audio failure
-      }
-
-      if (typeof window !== "undefined" && document.hidden) {
-        void showDesktopNotification(notification);
-      }
+      applyNotificationFromStream(notification);
     };
     socket.on(REALTIME_EVENTS.NOTIFICATION, onNotification);
     return () => {
       socket.off(REALTIME_EVENTS.NOTIFICATION, onNotification);
     };
-  }, [socket, showDesktopNotification]);
+  }, [socket, applyNotificationFromStream]);
+
+  /** Vercel 등 서버리스: Socket.IO 미동작 → Supabase postgres_changes 로 동일 알림 수신 */
+  useEffect(() => {
+    if (!profile?.userId) return;
+
+    const channel = supabase
+      .channel(`notifications:${profile.userId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "notifications",
+          filter: `user_id=eq.${profile.userId}`,
+        },
+        (payload) => {
+          const row = rowToAppNotification(payload.new as Record<string, unknown>);
+          if (row) applyNotificationFromStream(row);
+        }
+      )
+      .subscribe();
+
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [profile?.userId, applyNotificationFromStream]);
 
   useEffect(() => {
     if (toasts.length === 0) return;
