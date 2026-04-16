@@ -1351,8 +1351,13 @@ export async function fetchLeads(scope?: ViewerScope): Promise<Lead[]> {
     .select("*")
     .order("created_at", { ascending: false });
   if (scope && shouldFilterLeadsByManager(scope)) {
-    if (!visibleUserIds || visibleUserIds.length === 0) return [];
-    query = query.in("manager_user_id", visibleUserIds);
+    if (visibleUserIds === null) {
+      /* manager_user_id 조건 없음 */
+    } else if (visibleUserIds.length === 0) {
+      return [];
+    } else {
+      query = query.in("manager_user_id", visibleUserIds);
+    }
   }
   const { data: leadsData, error: leadsError } = await query;
   console.log("[fetchLeads] query result", {
@@ -1442,8 +1447,13 @@ export async function searchLeads(
       : null;
 
   if (scope && shouldFilterLeadsByManager(scope)) {
-    if (!visibleUserIds || visibleUserIds.length === 0) return [];
-    query = query.in("manager_user_id", visibleUserIds);
+    if (visibleUserIds === null) {
+      /* 전사 검색: manager_user_id 조건 없음 */
+    } else if (visibleUserIds.length === 0) {
+      return [];
+    } else {
+      query = query.in("manager_user_id", visibleUserIds);
+    }
   }
 
   const { data, error } = await query;
