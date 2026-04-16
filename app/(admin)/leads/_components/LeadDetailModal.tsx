@@ -365,10 +365,10 @@ export default function LeadDetailModal({
   const initializedLeadIdRef = useRef<string | null>(null);
   const usersLoadedForRoleRef = useRef<string>("");
   const { profile } = useAuth();
-  /** 담당 직원 변경은 Admin만 (staff·manager는 UI·저장 모두 본인/고정). */
-  const canReassignLeadOwner = profile?.role === "admin";
-  /** 상담기록의「상담 담당자」는 admin만 변경 가능(staff·manager는 읽기 전용). */
-  const canPickCounselor = profile?.role === "admin";
+  /** 담당 직원 변경은 Admin/Super Admin만 (staff·manager는 UI·저장 모두 본인/고정). */
+  const canReassignLeadOwner = profile?.role === "admin" || profile?.role === "super_admin";
+  /** 상담기록의「상담 담당자」는 Admin/Super Admin만 변경 가능(staff·manager는 읽기 전용). */
+  const canPickCounselor = profile?.role === "admin" || profile?.role === "super_admin";
 
   const [leadOwnerOptions, setLeadOwnerOptions] = useState<Array<{ id: string; name: string; rank?: string | null }>>(
     () => []

@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { searchLeads, type LeadSearchHit } from "@/app/(admin)/_lib/leaseCrmSupabase";
+import { canAccessAdminPage } from "@/app/(admin)/_lib/rolePermissions";
 import toast from "react-hot-toast";
 import { useLeadDetailModal } from "./AdminShell";
 
@@ -55,10 +57,27 @@ export default function GlobalLeadSearch({
   onChange: (next: string) => void;
 }) {
   const { profile } = useAuth();
+  const pathname = usePathname();
   const { openLeadById } = useLeadDetailModal();
   const scope = useMemo(
-    () => (profile ? { role: profile.role, userId: profile.userId } : null),
-    [profile]
+    () =>
+      profile
+        ? {
+            role: profile.role,
+            userId: profile.userId,
+            email: profile.email ?? null,
+            rank: profile.rank ?? null,
+            teamName: profile.teamName ?? null,
+            operationalFullAccess:
+              canAccessAdminPage({
+                role: profile.role,
+                rank: profile.rank ?? null,
+                email: profile.email ?? null,
+                team_name: profile.teamName ?? null,
+              }) && (pathname?.startsWith("/operations") ?? false),
+          }
+        : null,
+    [profile, pathname]
   );
 
   const [debounced, setDebounced] = useState("");

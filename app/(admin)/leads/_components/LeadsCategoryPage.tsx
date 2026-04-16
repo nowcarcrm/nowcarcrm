@@ -48,6 +48,7 @@ import {
   crmTotalPages,
 } from "@/app/_components/ui/CrmListPagination";
 import { getPersonalPipelineScope } from "../../_lib/screenScopes";
+import { canAccessAdminPage } from "../../_lib/rolePermissions";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -662,15 +663,35 @@ function LeadsCategoryView({
           ? applyStaffLeadClientLocks(next, { userId: profile.userId, name: profile.name })
           : next;
       await updateLead(payload, {
-        role: "staff",
+        role: profile.role,
         userId: profile.userId,
+        email: profile.email ?? null,
+        rank: profile.rank ?? null,
+        teamName: profile.teamName ?? null,
       }, options);
       const refreshed = await loadLeadsFromStorage({
         role: profile.role,
         userId: profile.userId,
-        visibleUserIds: profile.userId ? [profile.userId] : [],
+        visibleUserIds:
+          getPersonalPipelineScope({
+            id: profile.userId,
+            role: profile.role,
+            rank: profile.rank,
+            team_name: profile.teamName,
+          }) === "self" && profile.userId
+            ? [profile.userId]
+            : [],
       });
-      commitLeads(refreshed.filter((l) => (l.managerUserId ?? "").trim() === (profile.userId ?? "")));
+      commitLeads(
+        getPersonalPipelineScope({
+          id: profile.userId,
+          role: profile.role,
+          rank: profile.rank,
+          team_name: profile.teamName,
+        }) === "self"
+          ? refreshed.filter((l) => (l.managerUserId ?? "").trim() === (profile.userId ?? ""))
+          : refreshed
+      );
       toast.success("저장 완료되었습니다.");
       const nextPath = pathnameAfterCounselingStatusChange(next.counselingStatus, categoryKey);
       if (pathname !== nextPath) {
@@ -717,8 +738,11 @@ function LeadsCategoryView({
     let created: Lead;
     try {
       created = await createLead(normalized, {
-        role: "staff",
+        role: profile.role,
         userId: profile.userId,
+        email: profile.email ?? null,
+        rank: profile.rank ?? null,
+        teamName: profile.teamName ?? null,
       });
     } catch (err) {
       const message =
@@ -741,9 +765,26 @@ function LeadsCategoryView({
         const refreshed = await loadLeadsFromStorage({
           role: profile.role,
           userId: profile.userId,
-          visibleUserIds: profile.userId ? [profile.userId] : [],
+          visibleUserIds:
+            getPersonalPipelineScope({
+              id: profile.userId,
+              role: profile.role,
+              rank: profile.rank,
+              team_name: profile.teamName,
+            }) === "self" && profile.userId
+              ? [profile.userId]
+              : [],
         });
-        commitLeads(refreshed.filter((l) => (l.managerUserId ?? "").trim() === (profile.userId ?? "")));
+        commitLeads(
+          getPersonalPipelineScope({
+            id: profile.userId,
+            role: profile.role,
+            rank: profile.rank,
+            team_name: profile.teamName,
+          }) === "self"
+            ? refreshed.filter((l) => (l.managerUserId ?? "").trim() === (profile.userId ?? ""))
+            : refreshed
+        );
       } catch (refreshErr) {
         console.error("[LeadsCategoryPage] post-create refresh failed (non-blocking)", refreshErr);
       }
@@ -1328,7 +1369,14 @@ function LeadsCategoryView({
           defaultOwner={profile?.name}
           categoryKey={categoryKey}
           categoryLabel={categoryLabel}
-          canAssignOwner={profile?.role === "admin" || profile?.role === "super_admin"}
+          canAssignOwner={
+            canAccessAdminPage({
+              role: profile?.role ?? null,
+              rank: profile?.rank ?? null,
+              email: profile?.email ?? null,
+              team_name: profile?.teamName ?? null,
+            })
+          }
           lockedOwnerDisplayName={profile?.name ?? ""}
         />
       ) : null}

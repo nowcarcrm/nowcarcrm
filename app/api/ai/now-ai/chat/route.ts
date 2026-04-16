@@ -144,8 +144,20 @@ export async function POST(req: Request) {
     const body = RequestSchema.safeParse(await req.json());
     if (!body.success) return NextResponse.json({ ok: false, error: "요청 형식이 올바르지 않습니다." }, { status: 400 });
 
-    const apiKey = process.env.OPENAI_API_KEY?.trim();
-    if (!apiKey) return NextResponse.json({ ok: false, error: "OPENAI_API_KEY가 설정되지 않았습니다." }, { status: 503 });
+    const apiKey =
+      process.env.OPENAI_API_KEY?.trim() ||
+      process.env.NOWAI_OPENAI_API_KEY?.trim() ||
+      process.env.NEXT_PUBLIC_OPENAI_API_KEY?.trim();
+    if (!apiKey) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error:
+            "OPENAI_API_KEY(또는 NOWAI_OPENAI_API_KEY/NEXT_PUBLIC_OPENAI_API_KEY)가 설정되지 않았습니다.",
+        },
+        { status: 503 }
+      );
+    }
 
     const { message, conversationHistory, currentLeadId, tone, purpose } = body.data;
     const [leadContext, learningContext] = await Promise.all([
