@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
+import { canProxyLeaveRequestByRank } from "@/app/(admin)/_lib/rolePermissions";
+import { filterUsersByScreenScope, getAttendanceScope, isProtectedExecutiveUser } from "@/app/(admin)/_lib/screenScopes";
+import type { UserRow as StaffUserRow } from "@/app/(admin)/_lib/usersSupabase";
 
 type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
-type LeaveRequestType = "annual" | "half" | "sick";
+type LeaveRequestType = "annual" | "half" | "sick" | "field_work";
 const ANNUAL_LEAVE_QUOTA = 12;
 const ANNUAL_LEAVE_VIEWABLE_RANKS = new Set(["주임", "대리", "과장", "차장", "팀장"]);
 
@@ -51,8 +54,33 @@ function canViewAllowanceByRank(rank: string | null | undefined): boolean {
   return rank === "팀장" || rank === "본부장" || rank === "대표" || rank === "총괄대표";
 }
 
-function canProxySickLeaveByRank(rank: string | null | undefined): boolean {
-  return rank === "팀장";
+async function assertProxyTarget(requester: UserRow, targetUserId: string): Promise<string> {
+  const { data: targetUser, error: targetErr } = await supabaseAdmin
+    .from("users")
+    .select("id,name,team_name,approval_status,rank")
+    .eq("id", targetUserId)
+    .maybeSingle();
+  if (targetErr) throw new Error(targetErr.message);
+  if (!targetUser || !isApproved(targetUser.approval_status)) {
+    throw new Error("요청 대상 직원을 찾을 수 없습니다.");
+  }
+  const r = (requester.rank ?? "").trim();
+  if (r === "팀장") {
+    if ((targetUser.team_name ?? "") !== (requester.team_name ?? "")) {
+      throw new Error("같은 팀 소속 직원만 대신 요청할 수 있습니다.");
+    }
+    return targetUser.id;
+  }
+  if (r === "본부장") {
+    if (isProtectedExecutiveUser({ rank: targetUser.rank ?? null, name: targetUser.name ?? null })) {
+      throw new Error("해당 직원에게는 대신 요청할 수 없습니다.");
+    }
+    return targetUser.id;
+  }
+  if (r === "대표" || r === "총괄대표") {
+    return targetUser.id;
+  }
+  throw new Error("대신 요청 권한이 없습니다.");
 }
 
 function thisYearRange() {
@@ -117,8 +145,10 @@ async function getRequester(authUserId: string): Promise<UserRow | null> {
 
 function mapLeaveRow(row: LeaveRow, userMap: Map<string, UserRow>) {
   const user = userMap.get(row.user_id);
-  const requestType: LeaveRequestType =
-    row.request_type === "half" ? "half" : row.request_type === "sick" ? "sick" : "annual";
+  let requestType: LeaveRequestType = "annual";
+  if (row.request_type === "half") requestType = "half";
+  else if (row.request_type === "sick") requestType = "sick";
+  else if (row.request_type === "field_work") requestType = "field_work";
   return {
     id: row.id,
     userId: row.user_id,
@@ -142,6 +172,8 @@ function mapLeaveRow(row: LeaveRow, userMap: Map<string, UserRow>) {
 
 export async function GET(req: Request) {
   try {
+    const coverageDate = new URL(req.url).searchParams.get("coverageDate")?.trim() ?? "";
+
     const token = getBearerToken(req);
     if (!token) return NextResponse.json({ error: "인증 토큰이 없습니다." }, { status: 401 });
 
@@ -218,7 +250,9 @@ export async function GET(req: Request) {
         const current = breakdownMap.get(row.user_id) ?? { annual: 0, half: 0, sick: 0 };
         if (row.request_type === "half") current.half += 1;
         else if (row.request_type === "sick") current.sick += 1;
-        else current.annual += 1;
+        else if (row.request_type === "field_work") {
+          /* field_work: no annual quota; omit from annual/half/sick counts */
+        } else current.annual += 1;
         breakdownMap.set(row.user_id, current);
       }
       visibleAnnualLeaveBalances = filteredTargets
@@ -240,12 +274,71 @@ export async function GET(req: Request) {
         .sort((a, b) => a.name.localeCompare(b.name, "ko"));
     }
 
+    let approvedLeaveToday: Array<{ userId: string; requestType: LeaveRequestType }> = [];
+    let pendingFieldWorkTodayUserIds: string[] = [];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(coverageDate)) {
+      const viewerLike = {
+        id: requester.id,
+        role: requester.role,
+        rank: requester.rank,
+        team_name: requester.team_name,
+        name: requester.name,
+      };
+      const scope = getAttendanceScope(viewerLike);
+      if (scope === "all" || scope === "all_except_executive" || scope === "team") {
+        const { data: scopeUsers, error: suErr } = await supabaseAdmin
+          .from("users")
+          .select("id,name,rank,team_name,role,approval_status,is_active")
+          .or("approval_status.eq.approved,approval_status.is.null");
+        if (!suErr && scopeUsers?.length) {
+          const filtered = filterUsersByScreenScope(scopeUsers as StaffUserRow[], viewerLike, scope);
+          const ids = filtered.map((u) => u.id).filter(Boolean);
+          if (ids.length) {
+            const { data: covRows, error: covErr } = await supabaseAdmin
+              .from("leave_requests")
+              .select("user_id,request_type,approved_at")
+              .eq("status", "approved")
+              .lte("from_date", coverageDate)
+              .gte("to_date", coverageDate)
+              .in("user_id", ids);
+            if (!covErr && covRows?.length) {
+              const last = new Map<string, { rt: LeaveRequestType; at: string }>();
+              for (const row of covRows as Array<{ user_id: string; request_type: string | null; approved_at: string | null }>) {
+                let rt: LeaveRequestType = "annual";
+                if (row.request_type === "half") rt = "half";
+                else if (row.request_type === "sick") rt = "sick";
+                else if (row.request_type === "field_work") rt = "field_work";
+                const at = row.approved_at ?? "";
+                const prev = last.get(row.user_id);
+                if (!prev || at >= prev.at) last.set(row.user_id, { rt, at });
+              }
+              approvedLeaveToday = Array.from(last.entries()).map(([userId, v]) => ({ userId, requestType: v.rt }));
+            }
+
+            const { data: pendRows } = await supabaseAdmin
+              .from("leave_requests")
+              .select("user_id")
+              .eq("status", "pending")
+              .eq("request_type", "field_work")
+              .lte("from_date", coverageDate)
+              .gte("to_date", coverageDate)
+              .in("user_id", ids);
+            pendingFieldWorkTodayUserIds = [
+              ...new Set((pendRows ?? []).map((r: { user_id: string }) => r.user_id).filter(Boolean)),
+            ];
+          }
+        }
+      }
+    }
+
     return NextResponse.json({
       myRequests: ((myRows ?? []) as LeaveRow[]).map((row) => mapLeaveRow(row, userMap)),
       pendingRequests: pendingRows.map((row) => mapLeaveRow(row, userMap)),
       canApprove,
       myRemainingAnnualLeave,
       visibleAnnualLeaveBalances,
+      approvedLeaveToday,
+      pendingFieldWorkTodayUserIds,
     });
   } catch (error) {
     return NextResponse.json(
@@ -280,16 +373,19 @@ export async function POST(req: Request) {
     const fromDate = (body.fromDate ?? "").trim();
     const toDate = (body.toDate ?? "").trim();
     const reason = (body.reason ?? "").trim();
-    const requestType: LeaveRequestType =
-      body.requestType === "half" ? "half" : body.requestType === "sick" ? "sick" : "annual";
-    const targetUserId = (body.targetUserId ?? "").trim();
-    const isProxySickRequest = requestType === "sick" && targetUserId.length > 0;
-    const usedAmount = requestType === "half" ? 0.5 : requestType === "sick" ? 0 : 1;
-    if (requestType === "sick" && requester.rank !== "팀장" && !isProxySickRequest) {
-      return NextResponse.json({ error: "병가 요청은 팀장만 가능합니다." }, { status: 403 });
-    }
-    if (isProxySickRequest && !canProxySickLeaveByRank(requester.rank)) {
-      return NextResponse.json({ error: "팀장만 팀원 병가를 대신 요청할 수 있습니다." }, { status: 403 });
+    let requestType: LeaveRequestType = "annual";
+    if (body.requestType === "half") requestType = "half";
+    else if (body.requestType === "sick") requestType = "sick";
+    else if (body.requestType === "field_work") requestType = "field_work";
+
+    const rawTarget = (body.targetUserId ?? "").trim();
+    const isProxyRequest = rawTarget.length > 0 && rawTarget !== requester.id;
+
+    const usedAmount =
+      requestType === "half" ? 0.5 : requestType === "sick" || requestType === "field_work" ? 0 : 1;
+
+    if (isProxyRequest && !canProxyLeaveRequestByRank(requester.rank)) {
+      return NextResponse.json({ error: "대신 요청은 팀장·본부장·대표·총괄대표만 가능합니다." }, { status: 403 });
     }
 
     if (!fromDate || !toDate) {
@@ -300,20 +396,15 @@ export async function POST(req: Request) {
     }
 
     let requestTargetUserId = requester.id;
-    if (isProxySickRequest) {
-      const { data: targetUser, error: targetErr } = await supabaseAdmin
-        .from("users")
-        .select("id,name,team_name,approval_status")
-        .eq("id", targetUserId)
-        .maybeSingle();
-      if (targetErr) throw new Error(targetErr.message);
-      if (!targetUser || !isApproved(targetUser.approval_status)) {
-        return NextResponse.json({ error: "요청 대상 직원을 찾을 수 없습니다." }, { status: 404 });
+    if (isProxyRequest) {
+      try {
+        requestTargetUserId = await assertProxyTarget(requester, rawTarget);
+      } catch (e) {
+        return NextResponse.json(
+          { error: e instanceof Error ? e.message : "요청 대상을 확인하지 못했습니다." },
+          { status: 400 }
+        );
       }
-      if ((targetUser.team_name ?? "") !== (requester.team_name ?? "")) {
-        return NextResponse.json({ error: "같은 팀 소속 직원만 병가를 대신 요청할 수 있습니다." }, { status: 403 });
-      }
-      requestTargetUserId = targetUser.id;
     }
 
     const { data: targetLeaveUser, error: targetLeaveUserErr } = await supabaseAdmin
@@ -323,7 +414,7 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (targetLeaveUserErr) throw new Error(targetLeaveUserErr.message);
     const remainingAnnualLeave = Number(targetLeaveUser?.remaining_annual_leave ?? ANNUAL_LEAVE_QUOTA);
-    if (remainingAnnualLeave < usedAmount) {
+    if (usedAmount > 0 && remainingAnnualLeave < usedAmount) {
       return NextResponse.json({ error: "잔여 연차가 부족합니다." }, { status: 400 });
     }
 
@@ -337,7 +428,7 @@ export async function POST(req: Request) {
         status: "pending",
         request_type: requestType,
         used_amount: usedAmount,
-        requested_by: isProxySickRequest ? requester.id : null,
+        requested_by: isProxyRequest ? requester.id : null,
       })
       .select(
         "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at,request_type,used_amount"

@@ -102,6 +102,16 @@ export function isExecutive(user: MaybeUserLike | null | undefined): boolean {
   return rank === "본부장" || rank === "대표" || rank === "총괄대표";
 }
 
+export function canPatchAttendanceStatusByRank(rank: string | null | undefined): boolean {
+  const r = (rank ?? "").trim();
+  return r === "본부장" || r === "대표" || r === "총괄대표";
+}
+
+export function canProxyLeaveRequestByRank(rank: string | null | undefined): boolean {
+  const r = (rank ?? "").trim();
+  return r === "팀장" || r === "본부장" || r === "대표" || r === "총괄대표";
+}
+
 export function isTeamLeader(user: MaybeUserLike | null | undefined): boolean {
   if (!user) return false;
   return effectiveRole(user) === "admin" && effectiveRank(user) === "팀장" && !!normalizeUserTeam(user.team_name);

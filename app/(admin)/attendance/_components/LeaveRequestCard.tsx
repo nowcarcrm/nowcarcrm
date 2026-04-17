@@ -18,6 +18,7 @@ function leaveStatusLabel(status: LeaveRequestItem["status"]) {
 
 function leaveTypeLabel(item: LeaveRequestItem) {
   if (item.requestType === "sick") return "병가 (차감 없음)";
+  if (item.requestType === "field_work") return "외근 (차감 없음)";
   if (item.requestType === "half") return "반차 (0.5회)";
   return "연차 (1회)";
 }
@@ -25,7 +26,7 @@ function leaveTypeLabel(item: LeaveRequestItem) {
 export default function LeaveRequestCard({ requests, canCancel = false, onCancel }: Props) {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
-      <h2 className="text-base font-semibold text-zinc-900">내 연차,반차요청 상태</h2>
+      <h2 className="text-base font-semibold text-zinc-900">내 연차·반차·외근·병가 요청</h2>
       {requests.length === 0 ? (
         <p className="mt-3 rounded-xl bg-zinc-50 px-3 py-3 text-sm text-zinc-500">요청 내역이 없습니다.</p>
       ) : (

@@ -28,6 +28,82 @@ async function getRequester(authUserId: string) {
   return legacy;
 }
 
+function eachDayInclusive(from: string, to: string): string[] {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const [y1, m1, d1] = from.split("-").map(Number);
+  const [y2, m2, d2] = to.split("-").map(Number);
+  const out: string[] = [];
+  const cur = new Date(y1, m1 - 1, d1);
+  const end = new Date(y2, m2 - 1, d2);
+  while (cur.getTime() <= end.getTime()) {
+    out.push(`${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`);
+    cur.setDate(cur.getDate() + 1);
+  }
+  return out;
+}
+
+function leaveTypeToAttendanceStatus(requestType: string): string {
+  if (requestType === "annual") return "연차";
+  if (requestType === "half") return "반차";
+  if (requestType === "sick") return "병가";
+  if (requestType === "field_work") return "외근";
+  return "휴가";
+}
+
+function isWeekendDateKey(day: string): boolean {
+  const d = new Date(`${day}T12:00:00`);
+  const w = d.getDay();
+  return w === 0 || w === 6;
+}
+
+async function findAttendanceRowIdForDay(userId: string, day: string): Promise<string | null> {
+  const w = await supabaseAdmin
+    .from("attendance")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("work_date", day)
+    .maybeSingle();
+  if (w.error) throw new Error(w.error.message);
+  if (w.data?.id) return String(w.data.id);
+
+  const b = await supabaseAdmin
+    .from("attendance")
+    .select("id")
+    .eq("user_id", userId)
+    .eq("date", day)
+    .maybeSingle();
+  if (b.error) throw new Error(b.error.message);
+  if (b.data?.id) return String(b.data.id);
+
+  return null;
+}
+
+async function syncAttendanceForApprovedLeave(
+  userId: string,
+  fromDate: string,
+  toDate: string,
+  requestType: string
+): Promise<void> {
+  const status = leaveTypeToAttendanceStatus(requestType);
+  for (const day of eachDayInclusive(fromDate, toDate)) {
+    const rowId = await findAttendanceRowIdForDay(userId, day);
+    if (rowId) {
+      const { error: updErr } = await supabaseAdmin.from("attendance").update({ status }).eq("id", rowId);
+      if (updErr) throw new Error(updErr.message);
+    } else {
+      const { error: insErr } = await supabaseAdmin.from("attendance").insert({
+        user_id: userId,
+        date: day,
+        work_date: day,
+        status,
+        is_holiday: false,
+        is_weekend: isWeekendDateKey(day),
+      });
+      if (insErr) throw new Error(insErr.message);
+    }
+  }
+}
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -54,7 +130,7 @@ export async function POST(
 
     const { data: targetRow, error: targetErr } = await supabaseAdmin
       .from("leave_requests")
-      .select("id,user_id,used_amount,status")
+      .select("id,user_id,used_amount,status,request_type,from_date,to_date")
       .eq("id", id)
       .maybeSingle();
     if (targetErr) throw new Error(targetErr.message);
@@ -73,7 +149,7 @@ export async function POST(
       return NextResponse.json({ error: "요청 대상 직원을 찾을 수 없습니다." }, { status: 404 });
     }
     const remainingAnnualLeave = Number(targetUser.remaining_annual_leave ?? 12);
-    if (remainingAnnualLeave < requestUsedAmount) {
+    if (requestUsedAmount > 0 && remainingAnnualLeave < requestUsedAmount) {
       return NextResponse.json({ error: "승인 시 잔여 연차가 부족합니다." }, { status: 400 });
     }
 
@@ -96,11 +172,49 @@ export async function POST(
     if (!updatedRequest) {
       return NextResponse.json({ error: "대기 상태 요청만 승인할 수 있습니다." }, { status: 400 });
     }
-    const { error: leaveUpdateErr } = await supabaseAdmin
-      .from("users")
-      .update({ remaining_annual_leave: Math.max(0, remainingAnnualLeave - requestUsedAmount) })
-      .eq("id", targetRow.user_id);
-    if (leaveUpdateErr) throw new Error(leaveUpdateErr.message);
+
+    let balanceUpdated = false;
+    if (requestUsedAmount > 0) {
+      const { error: leaveUpdateErr } = await supabaseAdmin
+        .from("users")
+        .update({ remaining_annual_leave: Math.max(0, remainingAnnualLeave - requestUsedAmount) })
+        .eq("id", targetRow.user_id);
+      if (leaveUpdateErr) throw new Error(leaveUpdateErr.message);
+      balanceUpdated = true;
+    }
+
+    const tr = targetRow as {
+      user_id: string;
+      request_type?: string | null;
+      from_date?: string;
+      to_date?: string;
+    };
+    const rt = String(tr.request_type ?? "annual");
+    const fromD = String(tr.from_date ?? "");
+    const toD = String(tr.to_date ?? "");
+
+    try {
+      if (fromD && toD) {
+        await syncAttendanceForApprovedLeave(tr.user_id, fromD, toD, rt);
+      }
+    } catch (syncErr) {
+      await supabaseAdmin
+        .from("leave_requests")
+        .update({
+          status: "pending",
+          approved_by: null,
+          approved_at: null,
+        })
+        .eq("id", id);
+      if (balanceUpdated && requestUsedAmount > 0) {
+        await supabaseAdmin
+          .from("users")
+          .update({ remaining_annual_leave: remainingAnnualLeave })
+          .eq("id", targetRow.user_id);
+      }
+      throw syncErr;
+    }
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(

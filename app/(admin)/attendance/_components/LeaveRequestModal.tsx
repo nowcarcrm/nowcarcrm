@@ -4,7 +4,7 @@ import { TapButton } from "@/app/_components/ui/crm-motion";
 
 type Props = {
   open: boolean;
-  requestType: "annual" | "half" | "sick";
+  requestType: "annual" | "half" | "sick" | "field_work";
   fromDate: string;
   toDate: string;
   reason: string;
@@ -22,15 +22,27 @@ type Props = {
 export default function LeaveRequestModal(props: Props) {
   if (!props.open) return null;
   const title =
-    props.requestType === "half" ? "반차요청" : props.requestType === "sick" ? "병가요청" : "연차요청";
+    props.requestType === "half"
+      ? "반차요청"
+      : props.requestType === "sick"
+        ? "병가요청"
+        : props.requestType === "field_work"
+          ? "외근요청"
+          : "연차요청";
   const placeholder =
-    props.requestType === "half" ? "반차 사유" : props.requestType === "sick" ? "병가 사유" : "연차 사유";
+    props.requestType === "half"
+      ? "반차 사유"
+      : props.requestType === "sick"
+        ? "병가 사유"
+        : props.requestType === "field_work"
+          ? "외근 사유"
+          : "연차 사유";
   return (
     <div className="fixed inset-0 z-[90] flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-md rounded-2xl border bg-white p-5">
         <h3 className="text-base font-semibold">{title}</h3>
         <div className="mt-3 space-y-2">
-          {props.requestType === "sick" ? (
+          {(props.targetUsers?.length ?? 0) > 0 ? (
             <select
               value={props.targetUserId ?? ""}
               onChange={(e) => props.onChangeTargetUserId?.(e.target.value)}

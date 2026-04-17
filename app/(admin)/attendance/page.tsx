@@ -8,6 +8,7 @@ import {
   getTodayAttendance,
   listAttendanceByMonth,
   listTodayAttendanceByUserIds,
+  mergeTodayAttendanceForActiveStaff,
   type AttendanceRow,
 } from "../_lib/attendanceSupabase";
 import {
@@ -23,6 +24,7 @@ import {
 import { ensureDefaultUsers, listActiveUsers, type UserRow } from "../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { filterUsersByScreenScope, getAttendanceScope } from "../_lib/screenScopes";
+import { canPatchAttendanceStatusByRank, canProxyLeaveRequestByRank } from "../_lib/rolePermissions";
 import AttendanceStatusCard from "./_components/AttendanceStatusCard";
 import LeaveRequestCard from "./_components/LeaveRequestCard";
 import LeaveApprovalList from "./_components/LeaveApprovalList";
@@ -30,6 +32,8 @@ import LeaveRequestModal from "./_components/LeaveRequestModal";
 import TodayAttendanceList from "./_components/TodayAttendanceList";
 import AttendanceRuleCard from "./_components/AttendanceRuleCard";
 import MonthlyAttendanceSummary from "./_components/MonthlyAttendanceSummary";
+import MonthAttendanceDetail from "./_components/MonthAttendanceDetail";
+import ProxyLeaveRequestModal from "./_components/ProxyLeaveRequestModal";
 import toast from "react-hot-toast";
 
 const CURRENT_USER_KEY = "crm.current_user_id.v2";
@@ -80,7 +84,8 @@ export default function AttendancePage() {
   const canApproveLeave = canApproveLeaveByRank(profile?.rank);
   const canViewMonthlyAttendance =
     profile?.rank === "본부장" || profile?.rank === "대표" || profile?.rank === "총괄대표";
-  const canRequestSickLeave = profile?.rank === "팀장";
+  const canPatchAttendance = canPatchAttendanceStatusByRank(profile?.rank);
+  const canProxyLeave = canProxyLeaveRequestByRank(profile?.rank);
   const todayDate = getLocalDateKey();
 
   const [currentUserId, setCurrentUserId] = useState("");
@@ -93,7 +98,7 @@ export default function AttendancePage() {
   const [leaveFromDate, setLeaveFromDate] = useState(getLocalDateKey());
   const [leaveToDate, setLeaveToDate] = useState(getLocalDateKey());
   const [leaveReason, setLeaveReason] = useState("");
-  const [sickLeaveTargetUserId, setSickLeaveTargetUserId] = useState("");
+  const [leaveTargetUserId, setLeaveTargetUserId] = useState("");
   const [leaveSaving, setLeaveSaving] = useState(false);
   const [myLeaveRequests, setMyLeaveRequests] = useState<LeaveRequestItem[]>([]);
   const [pendingLeaveRequests, setPendingLeaveRequests] = useState<LeaveRequestItem[]>([]);
@@ -127,6 +132,18 @@ export default function AttendancePage() {
       usedSickCount: number;
     }>
   >([]);
+  const [monthlyDetailRows, setMonthlyDetailRows] = useState<AttendanceRow[]>([]);
+  const [proxyModalOpen, setProxyModalOpen] = useState(false);
+  const [proxyRequestType, setProxyRequestType] = useState<LeaveRequestType>("annual");
+  const [proxyTargetUserId, setProxyTargetUserId] = useState("");
+  const [proxyFromDate, setProxyFromDate] = useState(getLocalDateKey());
+  const [proxyToDate, setProxyToDate] = useState(getLocalDateKey());
+  const [proxyReason, setProxyReason] = useState("");
+  const [proxySaving, setProxySaving] = useState(false);
+  const [approvedLeaveTodayHints, setApprovedLeaveTodayHints] = useState<
+    Array<{ userId: string; requestType: LeaveRequestType }>
+  >([]);
+  const [pendingFieldWorkTodayIds, setPendingFieldWorkTodayIds] = useState<string[]>([]);
 
   const isCheckedIn = !!today?.check_in;
   const isCheckedOut = !!today?.check_out;
@@ -137,15 +154,23 @@ export default function AttendancePage() {
     return d.getTime();
   }, []);
   const isPastLateThreshold = Date.now() > lateThreshold;
-  const isLateWithoutCheckIn = !approvedLeaveToday && !isCheckedIn && isPastLateThreshold;
-  const statusText = approvedLeaveToday
-    ? "승인된 연차"
+  const approvedLeaveTodayItem = myLeaveRequests.find(
+    (r) => r.status === "approved" && r.fromDate <= todayDate && r.toDate >= todayDate
+  );
+  const statusText = approvedLeaveTodayItem
+    ? approvedLeaveTodayItem.requestType === "field_work"
+      ? "승인된 외근"
+      : approvedLeaveTodayItem.requestType === "half"
+        ? "승인된 반차"
+        : approvedLeaveTodayItem.requestType === "sick"
+          ? "승인된 병가"
+          : "승인된 연차"
     : isCheckedOut
       ? "근무 완료"
       : isCheckedIn
         ? "출근 완료"
-        : isLateWithoutCheckIn
-          ? "지각"
+        : !isPastLateThreshold
+          ? "대기중"
           : "미출근";
   const userMetaMap = useMemo(
     () =>
@@ -161,14 +186,48 @@ export default function AttendancePage() {
     if (!profile?.teamName) return [];
     return userOptions.filter((u) => u.id !== profile.userId && (u.team_name ?? "") === (profile.teamName ?? ""));
   }, [profile?.teamName, profile?.userId, userOptions]);
+  const leaveModalTargetUsers = useMemo(() => {
+    if (!canProxyLeave || !profile?.userId) return [];
+    const self = userOptions.find((u) => u.id === profile.userId);
+    const out: Array<{ id: string; name: string }> = [];
+    if (self) out.push({ id: self.id, name: self.name || "-" });
+    for (const u of myTeamMembers) out.push({ id: u.id, name: u.name || "-" });
+    return out;
+  }, [canProxyLeave, myTeamMembers, profile?.userId, userOptions]);
+
+  const proxyTargetUsers = useMemo(() => {
+    if (!profile?.userId || !canProxyLeave) return [];
+    const r = (profile.rank ?? "").trim();
+    if (r === "팀장") {
+      return myTeamMembers.map((u) => ({ id: u.id, name: u.name || "-" }));
+    }
+    return userOptions
+      .filter((u) => u.id !== profile.userId)
+      .map((u) => ({ id: u.id, name: u.name || "-" }));
+  }, [profile?.userId, profile?.rank, canProxyLeave, myTeamMembers, userOptions]);
+
+  const monthDetailUsers = useMemo(() => {
+    const m = new Map<string, { name: string; rank: string | null; teamName: string | null }>();
+    for (const u of userOptions) {
+      m.set(u.id, { name: u.name || "-", rank: u.rank ?? null, teamName: u.team_name ?? null });
+    }
+    return m;
+  }, [userOptions]);
+
+  const approvedLeaveTodayByUserIdMap = useMemo(
+    () => new Map(approvedLeaveTodayHints.map((h) => [h.userId, h.requestType])),
+    [approvedLeaveTodayHints]
+  );
 
   async function refreshLeaveRequests() {
     try {
-      const payload = await listLeaveRequests();
+      const payload = await listLeaveRequests(todayDate);
       setMyLeaveRequests(payload.myRequests);
       setPendingLeaveRequests(payload.pendingRequests);
       setMyRemainingAnnualLeave(payload.myRemainingAnnualLeave);
       setVisibleAnnualLeaveBalances(payload.visibleAnnualLeaveBalances);
+      setApprovedLeaveTodayHints(payload.approvedLeaveToday ?? []);
+      setPendingFieldWorkTodayIds(payload.pendingFieldWorkTodayUserIds ?? []);
     } catch (e) {
       const message = e instanceof Error ? e.message : "연차/반차/병가 요청 목록을 불러오지 못했습니다.";
       toast.error(message);
@@ -178,13 +237,22 @@ export default function AttendancePage() {
   async function refresh() {
     if (!currentUserId) return;
     const allowedIds = userOptions.map((u) => u.id);
-    const [t, list, monthList] = await Promise.all([
+    const [t, rawList, monthList] = await Promise.all([
       getTodayAttendance(currentUserId, todayDate),
       canViewAll || canViewTeam ? listTodayAttendanceByUserIds(allowedIds) : Promise.resolve([]),
       canViewMonthlyAttendance ? listAttendanceByMonth(selectedMonth, allowedIds) : Promise.resolve([]),
     ]);
     setToday(t);
+    const list =
+      canViewAll || canViewTeam
+        ? mergeTodayAttendanceForActiveStaff({
+            today: todayDate,
+            staff: userOptions,
+            attendanceRows: rawList,
+          })
+        : rawList;
     setRows(list);
+    setMonthlyDetailRows(canViewMonthlyAttendance ? monthList : []);
     if (canViewMonthlyAttendance) {
       const perUser = new Map<
         string,
@@ -225,8 +293,14 @@ export default function AttendancePage() {
         if (status === "정상 출근" || status === "휴무일 근무") item.normal += 1;
         else if (status === "지각") item.late += 1;
         else if (status === "조기 퇴근") item.earlyLeave += 1;
-        else if (status === "휴가") item.leave += 1;
-        else if (status === "결근") item.absent += 1;
+        else if (
+          status === "휴가" ||
+          status === "연차" ||
+          status === "반차" ||
+          status === "병가"
+        ) {
+          item.leave += 1;
+        } else if (status === "결근") item.absent += 1;
         else if (status === "외근") item.external += 1;
       }
       setMonthlyRows(
@@ -290,19 +364,16 @@ export default function AttendancePage() {
     setLeaveFromDate(today);
     setLeaveToDate(today);
     setLeaveReason("");
-    if (type === "sick" && myTeamMembers.length > 0) {
-      setSickLeaveTargetUserId(myTeamMembers[0]!.id);
-    } else {
-      setSickLeaveTargetUserId("");
-    }
+    if (leaveModalTargetUsers.length > 0) setLeaveTargetUserId(leaveModalTargetUsers[0]!.id);
+    else setLeaveTargetUserId("");
     setLeaveModalOpen(true);
   }
 
   async function submitLeaveRequest() {
     if (!leaveFromDate || !leaveToDate) return toast.error("시작일과 종료일은 필수입니다.");
     if (leaveToDate < leaveFromDate) return toast.error("종료일은 시작일보다 빠를 수 없습니다.");
-    if (leaveRequestType === "sick" && !sickLeaveTargetUserId) {
-      return toast.error("병가 요청할 직원을 선택해 주세요.");
+    if (leaveModalTargetUsers.length > 0 && !leaveTargetUserId) {
+      return toast.error("요청할 직원을 선택해 주세요.");
     }
     setLeaveSaving(true);
     try {
@@ -311,14 +382,16 @@ export default function AttendancePage() {
         toDate: leaveToDate,
         reason: leaveReason.trim(),
         requestType: leaveRequestType,
-        targetUserId: leaveRequestType === "sick" ? sickLeaveTargetUserId : undefined,
+        targetUserId: leaveTargetUserId || undefined,
       });
       toast.success(
         leaveRequestType === "half"
           ? "반차요청이 접수되었습니다."
           : leaveRequestType === "sick"
             ? "병가요청이 접수되었습니다."
-            : "연차요청이 접수되었습니다."
+            : leaveRequestType === "field_work"
+              ? "외근요청이 접수되었습니다."
+              : "연차요청이 접수되었습니다."
       );
       setLeaveModalOpen(false);
       setLeaveReason("");
@@ -355,15 +428,62 @@ export default function AttendancePage() {
     }
   }
 
+
+  function openProxyLeaveModal() {
+    const d = getLocalDateKey();
+    setProxyRequestType("annual");
+    setProxyFromDate(d);
+    setProxyToDate(d);
+    setProxyReason("");
+    setProxyTargetUserId(proxyTargetUsers[0]?.id ?? "");
+    setProxyModalOpen(true);
+  }
+
+  async function submitProxyLeaveRequest() {
+    if (!proxyTargetUserId) return toast.error("대신 신청할 직원을 선택해 주세요.");
+    if (!proxyFromDate || !proxyToDate) return toast.error("시작일과 종료일은 필수입니다.");
+    if (proxyToDate < proxyFromDate) return toast.error("종료일은 시작일보다 빠를 수 없습니다.");
+    setProxySaving(true);
+    try {
+      await createLeaveRequest({
+        fromDate: proxyFromDate,
+        toDate: proxyToDate,
+        reason: proxyReason.trim(),
+        requestType: proxyRequestType,
+        targetUserId: proxyTargetUserId,
+      });
+      toast.success("대신 신청이 접수되었습니다.");
+      setProxyModalOpen(false);
+      setProxyReason("");
+      await refreshLeaveRequests();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "요청 접수에 실패했습니다.");
+    } finally {
+      setProxySaving(false);
+    }
+  }
+
+
   return (
     <div className="crm-card">
       <div className="grid gap-5 p-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h1 className="text-xl font-semibold tracking-tight text-zinc-900">근태 관리</h1>
-            <select value={currentUserId} onChange={(e) => setCurrentUserId(e.target.value)} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              {canProxyLeave && proxyTargetUsers.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => openProxyLeaveModal()}
+                  className="rounded-xl border border-indigo-200 bg-indigo-50 px-3 py-2 text-sm font-semibold text-indigo-800"
+                >
+                  대신 신청
+                </button>
+              ) : null}
+              <select value={currentUserId} onChange={(e) => setCurrentUserId(e.target.value)} className="rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm">
               {userOptions.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-            </select>
+              </select>
+            </div>
           </div>
 
           <AttendanceStatusCard
@@ -377,7 +497,7 @@ export default function AttendancePage() {
             onCheckOut={() => void onCheckOut()}
             onOpenLeaveModal={() => openLeaveModal("annual")}
             onOpenHalfLeaveModal={() => openLeaveModal("half")}
-            canRequestSickLeave={canRequestSickLeave}
+            onOpenFieldWorkModal={() => openLeaveModal("field_work")}
             onOpenSickLeaveModal={() => openLeaveModal("sick")}
           />
 
@@ -390,7 +510,12 @@ export default function AttendancePage() {
           {canApproveLeave ? (
             <LeaveApprovalList
               requests={pendingLeaveRequests}
-              onApprove={(id) => void approveLeaveRequest(id).then(refreshLeaveRequests)}
+              onApprove={(id) =>
+                void approveLeaveRequest(id).then(async () => {
+                  await refreshLeaveRequests();
+                  await refresh();
+                })
+              }
               onReject={(id) => void rejectLeaveRequest(id, (window.prompt("반려 사유", "") ?? "").trim()).then(refreshLeaveRequests)}
               onDelete={(id) => void onDeletePendingLeaveRequest(id)}
             />
@@ -403,15 +528,28 @@ export default function AttendancePage() {
               formatDateTime={dt}
               isPastLateThreshold={isPastLateThreshold}
               leaveBalances={visibleAnnualLeaveBalances}
+              canPatchStatus={canPatchAttendance}
+              onStatusPatched={() => void refresh()}
+              approvedLeaveTodayByUserId={approvedLeaveTodayByUserIdMap}
+              pendingFieldWorkTodayUserIds={pendingFieldWorkTodayIds}
             />
           ) : null}
 
           {canViewMonthlyAttendance ? (
-            <MonthlyAttendanceSummary
-              month={selectedMonth}
-              rows={monthlyRows}
-              onChangeMonth={setSelectedMonth}
-            />
+            <>
+              <MonthlyAttendanceSummary
+                month={selectedMonth}
+                rows={monthlyRows}
+                onChangeMonth={setSelectedMonth}
+              />
+              <MonthAttendanceDetail
+                month={selectedMonth}
+                rows={monthlyDetailRows}
+                users={monthDetailUsers}
+                canPatch={canPatchAttendance}
+                onPatched={() => void refresh()}
+              />
+            </>
           ) : null}
         </div>
 
@@ -426,15 +564,33 @@ export default function AttendancePage() {
         fromDate={leaveFromDate}
         toDate={leaveToDate}
         reason={leaveReason}
-        targetUserId={sickLeaveTargetUserId}
-        targetUsers={myTeamMembers.map((u) => ({ id: u.id, name: u.name }))}
+        targetUserId={leaveTargetUserId}
+        targetUsers={leaveModalTargetUsers}
         saving={leaveSaving}
         onChangeFromDate={setLeaveFromDate}
         onChangeToDate={setLeaveToDate}
         onChangeReason={setLeaveReason}
-        onChangeTargetUserId={setSickLeaveTargetUserId}
+        onChangeTargetUserId={setLeaveTargetUserId}
         onCancel={() => setLeaveModalOpen(false)}
         onSubmit={() => void submitLeaveRequest()}
+      />
+
+      <ProxyLeaveRequestModal
+        open={proxyModalOpen}
+        requestType={proxyRequestType}
+        targetUserId={proxyTargetUserId}
+        targetUsers={proxyTargetUsers}
+        fromDate={proxyFromDate}
+        toDate={proxyToDate}
+        reason={proxyReason}
+        saving={proxySaving}
+        onChangeRequestType={setProxyRequestType}
+        onChangeTargetUserId={setProxyTargetUserId}
+        onChangeFromDate={setProxyFromDate}
+        onChangeToDate={setProxyToDate}
+        onChangeReason={setProxyReason}
+        onCancel={() => setProxyModalOpen(false)}
+        onSubmit={() => void submitProxyLeaveRequest()}
       />
     </div>
   );

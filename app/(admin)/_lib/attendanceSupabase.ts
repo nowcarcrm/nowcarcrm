@@ -1,15 +1,22 @@
 import { supabase } from "./supabaseClient";
 import { DEFAULT_HOLIDAYS } from "./holidayConfig";
+import { effectiveApprovalStatus, type UserRow } from "./usersSupabase";
 
 export type AttendanceStatus =
   | "정상 출근"
   | "지각"
   | "외근"
+  | "연차"
+  | "반차"
+  | "병가"
   | "휴가"
   | "결근"
   | "조기 퇴근"
   | "휴무"
-  | "휴무일 근무";
+  | "휴무일 근무"
+  | "미출근"
+  | "대기중"
+  | "외근 신청중";
 
 export type AttendanceRow = {
   id: string;
@@ -516,6 +523,7 @@ export async function checkOut(
   }
 
   const checkoutStatus = getCheckOutStatus(now);
+  const preserved: AttendanceStatus[] = ["외근", "연차", "반차", "병가"];
   const nextStatus: AttendanceStatus =
     current.status === "휴무일 근무"
       ? "휴무일 근무"
@@ -523,10 +531,9 @@ export async function checkOut(
         ? "조기 퇴근"
         : current.checkin_status === "지각"
           ? "지각"
-          : current.status === "외근"
-            ? "외근"
+          : preserved.includes(current.status)
+            ? current.status
             : "정상 출근";
-
   const checkOutStamp = getLocalDateTimeISO(now);
   const rowId = current.id != null ? String(current.id) : "";
   if (!rowId) {
@@ -697,6 +704,84 @@ export async function listTodayAttendanceByUserIds(userIds: string[]): Promise<A
   }
 
   return Array.from(map.values());
+}
+
+export type ApprovedLeaveTodayHint = {
+  userId: string;
+  requestType: "annual" | "half" | "sick" | "field_work";
+};
+
+function pickBetterAttendanceRow(a: AttendanceRow, b: AttendanceRow): AttendanceRow {
+  const aIn = rowHasCheckIn(a);
+  const bIn = rowHasCheckIn(b);
+  if (aIn && !bIn) return a;
+  if (!aIn && bIn) return b;
+  return (a.created_at ?? "").localeCompare(b.created_at ?? "") >= 0 ? a : b;
+}
+
+function isActiveEmployedStaff(u: UserRow): boolean {
+  if ((u.role ?? "").trim() === "super_admin") return false;
+  if (u.is_active === false) return false;
+  return effectiveApprovalStatus(u) === "approved";
+}
+
+/**
+ * 오늘 근태 목록: 재직(승인) 직원 전원을 한 줄씩 보이게 한다.
+ * attendance 행이 없으면 가상 행( id = `virtual:${userId}` )을 넣는다.
+ */
+export function mergeTodayAttendanceForActiveStaff(params: {
+  today: string;
+  staff: UserRow[];
+  attendanceRows: AttendanceRow[];
+}): AttendanceRow[] {
+  const { today, staff, attendanceRows } = params;
+  const byUser = new Map<string, AttendanceRow>();
+  for (const row of attendanceRows) {
+    const nd = normalizeAttendanceRow(row)?.normalized_date ?? "";
+    if (nd !== today) continue;
+    const uid = row.user_id;
+    const prev = byUser.get(uid);
+    if (!prev) byUser.set(uid, row);
+    else byUser.set(uid, pickBetterAttendanceRow(prev, row));
+  }
+
+  const out: AttendanceRow[] = [];
+  const stamp = new Date().toISOString();
+  for (const u of staff) {
+    if (!isActiveEmployedStaff(u)) continue;
+    const existing = byUser.get(u.id);
+    if (existing) {
+      out.push(existing);
+      continue;
+    }
+    out.push({
+      id: `virtual:${u.id}`,
+      user_id: u.id,
+      date: today,
+      work_date: today,
+      check_in: null,
+      check_in_at: null,
+      check_out: null,
+      check_out_at: null,
+      status: "미출근",
+      latitude: null,
+      longitude: null,
+      external_reason: null,
+      memo: null,
+      is_holiday: false,
+      is_weekend: isWeekend(today),
+      holiday_work_approved: false,
+      checkin_status: null,
+      checkout_status: null,
+      created_at: stamp,
+    });
+  }
+  out.sort((a, b) => {
+    const na = staff.find((x) => x.id === a.user_id)?.name ?? "";
+    const nb = staff.find((x) => x.id === b.user_id)?.name ?? "";
+    return na.localeCompare(nb, "ko");
+  });
+  return out;
 }
 
 export async function approveHolidayWork(attendanceId: string, approved: boolean) {

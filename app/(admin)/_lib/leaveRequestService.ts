@@ -1,7 +1,7 @@
 ﻿import { supabase } from "./supabaseClient";
 
 export type LeaveRequestStatus = "pending" | "approved" | "rejected" | "cancelled";
-export type LeaveRequestType = "annual" | "half" | "sick";
+export type LeaveRequestType = "annual" | "half" | "sick" | "field_work";
 
 export type LeaveRequestItem = {
   id: string;
@@ -41,6 +41,10 @@ export type LeaveRequestsPayload = {
   canApprove: boolean;
   myRemainingAnnualLeave: number;
   visibleAnnualLeaveBalances: LeaveBalanceItem[];
+  /** coverageDate 쿼리와 함께: 해당일에 승인된 휴가/외근 등(직원별 1건) */
+  approvedLeaveToday?: Array<{ userId: string; requestType: LeaveRequestType }>;
+  /** 해당일에 대기 중인 외근 요청이 있는 직원 id */
+  pendingFieldWorkTodayUserIds?: string[];
 };
 
 async function getAccessToken(): Promise<string> {
@@ -52,9 +56,13 @@ async function getAccessToken(): Promise<string> {
   return token;
 }
 
-export async function listLeaveRequests(): Promise<LeaveRequestsPayload> {
+export async function listLeaveRequests(coverageDate?: string): Promise<LeaveRequestsPayload> {
   const token = await getAccessToken();
-  const res = await fetch("/api/attendance/leave-requests", {
+  const q =
+    coverageDate && /^\d{4}-\d{2}-\d{2}$/.test(coverageDate)
+      ? `?coverageDate=${encodeURIComponent(coverageDate)}`
+      : "";
+  const res = await fetch(`/api/attendance/leave-requests${q}`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   const json = (await res.json()) as LeaveRequestsPayload & { error?: string };
@@ -125,4 +133,34 @@ export async function deleteLeaveRequest(id: string): Promise<void> {
   });
   const json = (await res.json()) as { error?: string };
   if (!res.ok) throw new Error(json.error ?? "요청 삭제에 실패했습니다.");
+}
+
+
+export type AttendancePatchStatus =
+  | "normal"
+  | "annual_leave"
+  | "half_day"
+  | "sick_leave"
+  | "field_work";
+
+export async function patchAttendanceRecordStatus(
+  attendanceId: string,
+  status: AttendancePatchStatus,
+  options?: { userId?: string; date?: string }
+): Promise<void> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/attendance/${attendanceId}/status`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      status,
+      userId: options?.userId,
+      date: options?.date,
+    }),
+  });
+  const json = (await res.json()) as { error?: string };
+  if (!res.ok) throw new Error(json.error ?? "근태 상태 변경에 실패했습니다.");
 }

@@ -1,7 +1,15 @@
 "use client";
 
 import type { AttendanceRow } from "../../_lib/attendanceSupabase";
+import {
+  type AttendancePatchStatus,
+  type LeaveRequestType,
+  patchAttendanceRecordStatus,
+} from "../../_lib/leaveRequestService";
 import AttendanceStatusBadge from "./AttendanceStatusBadge";
+
+const SICK = "\uBCD1\uAC00";
+const LEAVE_LEGACY = "\uD734\uAC00";
 
 type UserMeta = {
   name: string;
@@ -26,9 +34,62 @@ type Props = {
     usedHalfCount: number;
     usedSickCount: number;
   }>;
+  canPatchStatus?: boolean;
+  onStatusPatched?: () => void;
+  /** 해당일 승인된 휴가·외근 등(직원별 1건) — 오늘 목록 표시용 */
+  approvedLeaveTodayByUserId?: Map<string, LeaveRequestType>;
+  /** 해당일 대기 중인 외근 요청이 있는 직원 id */
+  pendingFieldWorkTodayUserIds?: string[];
 };
 
-export default function TodayAttendanceList({ rows, users, formatDateTime, isPastLateThreshold, leaveBalances = [] }: Props) {
+function statusToPatch(status: string): AttendancePatchStatus {
+  if (status === "\uC815\uC0C1 \uCD9C\uADFC") return "normal";
+  if (status === "\uC5F0\uCC28") return "annual_leave";
+  if (status === "\uBC18\uCC28") return "half_day";
+  if (status === SICK) return "sick_leave";
+  if (status === "\uC678\uADFC") return "field_work";
+  if (status === LEAVE_LEGACY) return "annual_leave";
+  return "normal";
+}
+
+const PATCH_OPTIONS: { v: AttendancePatchStatus; label: string }[] = [
+  { v: "normal", label: "\uC815\uC0C1\uCD9C\uADFC" },
+  { v: "annual_leave", label: "\uC5F0\uCC28" },
+  { v: "half_day", label: "\uBC18\uCC28" },
+  { v: "sick_leave", label: SICK },
+  { v: "field_work", label: "\uC678\uADFC" },
+];
+
+function isLeaveLikeDbStatus(status: string): boolean {
+  return (
+    status === "\uC5F0\uCC28" ||
+    status === "\uBC18\uCC28" ||
+    status === SICK ||
+    status === "\uC678\uADFC" ||
+    status === "\uD734\uAC00" ||
+    status === LEAVE_LEGACY
+  );
+}
+
+function requestTypeToDisplayStatus(t: LeaveRequestType): string {
+  if (t === "annual") return "\uC5F0\uCC28";
+  if (t === "half") return "\uBC18\uCC28";
+  if (t === "sick") return SICK;
+  if (t === "field_work") return "\uC678\uADFC";
+  return "\uD734\uAC00";
+}
+
+export default function TodayAttendanceList({
+  rows,
+  users,
+  formatDateTime,
+  isPastLateThreshold,
+  leaveBalances = [],
+  canPatchStatus = false,
+  onStatusPatched,
+  approvedLeaveTodayByUserId,
+  pendingFieldWorkTodayUserIds,
+}: Props) {
   const isLateAfter0930 = (value: string | null | undefined) => {
     if (!value) return false;
     const d = new Date(value);
@@ -37,6 +98,18 @@ export default function TodayAttendanceList({ rows, users, formatDateTime, isPas
     threshold.setHours(9, 30, 0, 0);
     return d.getTime() > threshold.getTime();
   };
+
+  async function onSelectChange(row: AttendanceRow, value: AttendancePatchStatus) {
+    try {
+      await patchAttendanceRecordStatus(row.id, value, {
+        userId: row.user_id,
+        date: row.work_date || row.date || undefined,
+      });
+      onStatusPatched?.();
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "\uBCC0\uACBD \uC2E4\uD328");
+    }
+  }
 
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
@@ -56,23 +129,62 @@ export default function TodayAttendanceList({ rows, users, formatDateTime, isPas
               </tr>
             </thead>
             <tbody>
-              {rows.slice(0, 30).map((row) => {
+              {rows.slice(0, 200).map((row) => {
                 const meta = users.get(row.user_id);
                 const isSuperAdmin = meta?.role === "super_admin";
                 const checkInValue = row.check_in || row.check_in_at || null;
+                const dbStatus = (row.status ?? "").trim();
+                const approvedType = approvedLeaveTodayByUserId?.get(row.user_id);
+                const pendingFw = pendingFieldWorkTodayUserIds?.includes(row.user_id) ?? false;
                 let status: string = row.status || row.checkin_status || row.checkout_status || "미출근";
-                if (!isSuperAdmin && checkInValue && isLateAfter0930(checkInValue)) {
-                  status = "지각";
-                } else if (isSuperAdmin && status === "지각") {
-                  status = "정상 출근";
-                } else if (!isSuperAdmin && (status === "미출근" || status === "결근") && isPastLateThreshold) {
-                  status = "지각";
+
+                if (checkInValue) {
+                  if (!isSuperAdmin && isLateAfter0930(checkInValue)) {
+                    status = "지각";
+                  } else if (isSuperAdmin && status === "지각") {
+                    status = "정상 출근";
+                  } else if (dbStatus && isLeaveLikeDbStatus(dbStatus)) {
+                    status = dbStatus;
+                  }
+                } else {
+                  if (approvedType) {
+                    status = requestTypeToDisplayStatus(approvedType);
+                  } else if (dbStatus && isLeaveLikeDbStatus(dbStatus)) {
+                    status = dbStatus;
+                  } else if (pendingFw) {
+                    status = "외근 신청중";
+                  } else if (!isPastLateThreshold) {
+                    status = "대기중";
+                  } else {
+                    status = "미출근";
+                  }
                 }
+
+                const patchValue = statusToPatch(dbStatus || status);
+                const showPatch = canPatchStatus;
                 return (
                   <tr key={row.id} className="border-t border-zinc-100 hover:bg-zinc-50/70">
                     <td className="px-3 py-2 font-medium text-zinc-900">{meta?.name || "알 수 없는 사용자"}</td>
                     <td className="px-3 py-2 text-zinc-600">{meta?.rank || "-"} / {meta?.teamName || "-"}</td>
-                    <td className="px-3 py-2"><AttendanceStatusBadge status={status} /></td>
+                    <td className="px-3 py-2">
+                      {showPatch ? (
+                        <select
+                          className="max-w-[200px] rounded border border-zinc-300 px-2 py-1 text-xs"
+                          value={patchValue}
+                          onChange={(e) =>
+                            void onSelectChange(row, e.target.value as AttendancePatchStatus)
+                          }
+                        >
+                          {PATCH_OPTIONS.map((o) => (
+                            <option key={o.v} value={o.v}>
+                              {o.label}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <AttendanceStatusBadge status={status} />
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-zinc-700">{formatDateTime(row.check_in)}</td>
                     <td className="px-3 py-2 text-zinc-700">{formatDateTime(row.check_out)}</td>
                   </tr>
