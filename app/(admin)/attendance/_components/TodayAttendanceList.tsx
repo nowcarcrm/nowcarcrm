@@ -7,6 +7,7 @@ type UserMeta = {
   name: string;
   rank: string | null;
   teamName: string | null;
+  role: string | null;
 };
 
 type Props = {
@@ -28,6 +29,15 @@ type Props = {
 };
 
 export default function TodayAttendanceList({ rows, users, formatDateTime, isPastLateThreshold, leaveBalances = [] }: Props) {
+  const isLateAfter0930 = (value: string | null | undefined) => {
+    if (!value) return false;
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return false;
+    const threshold = new Date(d.getTime());
+    threshold.setHours(9, 30, 0, 0);
+    return d.getTime() > threshold.getTime();
+  };
+
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <h2 className="text-base font-semibold text-zinc-900">오늘 근태 목록</h2>
@@ -48,8 +58,14 @@ export default function TodayAttendanceList({ rows, users, formatDateTime, isPas
             <tbody>
               {rows.slice(0, 30).map((row) => {
                 const meta = users.get(row.user_id);
+                const isSuperAdmin = meta?.role === "super_admin";
+                const checkInValue = row.check_in || row.check_in_at || null;
                 let status: string = row.status || row.checkin_status || row.checkout_status || "미출근";
-                if ((status === "미출근" || status === "결근") && isPastLateThreshold) {
+                if (!isSuperAdmin && checkInValue && isLateAfter0930(checkInValue)) {
+                  status = "지각";
+                } else if (isSuperAdmin && status === "지각") {
+                  status = "정상 출근";
+                } else if (!isSuperAdmin && (status === "미출근" || status === "결근") && isPastLateThreshold) {
                   status = "지각";
                 }
                 return (

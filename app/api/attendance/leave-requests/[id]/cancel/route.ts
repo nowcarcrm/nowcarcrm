@@ -7,7 +7,7 @@ function getBearerToken(req: Request) {
   return auth.slice(7).trim();
 }
 
-function canApproveByRank(rank: string | null | undefined): boolean {
+function canCancelByRank(rank: string | null | undefined): boolean {
   return rank === "본부장" || rank === "대표" || rank === "총괄대표";
 }
 
@@ -45,8 +45,8 @@ export async function POST(
     if (!requester || requester.approval_status !== "approved") {
       return NextResponse.json({ error: "승인된 사용자만 처리할 수 있습니다." }, { status: 403 });
     }
-    if (!canApproveByRank(requester.rank)) {
-      return NextResponse.json({ error: "본부장 이상만 연차요청을 승인할 수 있습니다." }, { status: 403 });
+    if (!canCancelByRank(requester.rank)) {
+      return NextResponse.json({ error: "본부장 이상만 취소할 수 있습니다." }, { status: 403 });
     }
 
     const { id } = await params;
@@ -54,57 +54,46 @@ export async function POST(
 
     const { data: targetRow, error: targetErr } = await supabaseAdmin
       .from("leave_requests")
-      .select("id,user_id,used_amount,status")
+      .select("id,user_id,status,used_amount")
       .eq("id", id)
       .maybeSingle();
     if (targetErr) throw new Error(targetErr.message);
-    if (!targetRow || targetRow.status !== "pending") {
-      return NextResponse.json({ error: "대기 상태 요청만 승인할 수 있습니다." }, { status: 400 });
+    if (!targetRow) return NextResponse.json({ error: "요청을 찾을 수 없습니다." }, { status: 404 });
+    if (targetRow.status === "cancelled") {
+      return NextResponse.json({ ok: true, noop: true });
     }
 
-    const requestUsedAmount = Number(targetRow.used_amount ?? 1);
-    const { data: targetUser, error: targetUserErr } = await supabaseAdmin
-      .from("users")
-      .select("id,remaining_annual_leave")
-      .eq("id", targetRow.user_id)
-      .maybeSingle();
-    if (targetUserErr) throw new Error(targetUserErr.message);
-    if (!targetUser) {
-      return NextResponse.json({ error: "요청 대상 직원을 찾을 수 없습니다." }, { status: 404 });
-    }
-    const remainingAnnualLeave = Number(targetUser.remaining_annual_leave ?? 12);
-    if (remainingAnnualLeave < requestUsedAmount) {
-      return NextResponse.json({ error: "승인 시 잔여 연차가 부족합니다." }, { status: 400 });
-    }
-
-    const now = new Date().toISOString();
-    const { data: updatedRequest, error } = await supabaseAdmin
+    const { data: updated, error: updateErr } = await supabaseAdmin
       .from("leave_requests")
-      .update({
-        status: "approved",
-        approved_by: requester.id,
-        approved_at: now,
-        rejected_by: null,
-        rejected_at: null,
-        rejection_reason: null,
-      })
+      .update({ status: "cancelled" })
       .eq("id", id)
-      .eq("status", "pending")
+      .neq("status", "cancelled")
       .select("id")
       .maybeSingle();
-    if (error) throw new Error(error.message);
-    if (!updatedRequest) {
-      return NextResponse.json({ error: "대기 상태 요청만 승인할 수 있습니다." }, { status: 400 });
+    if (updateErr) throw new Error(updateErr.message);
+    if (!updated) return NextResponse.json({ error: "이미 취소된 요청입니다." }, { status: 400 });
+
+    if (targetRow.status === "approved") {
+      const { data: targetUser, error: targetUserErr } = await supabaseAdmin
+        .from("users")
+        .select("id,remaining_annual_leave")
+        .eq("id", targetRow.user_id)
+        .maybeSingle();
+      if (targetUserErr) throw new Error(targetUserErr.message);
+      if (targetUser) {
+        const restored = Number(targetUser.remaining_annual_leave ?? 12) + Number(targetRow.used_amount ?? 0);
+        const { error: restoreErr } = await supabaseAdmin
+          .from("users")
+          .update({ remaining_annual_leave: restored })
+          .eq("id", targetRow.user_id);
+        if (restoreErr) throw new Error(restoreErr.message);
+      }
     }
-    const { error: leaveUpdateErr } = await supabaseAdmin
-      .from("users")
-      .update({ remaining_annual_leave: Math.max(0, remainingAnnualLeave - requestUsedAmount) })
-      .eq("id", targetRow.user_id);
-    if (leaveUpdateErr) throw new Error(leaveUpdateErr.message);
+
     return NextResponse.json({ ok: true });
   } catch (error) {
     return NextResponse.json(
-      { error: error instanceof Error ? error.message : "승인 처리 중 오류가 발생했습니다." },
+      { error: error instanceof Error ? error.message : "취소 처리 중 오류가 발생했습니다." },
       { status: 500 }
     );
   }

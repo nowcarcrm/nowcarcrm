@@ -12,7 +12,9 @@ import {
 } from "../_lib/attendanceSupabase";
 import {
   approveLeaveRequest,
+  cancelLeaveRequest,
   createLeaveRequest,
+  deleteLeaveRequest,
   listLeaveRequests,
   rejectLeaveRequest,
   type LeaveRequestType,
@@ -91,6 +93,7 @@ export default function AttendancePage() {
   const [leaveFromDate, setLeaveFromDate] = useState(getLocalDateKey());
   const [leaveToDate, setLeaveToDate] = useState(getLocalDateKey());
   const [leaveReason, setLeaveReason] = useState("");
+  const [sickLeaveTargetUserId, setSickLeaveTargetUserId] = useState("");
   const [leaveSaving, setLeaveSaving] = useState(false);
   const [myLeaveRequests, setMyLeaveRequests] = useState<LeaveRequestItem[]>([]);
   const [pendingLeaveRequests, setPendingLeaveRequests] = useState<LeaveRequestItem[]>([]);
@@ -147,10 +150,17 @@ export default function AttendancePage() {
   const userMetaMap = useMemo(
     () =>
       new Map(
-        userOptions.map((u) => [u.id, { name: u.name || "-", rank: u.rank ?? null, teamName: u.team_name ?? null }])
+        userOptions.map((u) => [
+          u.id,
+          { name: u.name || "-", rank: u.rank ?? null, teamName: u.team_name ?? null, role: u.role ?? null },
+        ])
       ),
     [userOptions]
   );
+  const myTeamMembers = useMemo(() => {
+    if (!profile?.teamName) return [];
+    return userOptions.filter((u) => u.id !== profile.userId && (u.team_name ?? "") === (profile.teamName ?? ""));
+  }, [profile?.teamName, profile?.userId, userOptions]);
 
   async function refreshLeaveRequests() {
     try {
@@ -280,12 +290,20 @@ export default function AttendancePage() {
     setLeaveFromDate(today);
     setLeaveToDate(today);
     setLeaveReason("");
+    if (type === "sick" && myTeamMembers.length > 0) {
+      setSickLeaveTargetUserId(myTeamMembers[0]!.id);
+    } else {
+      setSickLeaveTargetUserId("");
+    }
     setLeaveModalOpen(true);
   }
 
   async function submitLeaveRequest() {
     if (!leaveFromDate || !leaveToDate) return toast.error("시작일과 종료일은 필수입니다.");
     if (leaveToDate < leaveFromDate) return toast.error("종료일은 시작일보다 빠를 수 없습니다.");
+    if (leaveRequestType === "sick" && !sickLeaveTargetUserId) {
+      return toast.error("병가 요청할 직원을 선택해 주세요.");
+    }
     setLeaveSaving(true);
     try {
       await createLeaveRequest({
@@ -293,6 +311,7 @@ export default function AttendancePage() {
         toDate: leaveToDate,
         reason: leaveReason.trim(),
         requestType: leaveRequestType,
+        targetUserId: leaveRequestType === "sick" ? sickLeaveTargetUserId : undefined,
       });
       toast.success(
         leaveRequestType === "half"
@@ -309,6 +328,30 @@ export default function AttendancePage() {
       toast.error(message);
     } finally {
       setLeaveSaving(false);
+    }
+  }
+
+  async function onCancelLeaveRequest(id: string) {
+    const ok = window.confirm("이 근태 요청을 취소할까요?");
+    if (!ok) return;
+    try {
+      await cancelLeaveRequest(id);
+      toast.success("근태 요청을 취소했습니다.");
+      await refreshLeaveRequests();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "취소에 실패했습니다.");
+    }
+  }
+
+  async function onDeletePendingLeaveRequest(id: string) {
+    const ok = window.confirm("이 요청을 목록에서 완전히 삭제하시겠습니까?");
+    if (!ok) return;
+    try {
+      await deleteLeaveRequest(id);
+      toast.success("요청을 완전히 삭제했습니다.");
+      await refreshLeaveRequests();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "삭제에 실패했습니다.");
     }
   }
 
@@ -338,13 +381,18 @@ export default function AttendancePage() {
             onOpenSickLeaveModal={() => openLeaveModal("sick")}
           />
 
-          <LeaveRequestCard requests={myLeaveRequests} />
+          <LeaveRequestCard
+            requests={myLeaveRequests}
+            canCancel={canApproveLeave}
+            onCancel={(id) => void onCancelLeaveRequest(id)}
+          />
 
           {canApproveLeave ? (
             <LeaveApprovalList
               requests={pendingLeaveRequests}
               onApprove={(id) => void approveLeaveRequest(id).then(refreshLeaveRequests)}
               onReject={(id) => void rejectLeaveRequest(id, (window.prompt("반려 사유", "") ?? "").trim()).then(refreshLeaveRequests)}
+              onDelete={(id) => void onDeletePendingLeaveRequest(id)}
             />
           ) : null}
 
@@ -378,10 +426,13 @@ export default function AttendancePage() {
         fromDate={leaveFromDate}
         toDate={leaveToDate}
         reason={leaveReason}
+        targetUserId={sickLeaveTargetUserId}
+        targetUsers={myTeamMembers.map((u) => ({ id: u.id, name: u.name }))}
         saving={leaveSaving}
         onChangeFromDate={setLeaveFromDate}
         onChangeToDate={setLeaveToDate}
         onChangeReason={setLeaveReason}
+        onChangeTargetUserId={setSickLeaveTargetUserId}
         onCancel={() => setLeaveModalOpen(false)}
         onSubmit={() => void submitLeaveRequest()}
       />

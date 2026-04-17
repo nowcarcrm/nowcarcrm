@@ -24,6 +24,11 @@ function effectiveApproval(
   return "pending";
 }
 
+function initialAnnualLeaveByJoinMonth(baseDate = new Date()): number {
+  const joinMonth = baseDate.getMonth() + 1;
+  return Math.max(0, 12 - joinMonth);
+}
+
 async function requireApprovedAdmin(authUserId: string) {
   const { data: byId, error: e1 } = await supabaseAdmin
     .from("users")
@@ -295,6 +300,7 @@ export async function PATCH(req: Request) {
     if (nextStatus === "approved") {
       patch.approved_at = new Date().toISOString();
       patch.approved_by = authData.user.id;
+      patch.remaining_annual_leave = initialAnnualLeaveByJoinMonth();
     } else {
       patch.approved_at = null;
       patch.approved_by = null;

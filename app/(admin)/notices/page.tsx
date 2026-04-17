@@ -26,7 +26,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 
 export default function NoticesPage() {
   const { profile, loading: authLoading } = useAuth();
-  const isAdmin = profile?.role === "admin";
+  const canWriteNotice = profile?.role === "super_admin";
   const [notices, setNotices] = useState<Notice[]>([]);
   const [loading, setLoading] = useState(true);
   const [authorById, setAuthorById] = useState<Map<string, string>>(new Map());
@@ -73,7 +73,7 @@ export default function NoticesPage() {
   }
 
   async function handleDelete(n: Notice) {
-    if (!isAdmin) return;
+    if (!canWriteNotice) return;
     const ok = window.confirm(`「${n.title}」공지를 삭제할까요?`);
     if (!ok) return;
     try {
@@ -95,7 +95,7 @@ export default function NoticesPage() {
             회사 전체 공지입니다. 고정·중요 표시는 목록과 대시보드에서 강조됩니다.
           </p>
         </div>
-        {isAdmin ? (
+        {canWriteNotice ? (
           <button type="button" onClick={openCreate} className="crm-btn-primary shrink-0 px-5 py-2.5 text-[15px]">
             공지 작성
           </button>
@@ -108,7 +108,7 @@ export default function NoticesPage() {
         ) : notices.length === 0 ? (
           <div className="px-6 py-16 text-center">
             <p className="text-[16px] font-medium text-slate-700 dark:text-zinc-200">등록된 공지가 없습니다.</p>
-            {isAdmin ? (
+            {canWriteNotice ? (
               <button type="button" onClick={openCreate} className="crm-btn-primary mt-4">
                 첫 공지 작성
               </button>
@@ -150,7 +150,7 @@ export default function NoticesPage() {
                       <span>{formatNoticeDate(n.createdAt)}</span>
                     </div>
                   </Link>
-                  {isAdmin ? (
+                  {canWriteNotice ? (
                     <div className="flex shrink-0 gap-2 sm:flex-col sm:items-stretch">
                       <button
                         type="button"

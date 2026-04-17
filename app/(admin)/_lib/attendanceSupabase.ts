@@ -276,6 +276,16 @@ function getCheckInStatus(at: Date): "정상 출근" | "지각" {
   return d.getTime() <= threshold.getTime() ? "정상 출근" : "지각";
 }
 
+async function isSuperAdminUser(userId: string): Promise<boolean> {
+  const { data, error } = await supabase
+    .from("users")
+    .select("role")
+    .eq("id", userId)
+    .maybeSingle();
+  if (error) return false;
+  return (data as { role?: string | null } | null)?.role === "super_admin";
+}
+
 function getCheckOutStatus(at: Date): "정상 퇴근" | "조기 퇴근" {
   const d = new Date(at.getTime());
   const threshold = new Date(at.getTime());
@@ -410,7 +420,8 @@ export async function checkIn(
 
   const meta = await dayMeta(today);
 
-  const checkinStatus = getCheckInStatus(now);
+  const superAdmin = await isSuperAdminUser(userId);
+  const checkinStatus = superAdmin ? "정상 출근" : getCheckInStatus(now);
   const weekendOrHoliday = meta.is_weekend || meta.is_holiday;
   const asExternal = !!opts?.asExternal;
   const baseStatus: AttendanceStatus = asExternal

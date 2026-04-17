@@ -37,9 +37,7 @@ import {
   canAccessAdminPage,
   canAccessLeadDetail,
   canViewLead,
-  effectiveRank,
   getVisibleTeamScope,
-  USER_RANK_CHIEF_EXECUTIVE,
   isExecutive,
   isSuperAdmin,
   normalizeUserTeam,
@@ -1437,40 +1435,12 @@ export async function searchLeads(
     .order("created_at", { ascending: false })
     .limit(20);
 
-  const viewerRow = await getViewerUserRow(scope);
-  const viewer = toViewerLike(scope, viewerRow);
-  const scopedIds =
-    scope?.visibleUserIds?.map((id) => String(id).trim()).filter(Boolean) ?? [];
-  let visibleUserIds =
-    scope && shouldFilterLeadsByManager(scope)
-      ? scopedIds.length > 0
-        ? scopedIds
-        : await getVisibleUserIds(viewer)
-      : null;
-
-  /* Global lead search: chief exec sees only own assigned leads (not org-wide). */
-  const chiefExecGlobalSearchSelfOnly =
-    !!scope &&
-    !isSuperAdmin(viewer) &&
-    effectiveRank(viewer) === USER_RANK_CHIEF_EXECUTIVE &&
-    !!nonEmptyUserId(viewer.id);
-
-  if (chiefExecGlobalSearchSelfOnly) {
-    visibleUserIds = [nonEmptyUserId(viewer.id)!];
+  const requesterId = nonEmptyUserId(scope?.userId);
+  if (!requesterId) {
+    return [];
   }
-
-  const applyManagerFilterForSearch =
-    !!scope && (shouldFilterLeadsByManager(scope) || chiefExecGlobalSearchSelfOnly);
-
-  if (applyManagerFilterForSearch) {
-    if (visibleUserIds === null) {
-      /* 전사 검색: manager_user_id 조건 없음 */
-    } else if (visibleUserIds.length === 0) {
-      return [];
-    } else {
-      query = query.in("manager_user_id", visibleUserIds);
-    }
-  }
+  // 사이드바 검색은 직급과 무관하게 본인 담당 고객만 노출
+  query = query.eq("manager_user_id", requesterId);
 
   const { data, error } = await query;
   if (error) {

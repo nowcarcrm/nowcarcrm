@@ -8,10 +8,13 @@ type Props = {
   fromDate: string;
   toDate: string;
   reason: string;
+  targetUserId?: string;
+  targetUsers?: Array<{ id: string; name: string }>;
   saving: boolean;
   onChangeFromDate: (value: string) => void;
   onChangeToDate: (value: string) => void;
   onChangeReason: (value: string) => void;
+  onChangeTargetUserId?: (value: string) => void;
   onCancel: () => void;
   onSubmit: () => void;
 };
@@ -27,6 +30,19 @@ export default function LeaveRequestModal(props: Props) {
       <div className="w-full max-w-md rounded-2xl border bg-white p-5">
         <h3 className="text-base font-semibold">{title}</h3>
         <div className="mt-3 space-y-2">
+          {props.requestType === "sick" ? (
+            <select
+              value={props.targetUserId ?? ""}
+              onChange={(e) => props.onChangeTargetUserId?.(e.target.value)}
+              className="w-full rounded border px-3 py-2 text-sm"
+            >
+              {(props.targetUsers ?? []).map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name}
+                </option>
+              ))}
+            </select>
+          ) : null}
           <input type="date" value={props.fromDate} onChange={(e) => props.onChangeFromDate(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" />
           <input type="date" value={props.toDate} onChange={(e) => props.onChangeToDate(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" />
           <textarea rows={3} value={props.reason} onChange={(e) => props.onChangeReason(e.target.value)} className="w-full rounded border px-3 py-2 text-sm" placeholder={placeholder} />

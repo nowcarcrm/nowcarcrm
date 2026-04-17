@@ -1,6 +1,6 @@
 ﻿import { supabase } from "./supabaseClient";
 
-export type LeaveRequestStatus = "pending" | "approved" | "rejected";
+export type LeaveRequestStatus = "pending" | "approved" | "rejected" | "cancelled";
 export type LeaveRequestType = "annual" | "half" | "sick";
 
 export type LeaveRequestItem = {
@@ -67,6 +67,7 @@ export async function createLeaveRequest(input: {
   toDate: string;
   reason: string;
   requestType: LeaveRequestType;
+  targetUserId?: string;
 }): Promise<LeaveRequestItem> {
   const token = await getAccessToken();
   const res = await fetch("/api/attendance/leave-requests", {
@@ -104,4 +105,24 @@ export async function rejectLeaveRequest(id: string, rejectionReason: string): P
   });
   const json = (await res.json()) as { error?: string };
   if (!res.ok) throw new Error(json.error ?? "연차요청 반려에 실패했습니다.");
+}
+
+export async function cancelLeaveRequest(id: string): Promise<void> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/attendance/leave-requests/${id}/cancel`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const json = (await res.json()) as { error?: string };
+  if (!res.ok) throw new Error(json.error ?? "근태요청 취소에 실패했습니다.");
+}
+
+export async function deleteLeaveRequest(id: string): Promise<void> {
+  const token = await getAccessToken();
+  const res = await fetch(`/api/attendance/leave-requests/${id}`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const json = (await res.json()) as { error?: string };
+  if (!res.ok) throw new Error(json.error ?? "요청 삭제에 실패했습니다.");
 }

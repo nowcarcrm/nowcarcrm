@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
 
-type LeaveStatus = "pending" | "approved" | "rejected";
+type LeaveStatus = "pending" | "approved" | "rejected" | "cancelled";
 type LeaveRequestType = "annual" | "half" | "sick";
 const ANNUAL_LEAVE_QUOTA = 12;
 const ANNUAL_LEAVE_VIEWABLE_RANKS = new Set(["주임", "대리", "과장", "차장", "팀장"]);
@@ -13,6 +13,7 @@ type UserRow = {
   team_name: string | null;
   role: string | null;
   approval_status: string | null;
+  remaining_annual_leave?: number | null;
 };
 
 type LeaveRow = {
@@ -48,6 +49,10 @@ function canApproveByRank(rank: string | null | undefined): boolean {
 
 function canViewAllowanceByRank(rank: string | null | undefined): boolean {
   return rank === "팀장" || rank === "본부장" || rank === "대표" || rank === "총괄대표";
+}
+
+function canProxySickLeaveByRank(rank: string | null | undefined): boolean {
+  return rank === "팀장";
 }
 
 function thisYearRange() {
@@ -95,7 +100,7 @@ async function getApprovedUsageRows(userIds: string[]) {
 async function getRequester(authUserId: string): Promise<UserRow | null> {
   const { data, error } = await supabaseAdmin
     .from("users")
-    .select("id,name,rank,team_name,role,approval_status")
+    .select("id,name,rank,team_name,role,approval_status,remaining_annual_leave")
     .eq("id", authUserId)
     .maybeSingle();
   if (error) throw new Error(error.message);
@@ -103,7 +108,7 @@ async function getRequester(authUserId: string): Promise<UserRow | null> {
 
   const { data: legacy, error: legacyErr } = await supabaseAdmin
     .from("users")
-    .select("id,name,rank,team_name,role,approval_status")
+    .select("id,name,rank,team_name,role,approval_status,remaining_annual_leave")
     .eq("auth_user_id", authUserId)
     .maybeSingle();
   if (legacyErr) throw new Error(legacyErr.message);
@@ -184,9 +189,7 @@ export async function GET(req: Request) {
     if (usersErr) throw new Error(usersErr.message);
     const userMap = new Map<string, UserRow>((usersData ?? []).map((u) => [u.id, u as UserRow]));
 
-    const usageMap = await getApprovedUsageMap([requester.id]);
-    const myUsed = usageMap.get(requester.id) ?? 0;
-    const myRemainingAnnualLeave = Math.max(0, ANNUAL_LEAVE_QUOTA - myUsed);
+    const myRemainingAnnualLeave = Number(requester.remaining_annual_leave ?? ANNUAL_LEAVE_QUOTA);
 
     let visibleAnnualLeaveBalances: Array<{
       userId: string;
@@ -199,7 +202,7 @@ export async function GET(req: Request) {
     if (canViewAllowanceByRank(requester.rank)) {
       const { data: targetUsers, error: targetErr } = await supabaseAdmin
         .from("users")
-        .select("id,name,rank,team_name,approval_status")
+        .select("id,name,rank,team_name,approval_status,remaining_annual_leave")
         .or("approval_status.eq.approved,approval_status.is.null");
       if (targetErr) throw new Error(targetErr.message);
       const filteredTargets = ((targetUsers ?? []) as UserRow[]).filter((u) => {
@@ -228,7 +231,7 @@ export async function GET(req: Request) {
             rank: u.rank ?? null,
             teamName: u.team_name ?? null,
             usedAnnualLeave: used,
-            remainingAnnualLeave: Math.max(0, ANNUAL_LEAVE_QUOTA - used),
+            remainingAnnualLeave: Number(u.remaining_annual_leave ?? Math.max(0, ANNUAL_LEAVE_QUOTA - used)),
             usedAnnualCount: breakdown.annual,
             usedHalfCount: breakdown.half,
             usedSickCount: breakdown.sick,
@@ -272,15 +275,21 @@ export async function POST(req: Request) {
       toDate?: string;
       reason?: string;
       requestType?: LeaveRequestType;
+      targetUserId?: string;
     };
     const fromDate = (body.fromDate ?? "").trim();
     const toDate = (body.toDate ?? "").trim();
     const reason = (body.reason ?? "").trim();
     const requestType: LeaveRequestType =
       body.requestType === "half" ? "half" : body.requestType === "sick" ? "sick" : "annual";
+    const targetUserId = (body.targetUserId ?? "").trim();
+    const isProxySickRequest = requestType === "sick" && targetUserId.length > 0;
     const usedAmount = requestType === "half" ? 0.5 : requestType === "sick" ? 0 : 1;
-    if (requestType === "sick" && requester.rank !== "팀장") {
+    if (requestType === "sick" && requester.rank !== "팀장" && !isProxySickRequest) {
       return NextResponse.json({ error: "병가 요청은 팀장만 가능합니다." }, { status: 403 });
+    }
+    if (isProxySickRequest && !canProxySickLeaveByRank(requester.rank)) {
+      return NextResponse.json({ error: "팀장만 팀원 병가를 대신 요청할 수 있습니다." }, { status: 403 });
     }
 
     if (!fromDate || !toDate) {
@@ -290,23 +299,45 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "종료일은 시작일보다 빠를 수 없습니다." }, { status: 400 });
     }
 
-    const usageMap = await getApprovedUsageMap([requester.id]);
-    const myUsed = usageMap.get(requester.id) ?? 0;
-    const myRemaining = Math.max(0, ANNUAL_LEAVE_QUOTA - myUsed);
-    if (myRemaining < usedAmount) {
+    let requestTargetUserId = requester.id;
+    if (isProxySickRequest) {
+      const { data: targetUser, error: targetErr } = await supabaseAdmin
+        .from("users")
+        .select("id,name,team_name,approval_status")
+        .eq("id", targetUserId)
+        .maybeSingle();
+      if (targetErr) throw new Error(targetErr.message);
+      if (!targetUser || !isApproved(targetUser.approval_status)) {
+        return NextResponse.json({ error: "요청 대상 직원을 찾을 수 없습니다." }, { status: 404 });
+      }
+      if ((targetUser.team_name ?? "") !== (requester.team_name ?? "")) {
+        return NextResponse.json({ error: "같은 팀 소속 직원만 병가를 대신 요청할 수 있습니다." }, { status: 403 });
+      }
+      requestTargetUserId = targetUser.id;
+    }
+
+    const { data: targetLeaveUser, error: targetLeaveUserErr } = await supabaseAdmin
+      .from("users")
+      .select("id,remaining_annual_leave")
+      .eq("id", requestTargetUserId)
+      .maybeSingle();
+    if (targetLeaveUserErr) throw new Error(targetLeaveUserErr.message);
+    const remainingAnnualLeave = Number(targetLeaveUser?.remaining_annual_leave ?? ANNUAL_LEAVE_QUOTA);
+    if (remainingAnnualLeave < usedAmount) {
       return NextResponse.json({ error: "잔여 연차가 부족합니다." }, { status: 400 });
     }
 
     const { data, error } = await supabaseAdmin
       .from("leave_requests")
       .insert({
-        user_id: requester.id,
+        user_id: requestTargetUserId,
         from_date: fromDate,
         to_date: toDate,
         reason: reason || null,
         status: "pending",
         request_type: requestType,
         used_amount: usedAmount,
+        requested_by: isProxySickRequest ? requester.id : null,
       })
       .select(
         "id,user_id,from_date,to_date,reason,status,approved_by,approved_at,rejected_by,rejected_at,rejection_reason,created_at,request_type,used_amount"

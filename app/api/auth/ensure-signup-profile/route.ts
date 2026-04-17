@@ -12,6 +12,11 @@ function getBearerToken(req: Request) {
   return auth.slice(7).trim();
 }
 
+function initialAnnualLeaveByJoinMonth(baseDate = new Date()): number {
+  const joinMonth = baseDate.getMonth() + 1;
+  return Math.max(0, 12 - joinMonth);
+}
+
 export async function POST(req: Request) {
   try {
     const token = getBearerToken(req);
@@ -69,6 +74,7 @@ export async function POST(req: Request) {
       role: "staff" as const,
       approval_status: "pending" as const,
       is_active: true,
+      remaining_annual_leave: initialAnnualLeaveByJoinMonth(),
     };
     console.log("[ensure-signup-profile] upsert start", { payload });
     const { data, error } = await supabaseAdmin

@@ -7,9 +7,10 @@ type Props = {
   requests: LeaveRequestItem[];
   onApprove: (id: string) => void;
   onReject: (id: string) => void;
+  onDelete: (id: string) => void;
 };
 
-export default function LeaveApprovalList({ requests, onApprove, onReject }: Props) {
+export default function LeaveApprovalList({ requests, onApprove, onReject, onDelete }: Props) {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <h2 className="mb-2 text-base font-semibold text-zinc-900">연차 요청 대기 목록</h2>
@@ -25,6 +26,7 @@ export default function LeaveApprovalList({ requests, onApprove, onReject }: Pro
               <div className="flex gap-2">
                 <TapButton onClick={() => onApprove(r.id)} className="rounded-xl bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white">승인</TapButton>
                 <TapButton onClick={() => onReject(r.id)} className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs font-semibold text-rose-700">반려</TapButton>
+                <TapButton onClick={() => onDelete(r.id)} className="rounded-xl border border-zinc-300 bg-zinc-100 px-3 py-1.5 text-xs font-semibold text-zinc-700">삭제</TapButton>
               </div>
             </div>
           ))}
