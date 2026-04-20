@@ -183,6 +183,7 @@ export default function LeadCreateModal({
                 onChange={(e) => setDraft((p) => ({ ...p, name: e.target.value }))}
                 className="crm-field"
                 placeholder="예: 김민지"
+                autoFocus
               />
             </div>
 
