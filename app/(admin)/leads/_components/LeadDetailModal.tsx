@@ -1423,28 +1423,6 @@ export default function LeadDetailModal({
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                  <Field label="연간 주행거리">
-                    <select
-                      value={draft.annualMileage ?? ""}
-                      onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          annualMileage: e.target.value === "" ? null : e.target.value,
-                        }))
-                      }
-                      className="crm-field crm-field-select max-w-md"
-                    >
-                      <option value="">선택</option>
-                      {ANNUAL_MILEAGE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
-
                 <ul className="space-y-3">
                   {(draft.counselingRecords ?? []).length === 0 ? (
                     <li className="rounded-2xl border border-dashed border-zinc-200 bg-white p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
@@ -2018,27 +1996,6 @@ export default function LeadDetailModal({
                   견적은 시간순으로 표시되며, <span className="font-semibold text-[var(--crm-blue)]">최신 견적</span>
                   을 강조합니다. 계약 탭의 월 납입금과는 별도로 보관됩니다.
                 </p>
-                <div className="max-w-md">
-                  <Field label="연간 주행거리">
-                    <select
-                      value={draft.annualMileage ?? ""}
-                      onChange={(e) =>
-                        setDraft((p) => ({
-                          ...p,
-                          annualMileage: e.target.value === "" ? null : e.target.value,
-                        }))
-                      }
-                      className="crm-field crm-field-select"
-                    >
-                      <option value="">선택</option>
-                      {ANNUAL_MILEAGE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
-                </div>
                 <ul className="space-y-3">
                   {sortedQuotes.length === 0 ? (
                     <li className="rounded-xl border border-dashed border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -2152,6 +2109,7 @@ export default function LeadDetailModal({
                         feeAmount: money.feeAmount,
                         feePercent: money.feePercent,
                         monthlyPayment: monthly,
+                        annual_mileage: draft.annualMileage ?? null,
                         deliveryType: quoteDraft.deliveryType,
                         maintenanceIncluded: quoteDraft.maintenanceIncluded,
                         note: quoteDraft.note.trim(),
@@ -2252,6 +2210,25 @@ export default function LeadDetailModal({
                         {BASE_CONTRACT_TERM_OPTIONS.map((t) => (
                           <option key={t} value={t}>
                             {t}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="연간 주행거리">
+                      <select
+                        value={draft.annualMileage ?? ""}
+                        onChange={(e) =>
+                          setDraft((p) => ({
+                            ...p,
+                            annualMileage: e.target.value === "" ? null : e.target.value,
+                          }))
+                        }
+                        className="crm-field crm-field-select"
+                      >
+                        <option value="">선택</option>
+                        {ANNUAL_MILEAGE_OPTIONS.map((o) => (
+                          <option key={o.value} value={o.value}>
+                            {o.label}
                           </option>
                         ))}
                       </select>
@@ -2653,26 +2630,6 @@ function ContractTab({
         계약 정보를 입력하고 저장할 수 있습니다.
       </div>
 
-      <div className="max-w-md">
-        <Field label="연간 주행거리">
-          <select
-            value={draft.annualMileage ?? ""}
-            onChange={(e) =>
-              onAnnualMileageChange(e.target.value === "" ? null : e.target.value)
-            }
-            className="crm-field crm-field-select"
-            disabled={fieldDisabled}
-          >
-            <option value="">선택</option>
-            {ANNUAL_MILEAGE_OPTIONS.map((o) => (
-              <option key={o.value} value={o.value}>
-                {o.label}
-              </option>
-            ))}
-          </select>
-        </Field>
-      </div>
-
       {shouldPersistContractAmountSnapshot(draft.counselingStatus) && draft.contract && !hasLockedMonetarySnapshot(local) ? (
         <div className="rounded-lg border border-sky-200/90 bg-sky-50/80 px-3 py-2 text-xs text-sky-950 dark:border-sky-500/35 dark:bg-sky-500/10 dark:text-sky-100">
           상담결과가 <strong>확정</strong> 또는 <strong>출고</strong>입니다. 계약 저장 시 차량가·보증금·수수료가 최종 스냅샷으로
@@ -2850,6 +2807,23 @@ function ContractTab({
             {BASE_CONTRACT_TERM_OPTIONS.map((t) => (
               <option key={t} value={t}>
                 {t}
+              </option>
+            ))}
+          </select>
+        </Field>
+        <Field label="연간 주행거리">
+          <select
+            value={draft.annualMileage ?? ""}
+            onChange={(e) =>
+              onAnnualMileageChange(e.target.value === "" ? null : e.target.value)
+            }
+            className="crm-field crm-field-select"
+            disabled={fieldDisabled}
+          >
+            <option value="">선택</option>
+            {ANNUAL_MILEAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
               </option>
             ))}
           </select>

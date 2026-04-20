@@ -191,6 +191,10 @@ function normalizeQuoteHistory(raw: unknown): QuoteHistoryEntry[] {
         typeof o.monthlyPayment === "number" && Number.isFinite(o.monthlyPayment)
           ? Math.max(0, o.monthlyPayment)
           : 0,
+      annual_mileage:
+        typeof o.annual_mileage === "string" && o.annual_mileage.trim()
+          ? o.annual_mileage.trim()
+          : null,
       deliveryType,
       maintenanceIncluded: o.maintenanceIncluded === true,
       note: typeof o.note === "string" ? o.note : "",

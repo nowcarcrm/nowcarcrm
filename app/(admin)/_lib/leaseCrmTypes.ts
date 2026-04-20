@@ -73,6 +73,8 @@ export type QuoteHistoryEntry = {
   feeAmount: number;
   feePercent: number;
   monthlyPayment: number;
+  /** 연간 주행거리(선택) */
+  annual_mileage?: string | null;
   deliveryType: QuoteDeliveryType;
   maintenanceIncluded: boolean;
   note: string;
