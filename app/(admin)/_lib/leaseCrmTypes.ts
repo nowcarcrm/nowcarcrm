@@ -180,8 +180,22 @@ export const LEAD_SOURCE_OPTIONS = [
   "유튜브",
   "대표전화",
   "플러스친구",
+  "기타",
 ] as const;
 export type LeadSourcePreset = (typeof LEAD_SOURCE_OPTIONS)[number];
+
+/** DB annual_mileage 값 → UI 라벨 (천 단위 콤마) */
+export const ANNUAL_MILEAGE_OPTIONS: { value: string; label: string }[] = [
+  { value: "10000", label: "10,000Km" },
+  { value: "15000", label: "15,000Km" },
+  { value: "20000", label: "20,000Km" },
+  { value: "25000", label: "25,000Km" },
+  { value: "30000", label: "30,000Km" },
+  { value: "35000", label: "35,000Km" },
+  { value: "40000", label: "40,000Km" },
+  { value: "50000", label: "50,000Km" },
+  { value: "unlimited", label: "무제한" },
+];
 
 export const BASE_CONTRACT_TERM_OPTIONS = ["12개월", "24개월", "36개월", "48개월", "60개월"] as const;
 
@@ -290,6 +304,9 @@ export type Lead = {
   managerUserId?: string | null;
   createdAt: string; // ISO
   updatedAt: string; // ISO (마지막 처리 기준)
+
+  /** 연간 주행거리 — DB `annual_mileage` (예: 10000, unlimited) */
+  annualMileage?: string | null;
 
   base: CustomerBase;
 

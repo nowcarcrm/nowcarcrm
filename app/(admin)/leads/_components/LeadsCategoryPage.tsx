@@ -21,7 +21,6 @@ import {
   isDeliveryDueSoon,
   isToday,
   lastContactReferenceIso,
-  pathnameAfterCounselingStatusChange,
 } from "../../_lib/leaseCrmLogic";
 import { formatSupabaseError } from "../../_lib/leaseCrmSupabase";
 import {
@@ -48,7 +47,15 @@ import {
   crmTotalPages,
 } from "@/app/_components/ui/CrmListPagination";
 import { getPersonalPipelineScope } from "../../_lib/screenScopes";
-import { canAccessAdminPage } from "../../_lib/rolePermissions";
+import {
+  canAccessAdminPage,
+  canDeleteLeads,
+  canViewAllLeads,
+  canViewLead,
+} from "../../_lib/rolePermissions";
+import { maskPhone } from "@/app/_lib/mask";
+import { assertLeadExportAllowed } from "@/app/_lib/verifiedLeadExport";
+import type { UserRow } from "../../_lib/usersSupabase";
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -186,12 +193,17 @@ function LeadsCategoryView({
   } | null>(null);
   const [leadsLoadError, setLeadsLoadError] = useState<string | null>(null);
   const [aiByLeadId, setAiByLeadId] = useState<Record<string, AiRow>>({});
+  const [ownerMetaById, setOwnerMetaById] = useState<
+    Record<string, Pick<UserRow, "id" | "email" | "role" | "rank" | "team_name">>
+  >({});
+  const [phoneUnmaskUntil, setPhoneUnmaskUntil] = useState<Record<string, number>>({});
 
   useEffect(() => {
     if (authLoading) return;
     if (!profile) {
       setLeads([]);
       setCreateOwnerOptions([]);
+      setOwnerMetaById({});
       setLeadsLoadError(null);
       return;
     }
@@ -214,6 +226,19 @@ function LeadsCategoryView({
           email: profile.email,
           team_name: profile.teamName,
         });
+        const meta: Record<string, Pick<UserRow, "id" | "email" | "role" | "rank" | "team_name">> = {};
+        for (const u of users) {
+          if (!u.id) continue;
+          meta[u.id] = {
+            id: u.id,
+            email: u.email ?? null,
+            role: u.role ?? null,
+            rank: u.rank ?? null,
+            team_name: u.team_name ?? null,
+          };
+        }
+        if (!mounted) return;
+        setOwnerMetaById(meta);
         const ownerOptions = users
           .filter((u) => !!u.id && !!u.name?.trim())
           .map((u) => ({ id: u.id, name: u.name.trim() }));
@@ -552,6 +577,91 @@ function LeadsCategoryView({
     setListPage((p) => Math.min(Math.max(1, p), crmTotalPages(filtered.length, CRM_LIST_PAGE_SIZE)));
   }, [filtered.length]);
 
+  const displayPhoneForLead = useCallback(
+    (row: Lead): string => {
+      if (!profile) return row.base.phone;
+      const raw = row.base.phone;
+      const mid = (row.managerUserId ?? "").trim();
+      const owner = ownerMetaById[mid] ?? {
+        id: mid,
+        email: null,
+        role: null,
+        rank: null,
+        team_name: null,
+      };
+      const viewer = {
+        id: profile.userId,
+        role: profile.role,
+        rank: profile.rank ?? null,
+        email: profile.email ?? null,
+        team_name: profile.teamName ?? null,
+      };
+      const isOwner = !!(profile.userId && mid && profile.userId === mid);
+      const isDirectorOrAbove = canViewAllLeads(viewer);
+      const isTeamMemberLead = !isOwner && !isDirectorOrAbove && canViewLead(viewer, owner);
+      const masked = maskPhone(raw, { isOwner, isTeamMemberLead, isDirectorOrAbove });
+      const until = phoneUnmaskUntil[row.id] ?? 0;
+      if (Date.now() < until) return raw;
+      return masked;
+    },
+    [profile, ownerMetaById, phoneUnmaskUntil]
+  );
+
+  const showPhoneUnlockControl = useCallback(
+    (row: Lead): boolean => {
+      if (!profile) return false;
+      const raw = row.base.phone;
+      const mid = (row.managerUserId ?? "").trim();
+      const owner = ownerMetaById[mid] ?? {
+        id: mid,
+        email: null,
+        role: null,
+        rank: null,
+        team_name: null,
+      };
+      const viewer = {
+        id: profile.userId,
+        role: profile.role,
+        rank: profile.rank ?? null,
+        email: profile.email ?? null,
+        team_name: profile.teamName ?? null,
+      };
+      const isOwner = !!(profile.userId && mid && profile.userId === mid);
+      const isDirectorOrAbove = canViewAllLeads(viewer);
+      const isTeamMemberLead = !isOwner && !isDirectorOrAbove && canViewLead(viewer, owner);
+      const masked = maskPhone(raw, { isOwner, isTeamMemberLead, isDirectorOrAbove });
+      const until = phoneUnmaskUntil[row.id] ?? 0;
+      return masked.includes("*") && Date.now() >= until;
+    },
+    [profile, ownerMetaById, phoneUnmaskUntil]
+  );
+
+  const handlePhoneUnmaskRequest = useCallback(async (row: Lead) => {
+    if (!window.confirm("이 고객의 연락처를 확인하시겠습니까? 열람 기록이 남습니다.")) {
+      return;
+    }
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    const token = session?.access_token;
+    if (!token) {
+      toast.error("로그인이 필요합니다.");
+      return;
+    }
+    const res = await fetch("/api/leads/phone-unmask", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ leadId: row.id }),
+    });
+    if (!res.ok) {
+      const j = (await res.json().catch(() => ({}))) as { error?: string };
+      toast.error(j.error ?? "열람 요청에 실패했습니다.");
+      return;
+    }
+    setPhoneUnmaskUntil((prev) => ({ ...prev, [row.id]: Date.now() + 30_000 }));
+    toast.success("30초 동안 전체 번호가 표시됩니다.");
+  }, []);
+
   const handleDeliveryExcelDownload = useCallback(async () => {
     if (profile?.role !== "admin") {
       toast.error("관리자만 엑셀 다운로드가 가능합니다.");
@@ -574,6 +684,16 @@ function LeadsCategoryView({
       return;
     }
     const delivered = filtered.filter((l) => l.counselingStatus === "인도완료");
+    const fname = `delivered_customers_${todayYmdKst()}.xlsx`;
+    const gate = await assertLeadExportAllowed({
+      leadIds: delivered.map((l) => l.id),
+      exportType: "leads",
+      fileName: fname,
+    });
+    if (!gate.ok) {
+      toast.error(gate.message);
+      return;
+    }
     const rows = delivered.map((l) => ({
       "고객명": l.base.name,
       "연락처": l.base.phone,
@@ -693,10 +813,6 @@ function LeadsCategoryView({
           : refreshed
       );
       toast.success("저장 완료되었습니다.");
-      const nextPath = pathnameAfterCounselingStatusChange(next.counselingStatus, categoryKey);
-      if (pathname !== nextPath) {
-        router.push(nextPath);
-      }
     } catch (error) {
       console.error("[handleUpdateLead] 저장 오류", formatSupabaseError(error), error, next);
       if (isMissingRelationTableError(error)) {
@@ -864,8 +980,13 @@ function LeadsCategoryView({
               엑셀 다운로드
             </TapButton>
           ) : null}
-          <TapButton type="button" onClick={() => setCreateOpen(true)} className="crm-btn-primary shrink-0 self-start">
-            고객 추가
+          <TapButton
+            type="button"
+            onClick={() => setCreateOpen(true)}
+            className="crm-btn-primary inline-flex shrink-0 items-baseline gap-2 self-start"
+          >
+            <span>고객 추가</span>
+            <span className="text-[11px] font-medium opacity-80">Ctrl+B</span>
           </TapButton>
         </div>
       </div>
@@ -1092,7 +1213,18 @@ function LeadsCategoryView({
                       <td className="px-4 py-3">
                         <div className="font-medium text-zinc-900 dark:text-zinc-50">{row.base.name}</div>
                         <div className="mt-1 flex flex-wrap items-center gap-2">
-                          <div className="text-xs text-zinc-500 dark:text-zinc-400">{row.base.phone}</div>
+                          <div className="text-xs text-zinc-500 dark:text-zinc-400">{displayPhoneForLead(row)}</div>
+                          {showPhoneUnlockControl(row) ? (
+                            <button
+                              type="button"
+                              title="연락처 확인"
+                              className="text-xs leading-none text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-100"
+                              aria-label="연락처 확인"
+                              onClick={() => void handlePhoneUnmaskRequest(row)}
+                            >
+                              🔓
+                            </button>
+                          ) : null}
                           <span className="rounded-full bg-zinc-100 px-2 py-0.5 text-[11px] font-semibold text-zinc-700 dark:bg-zinc-800/30 dark:text-zinc-200">
                             담당: {row.base.ownerStaff}
                           </span>
@@ -1249,17 +1381,25 @@ function LeadsCategoryView({
                           >
                             상세
                           </TapButton>
-                          <TapButton
-                            type="button"
-                            onClick={() => {
-                              const ok = window.confirm(`${row.base.name} 고객을 삭제할까요?`);
-                              if (!ok) return;
-                              void handleDeleteLead(row.id);
-                            }}
-                            className="rounded-md px-2.5 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/50"
-                          >
-                            삭제
-                          </TapButton>
+                          {canDeleteLeads({
+                            id: profile?.userId,
+                            email: profile?.email ?? null,
+                            role: profile?.role ?? null,
+                            rank: profile?.rank ?? null,
+                            team_name: profile?.teamName ?? null,
+                          }) ? (
+                            <TapButton
+                              type="button"
+                              onClick={() => {
+                                const ok = window.confirm(`${row.base.name} 고객을 삭제할까요?`);
+                                if (!ok) return;
+                                void handleDeleteLead(row.id);
+                              }}
+                              className="rounded-md px-2.5 py-1.5 text-xs font-medium text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/50"
+                            >
+                              삭제
+                            </TapButton>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

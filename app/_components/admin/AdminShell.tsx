@@ -20,11 +20,11 @@ import {
   deleteLeadById,
   updateLead,
 } from "@/app/(admin)/_lib/leaseCrmStorage";
-import { pathnameAfterCounselingStatusChange } from "@/app/(admin)/_lib/leaseCrmLogic";
 import { listActiveUsers } from "@/app/(admin)/_lib/usersSupabase";
 import UserRankSummary from "@/app/_components/ui/UserRankSummary";
 import UserRankCard from "@/app/_components/ui/UserRankCard";
-import { canAccessAdminPage } from "@/app/(admin)/_lib/rolePermissions";
+import { canAccessAdminPage, isSuperAdmin } from "@/app/(admin)/_lib/rolePermissions";
+import SessionIdleGuard from "@/app/_components/auth/SessionIdleGuard";
 import NotificationBell from "@/app/_components/notifications/NotificationBell";
 import AiFloatingButton from "@/app/_components/ai-secretary/AiFloatingButton";
 import { openNowAi } from "@/app/_components/ai-secretary/events";
@@ -71,6 +71,8 @@ type NavItem = {
   section: NavSectionKey;
   /** 관리자만 사이드바에 표시 */
   adminOnly?: boolean;
+  /** 총괄대표(super_admin)만 */
+  superAdminOnly?: boolean;
 };
 
 type ShellUser = {
@@ -169,6 +171,30 @@ const NAV_ITEMS: NavItem[] = [
     description: "승인 대기 · 계정 생성 (관리자)",
     adminOnly: true,
   },
+  {
+    section: "operations",
+    label: "로그인 이력",
+    href: "/admin/login-logs",
+    description: "IP·기기·성공/실패 (총괄대표)",
+    adminOnly: true,
+    superAdminOnly: true,
+  },
+  {
+    section: "operations",
+    label: "권한 관리",
+    href: "/admin/permissions",
+    description: "직급별 리소스 권한 (총괄대표)",
+    adminOnly: true,
+    superAdminOnly: true,
+  },
+  {
+    section: "operations",
+    label: "보내기 이력",
+    href: "/admin/export-logs",
+    description: "월간 엑셀 보내기 통계 (총괄대표)",
+    adminOnly: true,
+    superAdminOnly: true,
+  },
 ];
 
 type NavSection = {
@@ -191,6 +217,9 @@ const SECTION_META: Record<NavSectionKey, { title: string; subtitle?: string }> 
 
 /** 긴 경로를 먼저 두어 prefix 매칭이 겹치지 않게 함 */
 const PAGE_TITLE_ROUTES: { prefix: string; title: string }[] = [
+  { prefix: "/admin/login-logs", title: "로그인 이력" },
+  { prefix: "/admin/permissions", title: "권한 관리" },
+  { prefix: "/admin/export-logs", title: "보내기 이력" },
   { prefix: "/leads/counseling-progress", title: "상담중" },
   { prefix: "/leads/contract-progress", title: "계약" },
   { prefix: "/leads/delivery-complete", title: "인도완료" },
@@ -428,6 +457,16 @@ function SidebarContents({
       ) {
         return false;
       }
+      if (
+        i.superAdminOnly &&
+        !isSuperAdmin({
+          role: currentUser?.role ?? null,
+          rank: currentUser?.rank ?? null,
+          email: currentUser?.email ?? null,
+        })
+      ) {
+        return false;
+      }
       return true;
     });
     const order: NavSectionKey[] = ["sales", "operations"];
@@ -441,7 +480,7 @@ function SidebarContents({
       out.push(section);
     }
     return out;
-  }, [currentUser?.role]);
+  }, [currentUser?.role, currentUser?.rank, currentUser?.email]);
 
   return (
     <div className="relative z-10 flex h-full flex-col">
@@ -613,6 +652,25 @@ export default function AdminShell({
     return { role: currentUser.role, userId: currentUser.userId };
   }, [currentUser, pathname]);
 
+  useEffect(() => {
+    const isTypingShortcutTarget = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (el.isContentEditable) return true;
+      if (el.closest("[contenteditable='true']")) return true;
+      return false;
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.key.toLowerCase() !== "b") return;
+      if (isTypingShortcutTarget(e.target)) return;
+      e.preventDefault();
+      router.push("/leads/new-db?create=1");
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [router]);
+
   const modalValue = useMemo<LeadDetailModalContextValue>(
     () => ({
       openLeadById: async (leadId: string) => {
@@ -740,9 +798,10 @@ export default function AdminShell({
                   <div className="ml-auto flex flex-wrap items-center justify-end gap-2 lg:min-w-0 lg:flex-1">
                     <Link
                       href="/leads/new-db?create=1"
-                      className="crm-btn-primary whitespace-nowrap px-3 py-2 text-[14px] sm:px-4"
+                      className="crm-btn-primary inline-flex items-baseline gap-2 whitespace-nowrap px-3 py-2 text-[14px] sm:px-4"
                     >
-                      고객 추가
+                      <span>고객 추가</span>
+                      <span className="text-[11px] font-medium opacity-80">Ctrl+B</span>
                     </Link>
                     <Link
                       href="/leads/counseling-progress"
@@ -788,6 +847,7 @@ export default function AdminShell({
 
             <main className="relative z-10 min-w-0 flex-1">
               <div className="mx-auto w-full max-w-[1760px] px-4 py-5 sm:px-6 sm:py-6 lg:px-10 lg:py-8">
+                {onLogout ? <SessionIdleGuard onIdleLogout={onLogout} /> : null}
                 <CrmPageTransition>{children}</CrmPageTransition>
               </div>
             </main>
@@ -812,8 +872,6 @@ export default function AdminShell({
                     : next;
                 await updateLead(payload, modalScope, options);
                 setModalLead(payload);
-                const nextPath = pathnameAfterCounselingStatusChange(payload.counselingStatus);
-                if (pathname !== nextPath) router.push(nextPath);
                 router.refresh();
               }}
               onDelete={(id) => {

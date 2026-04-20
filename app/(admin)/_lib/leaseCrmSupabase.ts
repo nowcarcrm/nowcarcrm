@@ -36,6 +36,7 @@ import {
 import {
   canAccessAdminPage,
   canAccessLeadDetail,
+  canDeleteLeads,
   canViewLead,
   getVisibleTeamScope,
   isExecutive,
@@ -268,7 +269,7 @@ function coalesceConsultImportance(
   return "보통";
 }
 
-function serializeConsultationToMemo(r: CounselingRecord): string {
+export function serializeConsultationToMemo(r: CounselingRecord): string {
   return `${CRM_CONSULTATION_MEMO_PREFIX}${JSON.stringify({
     v: 1,
     counselor: r.counselor,
@@ -426,6 +427,7 @@ type LeadRow = {
   phone: string;
   car_model: string;
   source: string;
+  annual_mileage?: string | null;
   status: string;
   sensitivity: string;
   manager: string;
@@ -895,6 +897,10 @@ function mapRowToLead(
     managerUserId: nullableDbStringId(row.manager_user_id),
     createdAt: row.created_at,
     updatedAt: row.created_at,
+    annualMileage:
+      row.annual_mileage != null && String(row.annual_mileage).trim() !== ""
+        ? String(row.annual_mileage).trim()
+        : null,
     base: {
       name: row.name,
       phone: row.phone,
@@ -953,6 +959,10 @@ function toLeadInsertRow(lead: Lead) {
     phone: lead.base.phone,
     car_model: lead.base.desiredVehicle,
     source: lead.base.source,
+    annual_mileage:
+      lead.annualMileage != null && String(lead.annualMileage).trim() !== ""
+        ? String(lead.annualMileage).trim().slice(0, 20)
+        : null,
     status: lead.counselingStatus,
     sensitivity: lead.base.leadTemperature,
     manager: lead.base.ownerStaff,
@@ -972,6 +982,10 @@ function toLeadUpdateRow(lead: Lead) {
     phone: lead.base.phone,
     car_model: lead.base.desiredVehicle,
     source: lead.base.source,
+    annual_mileage:
+      lead.annualMileage != null && String(lead.annualMileage).trim() !== ""
+        ? String(lead.annualMileage).trim().slice(0, 20)
+        : null,
     status: lead.counselingStatus,
     sensitivity: lead.base.leadTemperature,
     manager: lead.base.ownerStaff,
@@ -1689,6 +1703,16 @@ export async function deleteLead(leadId: string, scope?: ViewerScope) {
   if (!hasOperationalFullAccess(scope) && !canAccessLeadDetail(viewer, scopeUid, ownerId)) {
     throw new LeadPermissionDeniedError();
   }
+  const deletePermUser = {
+    id: scopeUid,
+    role: scope?.role ?? viewerRow?.role ?? null,
+    rank: scope?.rank ?? viewerRow?.rank ?? null,
+    email: scope?.email ?? viewerRow?.email ?? null,
+    team_name: scope?.teamName ?? viewerRow?.team_name ?? null,
+  };
+  if (!canDeleteLeads(deletePermUser)) {
+    throw new Error("삭제 권한이 없습니다. 팀장 이상에게 문의하세요.");
+  }
   await Promise.all([
     supabase.from("consultations").delete().eq("lead_id", idForDelete),
     supabase.from("contracts").delete().eq("lead_id", idForDelete),
@@ -2041,14 +2065,12 @@ const NOTICE_SELECT =
   "id, title, content, created_by, created_at, is_active, is_pinned, is_important";
 
 /** 공지 조회: 고정·중요·최신순 */
-export async function listNotices(limit = 5): Promise<Notice[]> {
+export async function listNotices(limit = 5000): Promise<Notice[]> {
   ensureSupabaseConfigured();
-  const lim = Math.min(Math.max(limit, 1), 200);
+  const lim = Math.min(Math.max(limit, 1), 5000);
   const { data, error } = await supabase
     .from("notices")
     .select(NOTICE_SELECT)
-    .order("is_pinned", { ascending: false })
-    .order("is_important", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(lim);
   if (error) {

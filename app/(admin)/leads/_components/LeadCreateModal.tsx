@@ -49,6 +49,7 @@ export default function LeadCreateModal({
     ownerStaff: initialOwner,
   });
   const [selectedUserId, setSelectedUserId] = useState<string>(initialOwnerId);
+  const [sourceOtherText, setSourceOtherText] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const nowIso = useMemo(() => new Date().toISOString(), []);
@@ -123,11 +124,15 @@ export default function LeadCreateModal({
               const ownerStaff = canAssignOwner
                 ? draft.ownerStaff.trim()
                 : lockedOwnerDisplayName.trim();
+              const resolvedSource =
+                draft.source === "기타"
+                  ? sourceOtherText.trim() || "기타"
+                  : draft.source.trim();
               const base: CustomerBase = {
                 name: draft.name.trim(),
                 phone: draft.phone.trim(),
                 desiredVehicle: draft.desiredVehicle.trim(),
-                source: draft.source.trim(),
+                source: resolvedSource,
                 leadTemperature: "중",
                 customerType: "개인",
                 wantedMonthlyPayment: 0,
@@ -211,7 +216,11 @@ export default function LeadCreateModal({
               </label>
               <select
                 value={draft.source}
-                onChange={(e) => setDraft((p) => ({ ...p, source: e.target.value }))}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setDraft((p) => ({ ...p, source: v }));
+                  if (v !== "기타") setSourceOtherText("");
+                }}
                 className="crm-field crm-field-select"
               >
                 <option value="">선택</option>
@@ -221,6 +230,15 @@ export default function LeadCreateModal({
                   </option>
                 ))}
               </select>
+              {draft.source === "기타" ? (
+                <input
+                  value={sourceOtherText}
+                  onChange={(e) => setSourceOtherText(e.target.value)}
+                  className="crm-field mt-2"
+                  placeholder="유입 경로를 직접 입력하세요"
+                  autoComplete="off"
+                />
+              ) : null}
             </div>
 
             <div className="sm:col-span-2">

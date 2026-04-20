@@ -8,6 +8,7 @@ import {
   CREDIT_REVIEW_STATUS_OPTIONS,
   FAILURE_REASON_OPTIONS,
   LEAD_SOURCE_OPTIONS,
+  ANNUAL_MILEAGE_OPTIONS,
   LEAD_PRIORITY_OPTIONS,
   defaultLeadOperationalFields,
   requiresFailureReasonStatus,
@@ -51,6 +52,14 @@ import {
 import { counselingStatusFromExportProgress } from "../../_lib/leaseCrmLogic";
 import { applyStaffLeadClientLocks } from "../../_lib/leaseCrmStorage";
 import { fetchLeadById, formatSupabaseError } from "../../_lib/leaseCrmSupabase";
+import {
+  canAccessLeadDetail,
+  canDeleteLeads,
+  canViewAllLeads,
+  canViewLead,
+  isSuperAdmin,
+} from "../../_lib/rolePermissions";
+import { supabase } from "../../_lib/supabaseClient";
 import { EMPLOYEES } from "../../_lib/leaseCrmSeed";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
@@ -76,6 +85,14 @@ function isMissingRelationTableError(error: unknown): boolean {
 function toDateInputValue(iso: string | null | undefined) {
   if (!iso) return "";
   return iso.slice(0, 10);
+}
+
+function toDateTimeLocalValue(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /** 계약일·약정일·출고 예정일을 date input / DB에 맞는 yyyy-mm-dd로 통일 */
@@ -238,6 +255,7 @@ function ensureLeadShape(lead: Lead): Lead {
     exportProgress: lead.exportProgress ?? null,
     deliveredAt: lead.deliveredAt ?? null,
     nextContactAt: lead.nextContactAt ?? null,
+    annualMileage: lead.annualMileage ?? null,
   };
 }
 
@@ -462,6 +480,76 @@ export default function LeadDetailModal({
     return Array.from(set).sort((a, b) => a.localeCompare(b, "ko"));
   }, [counselorOptions, recordDraft.counselor]);
 
+  const [userDirectory, setUserDirectory] = useState<
+    Map<string, { team_name: string | null; rank: string | null }>
+  >(() => new Map());
+  const [editingRecordId, setEditingRecordId] = useState<string | null>(null);
+  const [editRecordDraft, setEditRecordDraft] = useState<CounselingRecord | null>(null);
+
+  useEffect(() => {
+    if (!profile) return;
+    let cancelled = false;
+    void listActiveUsers({
+      id: profile.userId,
+      role: profile.role,
+      rank: profile.rank ?? null,
+      email: profile.email ?? null,
+      team_name: profile.teamName ?? null,
+    })
+      .then((users) => {
+        if (cancelled) return;
+        const m = new Map<string, { team_name: string | null; rank: string | null }>();
+        for (const u of users) {
+          if (u.id) m.set(u.id, { team_name: u.team_name ?? null, rank: u.rank ?? null });
+        }
+        setUserDirectory(m);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setUserDirectory(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile?.userId, profile?.role, profile?.rank, profile?.email, profile?.teamName]);
+
+  const canMutateConsultations = useMemo(() => {
+    if (!profile) return false;
+    const v = {
+      id: profile.userId,
+      email: profile.email ?? null,
+      role: profile.role,
+      rank: profile.rank ?? null,
+      team_name: profile.teamName ?? null,
+    };
+    const mgrId = (draft.managerUserId ?? "").trim();
+    const ownerRow = mgrId
+      ? {
+          id: mgrId,
+          email: null as string | null,
+          role: null as string | null,
+          rank: null as string | null,
+          team_name: userDirectory.get(mgrId)?.team_name ?? null,
+        }
+      : null;
+    if (isSuperAdmin(v)) return true;
+    if (canViewAllLeads(v)) return true;
+    if (canAccessLeadDetail(v, profile.userId, draft.managerUserId ?? null)) return true;
+    if (ownerRow && canViewLead(v, ownerRow)) return true;
+    return false;
+  }, [profile, draft.managerUserId, userDirectory]);
+
+  const canDeleteThisLead = useMemo(() => {
+    if (!profile) return false;
+    return canDeleteLeads({
+      id: profile.userId,
+      email: profile.email ?? null,
+      role: profile.role,
+      rank: profile.rank ?? null,
+      team_name: profile.teamName ?? null,
+    });
+  }, [profile]);
+
   useEffect(() => {
     setRecordCounselingStatusSideEffect("");
   }, [lead.id]);
@@ -500,6 +588,8 @@ export default function LeadDetailModal({
       nextContactMemo: "",
       importance: "보통",
     });
+    setEditingRecordId(null);
+    setEditRecordDraft(null);
     initializedRef.current = true;
     initializedLeadIdRef.current = incomingLeadId;
   }, [lead.id]);
@@ -539,6 +629,46 @@ export default function LeadDetailModal({
     } finally {
       setRefreshingAfterSave(false);
     }
+  }
+
+  async function consultationAuthHeaders(): Promise<HeadersInit> {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("로그인이 필요합니다.");
+    return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+  }
+
+  async function patchConsultationApi(rec: CounselingRecord) {
+    const headers = await consultationAuthHeaders();
+    const res = await fetch(`/api/consultations/${encodeURIComponent(rec.id)}`, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({
+        occurredAt: rec.occurredAt,
+        counselor: rec.counselor,
+        method: rec.method,
+        importance: rec.importance,
+        reaction: rec.reaction,
+        desiredProgressAt: rec.desiredProgressAt,
+        nextContactAt: rec.nextContactAt,
+        nextContactMemo: rec.nextContactMemo,
+        content: rec.content,
+      }),
+    });
+    const json = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) throw new Error(json.error ?? "상담기록 수정에 실패했습니다.");
+  }
+
+  async function deleteConsultationApi(id: string) {
+    const { data } = await supabase.auth.getSession();
+    const token = data.session?.access_token;
+    if (!token) throw new Error("로그인이 필요합니다.");
+    const res = await fetch(`/api/consultations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const json = (await res.json().catch(() => ({}))) as { error?: string };
+    if (!res.ok) throw new Error(json.error ?? "상담기록 삭제에 실패했습니다.");
   }
 
   const sortedQuotes = useMemo(
@@ -836,7 +966,7 @@ export default function LeadDetailModal({
             </div>
 
             <div className="flex items-center gap-2">
-              {status !== "취소" ? (
+              {canDeleteThisLead && status !== "취소" ? (
                 <TapButton
                   type="button"
                   onClick={() => {
@@ -963,6 +1093,26 @@ export default function LeadDetailModal({
                       {LEAD_SOURCE_OPTIONS.map((s) => (
                         <option key={s} value={s}>
                           {s}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+
+                  <Field label="연간 주행거리">
+                    <select
+                      value={draft.annualMileage ?? ""}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          annualMileage: e.target.value === "" ? null : e.target.value,
+                        }))
+                      }
+                      className="crm-field crm-field-select"
+                    >
+                      <option value="">선택</option>
+                      {ANNUAL_MILEAGE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
                         </option>
                       ))}
                     </select>
@@ -1273,6 +1423,28 @@ export default function LeadDetailModal({
                   </div>
                 </div>
 
+                <div className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                  <Field label="연간 주행거리">
+                    <select
+                      value={draft.annualMileage ?? ""}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          annualMileage: e.target.value === "" ? null : e.target.value,
+                        }))
+                      }
+                      className="crm-field crm-field-select max-w-md"
+                    >
+                      <option value="">선택</option>
+                      {ANNUAL_MILEAGE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
+
                 <ul className="space-y-3">
                   {(draft.counselingRecords ?? []).length === 0 ? (
                     <li className="rounded-2xl border border-dashed border-zinc-200 bg-white p-4 text-sm text-zinc-500 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-400">
@@ -1282,49 +1454,287 @@ export default function LeadDetailModal({
                     (draft.counselingRecords ?? [])
                       .slice()
                       .sort((a, b) => (a.occurredAt < b.occurredAt ? 1 : -1))
-                      .map((r) => (
-                        <li key={r.id} className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                          <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                            <div>
-                              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
-                                {r.method} · 작성자 {r.counselor}
+                      .map((r) => {
+                        const isEditing =
+                          canMutateConsultations && editingRecordId === r.id && editRecordDraft != null;
+                        return (
+                          <li
+                            key={r.id}
+                            className="rounded-2xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-950"
+                          >
+                            {isEditing && editRecordDraft ? (
+                              <div className="space-y-3">
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                                    상담기록 수정
+                                  </div>
+                                  <div className="flex gap-2">
+                                    <TapButton
+                                      type="button"
+                                      className="crm-btn-secondary px-3 py-1.5 text-xs"
+                                      onClick={() => {
+                                        setEditingRecordId(null);
+                                        setEditRecordDraft(null);
+                                      }}
+                                    >
+                                      취소
+                                    </TapButton>
+                                    <TapButton
+                                      type="button"
+                                      className="crm-btn-primary px-3 py-1.5 text-xs"
+                                      disabled={saving}
+                                      onClick={() => {
+                                        void (async () => {
+                                          if (!editRecordDraft || !profile) return;
+                                          if (!editRecordDraft.content.trim()) {
+                                            toast.error("상담 내용을 입력해 주세요.");
+                                            return;
+                                          }
+                                          setSaving(true);
+                                          try {
+                                            await patchConsultationApi(editRecordDraft);
+                                            setEditingRecordId(null);
+                                            setEditRecordDraft(null);
+                                            await refetchAfterSave(draft.id, draft);
+                                            toast.success("수정되었습니다.");
+                                          } catch (err) {
+                                            toast.error(err instanceof Error ? err.message : "수정 실패");
+                                          } finally {
+                                            setSaving(false);
+                                          }
+                                        })();
+                                      }}
+                                    >
+                                      저장
+                                    </TapButton>
+                                  </div>
+                                </div>
+                                <div className="grid gap-3 sm:grid-cols-2">
+                                  <Field label="상담일시">
+                                    <input
+                                      type="datetime-local"
+                                      className="crm-field"
+                                      value={toDateTimeLocalValue(editRecordDraft.occurredAt)}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        setEditRecordDraft((p) =>
+                                          p
+                                            ? {
+                                                ...p,
+                                                occurredAt: v ? new Date(v).toISOString() : p.occurredAt,
+                                                desiredProgressAt: v ? new Date(v).toISOString() : p.desiredProgressAt,
+                                              }
+                                            : p
+                                        );
+                                      }}
+                                    />
+                                  </Field>
+                                  <Field label="상담 방식">
+                                    <select
+                                      className="crm-field crm-field-select"
+                                      value={editRecordDraft.method}
+                                      onChange={(e) =>
+                                        setEditRecordDraft((p) =>
+                                          p
+                                            ? { ...p, method: e.target.value as ContactMethod }
+                                            : p
+                                        )
+                                      }
+                                    >
+                                      {(["전화", "문자", "카톡", "방문"] as const).map((m) => (
+                                        <option key={m} value={m}>
+                                          {m}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </Field>
+                                  <Field label="상담 담당자">
+                                    <select
+                                      className="crm-field crm-field-select"
+                                      value={editRecordDraft.counselor}
+                                      onChange={(e) =>
+                                        setEditRecordDraft((p) => (p ? { ...p, counselor: e.target.value } : p))
+                                      }
+                                      disabled={!canPickCounselor}
+                                    >
+                                      {Array.from(
+                                        new Set(
+                                          [...counselorSelectChoices, editRecordDraft.counselor].filter(
+                                            (x) => !!x && String(x).trim() !== ""
+                                          )
+                                        )
+                                      ).map((name) => (
+                                        <option key={name} value={name}>
+                                          {name}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </Field>
+                                  <Field label="중요도">
+                                    <select
+                                      className="crm-field crm-field-select"
+                                      value={editRecordDraft.importance}
+                                      onChange={(e) =>
+                                        setEditRecordDraft((p) =>
+                                          p
+                                            ? { ...p, importance: e.target.value as Importance }
+                                            : p
+                                        )
+                                      }
+                                    >
+                                      {(["높음", "보통", "낮음"] as const).map((x) => (
+                                        <option key={x} value={x}>
+                                          {x}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </Field>
+                                  <div className="sm:col-span-2">
+                                    <Field label="상담 내용">
+                                      <textarea
+                                        className="crm-field resize-none"
+                                        rows={4}
+                                        value={editRecordDraft.content}
+                                        onChange={(e) =>
+                                          setEditRecordDraft((p) => (p ? { ...p, content: e.target.value } : p))
+                                        }
+                                      />
+                                    </Field>
+                                  </div>
+                                  <Field label="고객 반응">
+                                    <input
+                                      className="crm-field"
+                                      value={editRecordDraft.reaction}
+                                      onChange={(e) =>
+                                        setEditRecordDraft((p) => (p ? { ...p, reaction: e.target.value } : p))
+                                      }
+                                    />
+                                  </Field>
+                                  <Field label="다음 연락 예정일">
+                                    <input
+                                      type="date"
+                                      className="crm-field"
+                                      value={toDateInputValue(editRecordDraft.nextContactAt)}
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+                                        setEditRecordDraft((p) =>
+                                          p
+                                            ? {
+                                                ...p,
+                                                nextContactAt: v
+                                                  ? new Date(`${v}T12:00:00`).toISOString()
+                                                  : p.nextContactAt,
+                                              }
+                                            : p
+                                        );
+                                      }}
+                                    />
+                                  </Field>
+                                  <div className="sm:col-span-2">
+                                    <Field label="메모">
+                                      <input
+                                        className="crm-field"
+                                        value={editRecordDraft.nextContactMemo}
+                                        onChange={(e) =>
+                                          setEditRecordDraft((p) =>
+                                            p ? { ...p, nextContactMemo: e.target.value } : p
+                                          )
+                                        }
+                                      />
+                                    </Field>
+                                  </div>
+                                </div>
                               </div>
-                              <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
-                                {r.occurredAt.slice(0, 10)} {r.occurredAt.slice(11, 16)}
-                              </div>
-                            </div>
-                            <span
-                              className={cn(
-                                "inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
-                                r.importance === "높음"
-                                  ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
-                                  : r.importance === "낮음"
-                                    ? "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-200"
-                                    : "border-zinc-200 bg-zinc-100 text-zinc-700 dark:border-zinc-700/60 dark:bg-zinc-800/30 dark:text-zinc-200"
-                              )}
-                            >
-                              중요도: {r.importance}
-                            </span>
-                          </div>
+                            ) : (
+                              <>
+                                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                  <div>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-50">
+                                        {r.method} · 작성자 {r.counselor}
+                                      </div>
+                                      {canMutateConsultations ? (
+                                        <div className="flex flex-wrap gap-1.5">
+                                          <TapButton
+                                            type="button"
+                                            className="rounded-md border border-zinc-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-zinc-700 hover:bg-zinc-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                                            onClick={() => {
+                                              setEditingRecordId(r.id);
+                                              setEditRecordDraft({ ...r });
+                                            }}
+                                          >
+                                            수정
+                                          </TapButton>
+                                          <TapButton
+                                            type="button"
+                                            className="rounded-md border border-rose-200 bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700 hover:bg-rose-100 dark:border-rose-500/30 dark:bg-rose-950/40 dark:text-rose-200"
+                                            onClick={() => {
+                                              void (async () => {
+                                                const ok = window.confirm("이 상담기록을 삭제하시겠습니까?");
+                                                if (!ok) return;
+                                                setSaving(true);
+                                                try {
+                                                  await deleteConsultationApi(r.id);
+                                                  await refetchAfterSave(draft.id, draft);
+                                                  toast.success("삭제되었습니다.");
+                                                } catch (err) {
+                                                  toast.error(err instanceof Error ? err.message : "삭제 실패");
+                                                } finally {
+                                                  setSaving(false);
+                                                }
+                                              })();
+                                            }}
+                                          >
+                                            삭제
+                                          </TapButton>
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                    <div className="mt-1 text-xs text-zinc-500 dark:text-zinc-400">
+                                      {r.occurredAt.slice(0, 10)} {r.occurredAt.slice(11, 16)}
+                                    </div>
+                                  </div>
+                                  <span
+                                    className={cn(
+                                      "inline-flex w-fit items-center rounded-full border px-2 py-0.5 text-xs font-semibold",
+                                      r.importance === "높음"
+                                        ? "border-rose-200 bg-rose-50 text-rose-700 dark:border-rose-500/30 dark:bg-rose-500/10 dark:text-rose-200"
+                                        : r.importance === "낮음"
+                                          ? "border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-500/30 dark:bg-slate-500/10 dark:text-slate-200"
+                                          : "border-zinc-200 bg-zinc-100 text-zinc-700 dark:border-zinc-700/60 dark:bg-zinc-800/30 dark:text-zinc-200"
+                                    )}
+                                  >
+                                    중요도: {r.importance}
+                                  </span>
+                                </div>
 
-                          <div className="mt-3 text-sm text-zinc-700 dark:text-zinc-200">
-                            {r.content}
-                          </div>
+                                <div className="mt-3 text-sm text-zinc-700 dark:text-zinc-200">{r.content}</div>
 
-                          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                            <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
-                              고객 반응: <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.reaction}</span>
-                            </div>
-                            <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
-                              다음 연락 예정일:{" "}
-                              <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.nextContactAt.slice(0, 10)}</span>
-                            </div>
-                            <div className="sm:col-span-2 rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
-                              메모: <span className="font-semibold text-zinc-900 dark:text-zinc-50">{r.nextContactMemo || "-"}</span>
-                            </div>
-                          </div>
-                        </li>
-                      ))
+                                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                                  <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
+                                    고객 반응:{" "}
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                                      {r.reaction}
+                                    </span>
+                                  </div>
+                                  <div className="rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
+                                    다음 연락 예정일:{" "}
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                                      {r.nextContactAt.slice(0, 10)}
+                                    </span>
+                                  </div>
+                                  <div className="sm:col-span-2 rounded-xl bg-zinc-50 px-3 py-2 text-xs text-zinc-600 dark:bg-zinc-900/30 dark:text-zinc-300">
+                                    메모:{" "}
+                                    <span className="font-semibold text-zinc-900 dark:text-zinc-50">
+                                      {r.nextContactMemo || "-"}
+                                    </span>
+                                  </div>
+                                </div>
+                              </>
+                            )}
+                          </li>
+                        );
+                      })
                   )}
                 </ul>
 
@@ -1608,6 +2018,27 @@ export default function LeadDetailModal({
                   견적은 시간순으로 표시되며, <span className="font-semibold text-[var(--crm-blue)]">최신 견적</span>
                   을 강조합니다. 계약 탭의 월 납입금과는 별도로 보관됩니다.
                 </p>
+                <div className="max-w-md">
+                  <Field label="연간 주행거리">
+                    <select
+                      value={draft.annualMileage ?? ""}
+                      onChange={(e) =>
+                        setDraft((p) => ({
+                          ...p,
+                          annualMileage: e.target.value === "" ? null : e.target.value,
+                        }))
+                      }
+                      className="crm-field crm-field-select"
+                    >
+                      <option value="">선택</option>
+                      {ANNUAL_MILEAGE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                </div>
                 <ul className="space-y-3">
                   {sortedQuotes.length === 0 ? (
                     <li className="rounded-xl border border-dashed border-zinc-200 p-6 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-400">
@@ -2045,6 +2476,12 @@ export default function LeadDetailModal({
                 draft={draft}
                 saving={saving}
                 onSave={(nextContract, nextStatus) => void saveContract(nextContract, nextStatus)}
+                onAnnualMileageChange={(v) =>
+                  setDraft((p) => ({
+                    ...p,
+                    annualMileage: v,
+                  }))
+                }
               />
             ) : null}
 
@@ -2078,10 +2515,12 @@ function ContractTab({
   draft,
   saving = false,
   onSave,
+  onAnnualMileageChange,
 }: {
   draft: Lead;
   saving?: boolean;
   onSave: (nextContract: ContractInfo | null, nextStatus?: CounselingStatus) => void;
+  onAnnualMileageChange: (value: string | null) => void;
 }) {
   const [mode, setMode] = useState<"view" | "edit">("edit");
   useEffect(() => {
@@ -2212,6 +2651,26 @@ function ContractTab({
 
       <div className="rounded-lg border border-zinc-200/90 bg-zinc-50/90 px-3 py-2 text-xs text-zinc-600 dark:border-zinc-700 dark:bg-zinc-900/40 dark:text-zinc-400">
         계약 정보를 입력하고 저장할 수 있습니다.
+      </div>
+
+      <div className="max-w-md">
+        <Field label="연간 주행거리">
+          <select
+            value={draft.annualMileage ?? ""}
+            onChange={(e) =>
+              onAnnualMileageChange(e.target.value === "" ? null : e.target.value)
+            }
+            className="crm-field crm-field-select"
+            disabled={fieldDisabled}
+          >
+            <option value="">선택</option>
+            {ANNUAL_MILEAGE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        </Field>
       </div>
 
       {shouldPersistContractAmountSnapshot(draft.counselingStatus) && draft.contract && !hasLockedMonetarySnapshot(local) ? (
