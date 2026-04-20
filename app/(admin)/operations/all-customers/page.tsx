@@ -20,6 +20,7 @@ import {
   formatWonForExcel,
   todayYmdKst,
 } from "../../_lib/excelExport";
+import { assertLeadExportAllowed } from "@/app/_lib/verifiedLeadExport";
 import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
 import { effectiveContractNetProfitForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
@@ -299,9 +300,19 @@ export default function AllCustomersOperationalPage() {
     [openLeadById]
   );
 
-  const onDownloadExcel = useCallback(() => {
+  const onDownloadExcel = useCallback(async () => {
     if (!filteredLeads.length) {
       toast.error("보낼 데이터가 없습니다.");
+      return;
+    }
+    const fname = `전체상담고객_${todayYmdKst()}.xlsx`;
+    const gate = await assertLeadExportAllowed({
+      leadIds: filteredLeads.map((l) => l.id),
+      exportType: "leads",
+      fileName: fname,
+    });
+    if (!gate.ok) {
+      toast.error(gate.message);
       return;
     }
     const rows = filteredLeads.map((l) => {

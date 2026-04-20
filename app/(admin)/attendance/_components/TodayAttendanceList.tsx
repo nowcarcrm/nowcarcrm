@@ -44,6 +44,7 @@ type Props = {
 
 function statusToPatch(status: string): AttendancePatchStatus {
   if (status === "\uC815\uC0C1 \uCD9C\uADFC") return "normal";
+  if (status === "\uC9C0\uAC01") return "late";
   if (status === "\uC5F0\uCC28") return "annual_leave";
   if (status === "\uBC18\uCC28") return "half_day";
   if (status === SICK) return "sick_leave";
@@ -54,6 +55,7 @@ function statusToPatch(status: string): AttendancePatchStatus {
 
 const PATCH_OPTIONS: { v: AttendancePatchStatus; label: string }[] = [
   { v: "normal", label: "\uC815\uC0C1\uCD9C\uADFC" },
+  { v: "late", label: "\uC9C0\uAC01" },
   { v: "annual_leave", label: "\uC5F0\uCC28" },
   { v: "half_day", label: "\uBC18\uCC28" },
   { v: "sick_leave", label: SICK },
@@ -160,7 +162,8 @@ export default function TodayAttendanceList({
                   }
                 }
 
-                const patchValue = statusToPatch(dbStatus || status);
+                const patchValue = statusToPatch(dbStatus);
+                const showLateBadge = checkInValue && !isSuperAdmin && isLateAfter0930(checkInValue);
                 const showPatch = canPatchStatus;
                 return (
                   <tr key={row.id} className="border-t border-zinc-100 hover:bg-zinc-50/70">
@@ -168,19 +171,24 @@ export default function TodayAttendanceList({
                     <td className="px-3 py-2 text-zinc-600">{meta?.rank || "-"} / {meta?.teamName || "-"}</td>
                     <td className="px-3 py-2">
                       {showPatch ? (
-                        <select
-                          className="max-w-[200px] rounded border border-zinc-300 px-2 py-1 text-xs"
-                          value={patchValue}
-                          onChange={(e) =>
-                            void onSelectChange(row, e.target.value as AttendancePatchStatus)
-                          }
-                        >
-                          {PATCH_OPTIONS.map((o) => (
-                            <option key={o.v} value={o.v}>
-                              {o.label}
-                            </option>
-                          ))}
-                        </select>
+                        <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
+                          {showLateBadge ? <AttendanceStatusBadge status="\uC9C0\uAC01" /> : null}
+                          <select
+                            className="max-w-[220px] rounded border border-zinc-300 px-2 py-1 text-xs"
+                            value={patchValue}
+                            onChange={(e) =>
+                              void onSelectChange(row, e.target.value as AttendancePatchStatus)
+                            }
+                          >
+                            {PATCH_OPTIONS.map((o) => (
+                              <option key={o.v} value={o.v}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      ) : showLateBadge ? (
+                        <AttendanceStatusBadge status="\uC9C0\uAC01" />
                       ) : (
                         <AttendanceStatusBadge status={status} />
                       )}

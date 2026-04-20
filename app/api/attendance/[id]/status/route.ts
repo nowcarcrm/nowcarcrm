@@ -8,12 +8,13 @@ function getBearerToken(req: Request) {
   return auth.slice(7).trim();
 }
 
-type PatchStatus = "normal" | "annual_leave" | "half_day" | "sick_leave" | "field_work";
+type PatchStatus = "normal" | "late" | "annual_leave" | "half_day" | "sick_leave" | "field_work";
 
 /** DB/UI status strings (matches attendance page & spec) */
 function toAttendanceStatus(patch: PatchStatus): string {
   if (patch === "field_work") return "\uC678\uADFC";
   if (patch === "normal") return "\uC815\uC0C1 \uCD9C\uADFC";
+  if (patch === "late") return "\uC9C0\uAC01";
   if (patch === "annual_leave") return "\uC5F0\uCC28";
   if (patch === "half_day") return "\uBC18\uCC28";
   return "\uBCD1\uAC00";
@@ -78,12 +79,12 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
 
     const body = (await req.json()) as { status?: string; userId?: string; date?: string };
     const raw = body.status;
-    const allowed: PatchStatus[] = ["normal", "annual_leave", "half_day", "sick_leave", "field_work"];
+    const allowed: PatchStatus[] = ["normal", "late", "annual_leave", "half_day", "sick_leave", "field_work"];
     if (!raw || !allowed.includes(raw as PatchStatus)) {
       return NextResponse.json(
         {
           error:
-            "status\uB294 normal | annual_leave | half_day | sick_leave | field_work \uC911 \uD558\uB098\uC5EC\uC57C \uD569\uB2C8\uB2E4.",
+            "status\uB294 normal | late | annual_leave | half_day | sick_leave | field_work \uC911 \uD558\uB098\uC5EC\uC57C \uD569\uB2C8\uB2E4.",
         },
         { status: 400 }
       );
@@ -99,16 +100,18 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
       if (!userId || !date) {
         return NextResponse.json({ error: "\uAC00\uC0C1 \uD589 \uC218\uC815\uC5D0\uB294 userId/date\uAC00 \uD544\uC694\uD569\uB2C8\uB2E4." }, { status: 400 });
       }
+      const insertBody: Record<string, unknown> = {
+        user_id: userId,
+        date,
+        work_date: date,
+        status: nextStatus,
+        is_holiday: false,
+        is_weekend: isWeekendDateKey(date),
+      };
+      if (patchStatus === "late") insertBody.checkin_status = "\uC9C0\uAC01";
       const { data: inserted, error: insErr } = await supabaseAdmin
         .from("attendance")
-        .insert({
-          user_id: userId,
-          date,
-          work_date: date,
-          status: nextStatus,
-          is_holiday: false,
-          is_weekend: isWeekendDateKey(date),
-        })
+        .insert(insertBody)
         .select("id")
         .single();
       if (insErr) throw new Error(insErr.message);
@@ -127,7 +130,11 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         );
       }
       prev = (row as { status?: string | null }).status ?? null;
-      const { error: updErr } = await supabaseAdmin.from("attendance").update({ status: nextStatus }).eq("id", id);
+      const latePatch =
+        patchStatus === "late"
+          ? { status: nextStatus, checkin_status: "\uC9C0\uAC01" as const }
+          : { status: nextStatus };
+      const { error: updErr } = await supabaseAdmin.from("attendance").update(latePatch).eq("id", id);
       if (updErr) throw new Error(updErr.message);
     }
 

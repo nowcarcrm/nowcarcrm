@@ -27,6 +27,7 @@ function cn(...parts: Array<string | false | null | undefined>) {
 export default function NoticesPage() {
   const { profile, loading: authLoading } = useAuth();
   const canWriteNotice = profile?.role === "super_admin";
+  const canDeleteNotice = profile?.role === "super_admin";
   const [notices, setNotices] = useState<Notice[]>([]);
   const [loading, setLoading] = useState(true);
   const [authorById, setAuthorById] = useState<Map<string, string>>(new Map());
@@ -36,7 +37,7 @@ export default function NoticesPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [list, users] = await Promise.all([listNotices(200), listActiveUsers()]);
+      const [list, users] = await Promise.all([listNotices(5000), listActiveUsers()]);
       setNotices(list);
       const m = new Map<string, string>();
       for (const u of users) {
@@ -73,7 +74,7 @@ export default function NoticesPage() {
   }
 
   async function handleDelete(n: Notice) {
-    if (!canWriteNotice) return;
+    if (!canDeleteNotice) return;
     const ok = window.confirm(`「${n.title}」공지를 삭제할까요?`);
     if (!ok) return;
     try {
@@ -150,22 +151,26 @@ export default function NoticesPage() {
                       <span>{formatNoticeDate(n.createdAt)}</span>
                     </div>
                   </Link>
-                  {canWriteNotice ? (
+                  {canWriteNotice || canDeleteNotice ? (
                     <div className="flex shrink-0 gap-2 sm:flex-col sm:items-stretch">
-                      <button
-                        type="button"
-                        onClick={() => openEdit(n)}
-                        className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[14px] font-semibold text-slate-800 hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
-                      >
-                        수정
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void handleDelete(n)}
-                        className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-[14px] font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-500/40 dark:bg-rose-950/30 dark:text-rose-200"
-                      >
-                        삭제
-                      </button>
+                      {canWriteNotice ? (
+                        <button
+                          type="button"
+                          onClick={() => openEdit(n)}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-[14px] font-semibold text-slate-800 hover:bg-slate-50 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-100"
+                        >
+                          수정
+                        </button>
+                      ) : null}
+                      {canDeleteNotice ? (
+                        <button
+                          type="button"
+                          onClick={() => void handleDelete(n)}
+                          className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-[14px] font-semibold text-rose-700 hover:bg-rose-50 dark:border-rose-500/40 dark:bg-rose-950/30 dark:text-rose-200"
+                        >
+                          삭제
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

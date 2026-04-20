@@ -11,7 +11,7 @@ export async function getRequesterFromToken(req: Request) {
 
   const { data: requester, error: reqErr } = await supabaseAdmin
     .from("users")
-    .select("id, role, approval_status, auth_user_id, name")
+    .select("id, role, approval_status, auth_user_id, name, rank, team_name, email")
     .eq("auth_user_id", authData.user.id)
     .maybeSingle();
   if (reqErr || !requester) return { error: "직원 계정 확인에 실패했습니다.", status: 403 as const, requester: null };
@@ -23,6 +23,14 @@ export async function getRequesterFromToken(req: Request) {
   return {
     error: null,
     status: 200 as const,
-    requester: requester as { id: string; role: string; name?: string | null; auth_user_id?: string | null },
+    requester: requester as {
+      id: string;
+      role: string;
+      name?: string | null;
+      auth_user_id?: string | null;
+      rank?: string | null;
+      team_name?: string | null;
+      email?: string | null;
+    },
   };
 }

@@ -138,6 +138,7 @@ export async function deleteLeaveRequest(id: string): Promise<void> {
 
 export type AttendancePatchStatus =
   | "normal"
+  | "late"
   | "annual_leave"
   | "half_day"
   | "sick_leave"

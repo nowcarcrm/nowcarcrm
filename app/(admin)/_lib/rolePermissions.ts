@@ -112,6 +112,18 @@ export function canProxyLeaveRequestByRank(rank: string | null | undefined): boo
   return r === "팀장" || r === "본부장" || r === "대표" || r === "총괄대표";
 }
 
+/** 고객(리드) 삭제: 팀장·본부장·대표·총괄대표 및 총괄대표(super_admin) 계정 */
+export function canDeleteLeadByRank(rank: string | null | undefined): boolean {
+  const r = (rank ?? "").trim();
+  return r === "팀장" || r === "본부장" || r === "대표" || r === "총괄대표";
+}
+
+export function canDeleteLeads(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  if (isSuperAdmin(user)) return true;
+  return canDeleteLeadByRank(effectiveRank(user));
+}
+
 export function isTeamLeader(user: MaybeUserLike | null | undefined): boolean {
   if (!user) return false;
   return effectiveRole(user) === "admin" && effectiveRank(user) === "팀장" && !!normalizeUserTeam(user.team_name);

@@ -337,8 +337,9 @@ export default function DashboardPage() {
                 : "본인에게 배정된 고객만 집계합니다. 오늘 연락·부재 정리·최근 유입을 우선 확인해 보세요."}
             </p>
             <div className="mt-6 flex flex-wrap gap-2">
-              <Link href="/leads/new-db?create=1" className="crm-pill-primary">
-                고객 추가
+              <Link href="/leads/new-db?create=1" className="crm-pill-primary inline-flex items-baseline gap-2">
+                <span>고객 추가</span>
+                <span className="text-[11px] font-medium opacity-80">Ctrl+B</span>
               </Link>
               <Link href="/leads/new-db" className="crm-pill-secondary">
                 고객 목록

@@ -9,6 +9,7 @@ import {
   listAttendanceByMonth,
   listTodayAttendanceByUserIds,
   mergeTodayAttendanceForActiveStaff,
+  syncAutomaticLateForAttendanceRowsOnDate,
   type AttendanceRow,
 } from "../_lib/attendanceSupabase";
 import {
@@ -237,12 +238,23 @@ export default function AttendancePage() {
   async function refresh() {
     if (!currentUserId) return;
     const allowedIds = userOptions.map((u) => u.id);
-    const [t, rawList, monthList] = await Promise.all([
+    const [t0, monthList] = await Promise.all([
       getTodayAttendance(currentUserId, todayDate),
-      canViewAll || canViewTeam ? listTodayAttendanceByUserIds(allowedIds) : Promise.resolve([]),
       canViewMonthlyAttendance ? listAttendanceByMonth(selectedMonth, allowedIds) : Promise.resolve([]),
     ]);
-    setToday(t);
+    let rawForSync: AttendanceRow[] = [];
+    if (canViewAll || canViewTeam) {
+      rawForSync = await listTodayAttendanceByUserIds(allowedIds);
+    } else {
+      rawForSync = await listTodayAttendanceByUserIds([currentUserId]);
+    }
+    const roleMap = new Map(userOptions.map((u) => [u.id, u.role ?? null]));
+    await syncAutomaticLateForAttendanceRowsOnDate(todayDate, rawForSync, roleMap);
+    const [t, rawList] = await Promise.all([
+      getTodayAttendance(currentUserId, todayDate),
+      canViewAll || canViewTeam ? listTodayAttendanceByUserIds(allowedIds) : listTodayAttendanceByUserIds([currentUserId]),
+    ]);
+    setToday(t ?? t0);
     const list =
       canViewAll || canViewTeam
         ? mergeTodayAttendanceForActiveStaff({
@@ -303,11 +315,7 @@ export default function AttendancePage() {
         } else if (status === "결근") item.absent += 1;
         else if (status === "외근") item.external += 1;
       }
-      setMonthlyRows(
-        Array.from(perUser.values())
-          .filter((r) => r.total > 0)
-          .sort((a, b) => a.name.localeCompare(b.name, "ko"))
-      );
+      setMonthlyRows(Array.from(perUser.values()).sort((a, b) => a.name.localeCompare(b.name, "ko")));
     }
   }
 

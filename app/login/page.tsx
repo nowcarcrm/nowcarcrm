@@ -7,7 +7,7 @@ import { useRouter } from "next/navigation";
 import { motion, useReducedMotion } from "framer-motion";
 import toast from "react-hot-toast";
 import { signInWithEmailAndResolveProfile } from "../(admin)/_lib/authSupabase";
-import { getSupabaseAuthTargetInfo } from "../(admin)/_lib/supabaseClient";
+import { getSupabaseAuthTargetInfo, supabase } from "../(admin)/_lib/supabaseClient";
 import { authErrorMessageKo, enhanceInvalidLoginWithDiagnose } from "../_lib/authErrorMessages";
 import { NowcarLoginShell } from "../_components/auth/NowcarLoginLayout";
 import { useAuth } from "../_components/auth/AuthProvider";
@@ -46,16 +46,53 @@ export default function LoginPage() {
     }
   }, [profile, router]);
 
+  function failureReasonFromError(err: unknown): string {
+    const anyErr = err as { message?: string; status?: number; code?: string };
+    const msg = (anyErr?.message ?? "").toLowerCase();
+    const code = (anyErr?.code ?? "").toLowerCase();
+    if (code === "user_not_found" || msg.includes("user not found") || msg.includes("invalid login credentials")) {
+      return "존재하지 않는 계정 또는 잘못된 비밀번호";
+    }
+    if (msg.includes("invalid") && msg.includes("password")) {
+      return "잘못된 비밀번호";
+    }
+    if (msg.includes("crm 프로필") || msg.includes("프로필")) {
+      return "CRM 프로필 확인 실패";
+    }
+    if (msg.includes("승인") || msg.includes("approval")) {
+      return "미승인 계정";
+    }
+    if (msg.includes("비활성") || msg.includes("중지")) {
+      return "사용 중지된 계정";
+    }
+    return anyErr?.message?.slice(0, 200) || "로그인 실패";
+  }
+
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
     setLoading(true);
     clearFormError();
     setDebugInfo(null);
+    const emailNorm = email.trim().toLowerCase();
     try {
-      const nextProfile = await signInWithEmailAndResolveProfile(
-        email.trim().toLowerCase(),
-        password
-      );
+      const lockRes = await fetch(`/api/auth/login-lock?email=${encodeURIComponent(emailNorm)}`);
+      if (lockRes.status === 423) {
+        const j = (await lockRes.json().catch(() => ({}))) as { message?: string };
+        setError(j.message ?? "로그인이 일시 제한되었습니다.");
+        toast.error(j.message ?? "로그인이 일시 제한되었습니다.", { duration: 5000 });
+        return;
+      }
+      const nextProfile = await signInWithEmailAndResolveProfile(emailNorm, password);
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      if (session?.access_token) {
+        await fetch("/api/auth/login-log", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ success: true, accessToken: session.access_token }),
+        }).catch(() => {});
+      }
       applySignedInProfile(nextProfile);
       router.replace(getPostLoginPath(nextProfile));
     } catch (err) {
@@ -95,6 +132,15 @@ export default function LoginPage() {
       const message = enhanceInvalidLoginWithDiagnose(raw, debug.authDiagnose);
       setError(message);
       toast.error("로그인에 실패했습니다. 이메일·비밀번호를 확인해 주세요.", { duration: 4000 });
+      void fetch("/api/auth/login-log", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          success: false,
+          email: emailNorm,
+          failureReason: failureReasonFromError(err),
+        }),
+      }).catch(() => {});
     } finally {
       setLoading(false);
     }

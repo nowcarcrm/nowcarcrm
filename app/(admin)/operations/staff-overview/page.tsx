@@ -27,6 +27,7 @@ import {
   formatWonForExcel,
   todayYmdKst,
 } from "../../_lib/excelExport";
+import { assertLeadExportAllowed } from "@/app/_lib/verifiedLeadExport";
 import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
 import { effectiveContractNetProfitForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
@@ -364,12 +365,22 @@ export default function StaffOverviewPage() {
   }, [filteredOverviewRows]);
 
   const downloadStaffLeadsExcel = useCallback(
-    (userId: string, displayName: string, list: Lead[]) => {
+    async (userId: string, displayName: string, list: Lead[]) => {
       if (!list.length) {
         toast.error("보낼 고객이 없습니다.");
         return;
       }
       const safeName = displayName.replace(/[<>:"/\\|?*\s]+/g, "_").slice(0, 40) || "직원";
+      const fname = `${safeName}_고객목록_${todayYmdKst()}.xlsx`;
+      const gate = await assertLeadExportAllowed({
+        leadIds: list.map((l) => l.id),
+        exportType: "leads",
+        fileName: fname,
+      });
+      if (!gate.ok) {
+        toast.error(gate.message);
+        return;
+      }
       const rows = [...list]
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
         .map((l) => {
@@ -574,7 +585,7 @@ export default function StaffOverviewPage() {
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
-                              downloadStaffLeadsExcel(r.userId, r.name, rowLeads);
+                              void downloadStaffLeadsExcel(r.userId, r.name, rowLeads);
                             }}
                             className="inline-flex rounded-lg border border-emerald-200 bg-emerald-50 px-2 py-1 text-[11px] font-semibold text-emerald-800 hover:bg-emerald-100 dark:border-emerald-500/30 dark:bg-emerald-950/40 dark:text-emerald-200"
                           >
@@ -612,7 +623,7 @@ export default function StaffOverviewPage() {
               <button
                 type="button"
                 onClick={() =>
-                  downloadStaffLeadsExcel(managerUserIdFilter, selectedName, leadsForSelected)
+                  void downloadStaffLeadsExcel(managerUserIdFilter, selectedName, leadsForSelected)
                 }
                 disabled={!leadsForSelected.length}
                 className="inline-flex items-center rounded-xl border border-emerald-600 bg-emerald-600 px-4 py-2 text-[13px] font-semibold text-white shadow-sm transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-40"

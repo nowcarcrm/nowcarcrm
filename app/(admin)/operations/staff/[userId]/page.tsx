@@ -21,6 +21,7 @@ import {
   formatWonForExcel,
   todayYmdKst,
 } from "../../../_lib/excelExport";
+import { assertLeadExportAllowed } from "@/app/_lib/verifiedLeadExport";
 import { lastContactReferenceIso } from "../../../_lib/leaseCrmLogic";
 import { effectiveContractNetProfitForMetrics } from "../../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../../_lib/usersSupabase";
@@ -186,12 +187,22 @@ export default function StaffCustomerDetailPage() {
     [openLeadById]
   );
 
-  const onExcel = useCallback(() => {
+  const onExcel = useCallback(async () => {
     if (!sorted.length) {
       toast.error("보낼 고객이 없습니다.");
       return;
     }
     const safeName = staffName.replace(/[<>:"/\\|?*\s]+/g, "_").slice(0, 40) || "직원";
+    const fname = `${safeName}_고객목록_${todayYmdKst()}.xlsx`;
+    const gate = await assertLeadExportAllowed({
+      leadIds: sorted.map((l) => l.id),
+      exportType: "leads",
+      fileName: fname,
+    });
+    if (!gate.ok) {
+      toast.error(gate.message);
+      return;
+    }
     const rows = sorted.map((l) => {
       const consult = lastConsultByLead.get(l.id);
       const recent =
