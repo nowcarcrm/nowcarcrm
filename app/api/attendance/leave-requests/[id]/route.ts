@@ -52,6 +52,25 @@ export async function DELETE(
     const { id } = await params;
     if (!id?.trim()) return NextResponse.json({ error: "요청 ID가 필요합니다." }, { status: 400 });
 
+    const { data: row, error: rowErr } = await supabaseAdmin
+      .from("leave_requests")
+      .select("id,user_id,status")
+      .eq("id", id)
+      .maybeSingle();
+    if (rowErr) throw new Error(rowErr.message);
+    if (!row) return NextResponse.json({ error: "요청을 찾을 수 없습니다." }, { status: 404 });
+
+    const isOwner = String(row.user_id) === String(requester.id);
+    const isCancelled = row.status === "cancelled";
+    const adminDelete = canDeleteByRank(requester.rank);
+
+    if (!(adminDelete || (isOwner && isCancelled))) {
+      return NextResponse.json(
+        { error: "취소된 본인 요청만 삭제할 수 있거나, 본부장 이상만 삭제할 수 있습니다." },
+        { status: 403 }
+      );
+    }
+
     const { error: deleteErr } = await supabaseAdmin.from("leave_requests").delete().eq("id", id);
     if (deleteErr) throw new Error(deleteErr.message);
     return NextResponse.json({ ok: true });

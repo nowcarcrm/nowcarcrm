@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
+import { eachDayInclusive } from "@/app/(admin)/_lib/leaveDateRange";
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
@@ -26,20 +27,6 @@ async function getRequester(authUserId: string) {
     .maybeSingle();
   if (legacyErr) throw new Error(legacyErr.message);
   return legacy;
-}
-
-function eachDayInclusive(from: string, to: string): string[] {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const [y1, m1, d1] = from.split("-").map(Number);
-  const [y2, m2, d2] = to.split("-").map(Number);
-  const out: string[] = [];
-  const cur = new Date(y1, m1 - 1, d1);
-  const end = new Date(y2, m2 - 1, d2);
-  while (cur.getTime() <= end.getTime()) {
-    out.push(`${cur.getFullYear()}-${pad(cur.getMonth() + 1)}-${pad(cur.getDate())}`);
-    cur.setDate(cur.getDate() + 1);
-  }
-  return out;
 }
 
 function leaveTypeToAttendanceStatus(requestType: string): string {
@@ -149,7 +136,9 @@ export async function POST(
       return NextResponse.json({ error: "요청 대상 직원을 찾을 수 없습니다." }, { status: 404 });
     }
     const remainingAnnualLeave = Number(targetUser.remaining_annual_leave ?? 12);
-    if (requestUsedAmount > 0 && remainingAnnualLeave < requestUsedAmount) {
+    const rtForBalance = String(targetRow.request_type ?? "annual");
+    const deductsAnnualBalance = rtForBalance === "annual" || rtForBalance === "half";
+    if (deductsAnnualBalance && requestUsedAmount > 0 && remainingAnnualLeave < requestUsedAmount) {
       return NextResponse.json({ error: "승인 시 잔여 연차가 부족합니다." }, { status: 400 });
     }
 
@@ -174,7 +163,7 @@ export async function POST(
     }
 
     let balanceUpdated = false;
-    if (requestUsedAmount > 0) {
+    if (deductsAnnualBalance && requestUsedAmount > 0) {
       const { error: leaveUpdateErr } = await supabaseAdmin
         .from("users")
         .update({ remaining_annual_leave: Math.max(0, remainingAnnualLeave - requestUsedAmount) })
@@ -206,7 +195,7 @@ export async function POST(
           approved_at: null,
         })
         .eq("id", id);
-      if (balanceUpdated && requestUsedAmount > 0) {
+      if (balanceUpdated && deductsAnnualBalance && requestUsedAmount > 0) {
         await supabaseAdmin
           .from("users")
           .update({ remaining_annual_leave: remainingAnnualLeave })

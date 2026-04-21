@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
 import { canProxyLeaveRequestByRank } from "@/app/(admin)/_lib/rolePermissions";
+import { countInclusiveCalendarDays } from "@/app/(admin)/_lib/leaveDateRange";
 import { filterUsersByScreenScope, getAttendanceScope, isProtectedExecutiveUser } from "@/app/(admin)/_lib/screenScopes";
 import type { UserRow as StaffUserRow } from "@/app/(admin)/_lib/usersSupabase";
 
@@ -248,11 +249,12 @@ export async function GET(req: Request) {
       const breakdownMap = new Map<string, { annual: number; half: number; sick: number }>();
       for (const row of usageRows) {
         const current = breakdownMap.get(row.user_id) ?? { annual: 0, half: 0, sick: 0 };
-        if (row.request_type === "half") current.half += 1;
-        else if (row.request_type === "sick") current.sick += 1;
+        const amt = Number(row.used_amount ?? 0);
+        if (row.request_type === "half") current.half += amt;
+        else if (row.request_type === "sick") current.sick += amt;
         else if (row.request_type === "field_work") {
-          /* field_work: no annual quota; omit from annual/half/sick counts */
-        } else current.annual += 1;
+          /* field_work: 연차/병가 집계 제외 */
+        } else current.annual += amt;
         breakdownMap.set(row.user_id, current);
       }
       visibleAnnualLeaveBalances = filteredTargets
@@ -381,8 +383,15 @@ export async function POST(req: Request) {
     const rawTarget = (body.targetUserId ?? "").trim();
     const isProxyRequest = rawTarget.length > 0 && rawTarget !== requester.id;
 
-    const usedAmount =
-      requestType === "half" ? 0.5 : requestType === "sick" || requestType === "field_work" ? 0 : 1;
+    const dayCount = countInclusiveCalendarDays(fromDate, toDate);
+    if (dayCount <= 0) {
+      return NextResponse.json({ error: "유효한 기간이 아닙니다." }, { status: 400 });
+    }
+    let usedAmount = 0;
+    if (requestType === "annual") usedAmount = dayCount;
+    else if (requestType === "half") usedAmount = dayCount * 0.5;
+    else if (requestType === "sick") usedAmount = dayCount;
+    else usedAmount = 0;
 
     if (isProxyRequest && !canProxyLeaveRequestByRank(requester.rank)) {
       return NextResponse.json({ error: "대신 요청은 팀장·본부장·대표·총괄대표만 가능합니다." }, { status: 403 });
@@ -414,7 +423,8 @@ export async function POST(req: Request) {
       .maybeSingle();
     if (targetLeaveUserErr) throw new Error(targetLeaveUserErr.message);
     const remainingAnnualLeave = Number(targetLeaveUser?.remaining_annual_leave ?? ANNUAL_LEAVE_QUOTA);
-    if (usedAmount > 0 && remainingAnnualLeave < usedAmount) {
+    const needsAnnualBalance = requestType === "annual" || requestType === "half";
+    if (needsAnnualBalance && usedAmount > 0 && remainingAnnualLeave < usedAmount) {
       return NextResponse.json({ error: "잔여 연차가 부족합니다." }, { status: 400 });
     }
 

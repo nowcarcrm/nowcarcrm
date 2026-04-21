@@ -108,6 +108,8 @@ export default function AttendancePage() {
   const [myLeaveRequests, setMyLeaveRequests] = useState<LeaveRequestItem[]>([]);
   const [pendingLeaveRequests, setPendingLeaveRequests] = useState<LeaveRequestItem[]>([]);
   const [selectedMonth, setSelectedMonth] = useState(getCurrentMonthKey());
+  /** 월간 근태 상세 테이블 전용 조회 연월 (요약 카드의 selectedMonth와 독립) */
+  const [detailListMonth, setDetailListMonth] = useState(getCurrentMonthKey());
   const [monthlyRows, setMonthlyRows] = useState<
     Array<{
       userId: string;
@@ -242,9 +244,12 @@ export default function AttendancePage() {
   async function refresh() {
     if (!currentUserId) return;
     const allowedIds = userOptions.map((u) => u.id);
-    const [t0, monthList] = await Promise.all([
+    const monthListSummary = canViewMonthlyAttendance ? listAttendanceByMonth(selectedMonth, allowedIds) : Promise.resolve([]);
+    const monthListDetail = canViewMonthlyAttendance ? listAttendanceByMonth(detailListMonth, allowedIds) : Promise.resolve([]);
+    const [t0, summaryList, detailList] = await Promise.all([
       getTodayAttendance(currentUserId, todayDate),
-      canViewMonthlyAttendance ? listAttendanceByMonth(selectedMonth, allowedIds) : Promise.resolve([]),
+      monthListSummary,
+      monthListDetail,
     ]);
     let rawForSync: AttendanceRow[] = [];
     if (canViewAll || canViewTeam) {
@@ -268,7 +273,7 @@ export default function AttendancePage() {
           })
         : rawList;
     setRows(list);
-    setMonthlyDetailRows(canViewMonthlyAttendance ? monthList : []);
+    setMonthlyDetailRows(canViewMonthlyAttendance ? detailList : []);
     if (canViewMonthlyAttendance) {
       const perUser = new Map<
         string,
@@ -301,7 +306,7 @@ export default function AttendancePage() {
           external: 0,
         });
       }
-      for (const row of monthList) {
+      for (const row of summaryList) {
         const item = perUser.get(row.user_id);
         if (!item) continue;
         item.total += 1;
@@ -340,7 +345,7 @@ export default function AttendancePage() {
     window.localStorage.setItem(CURRENT_USER_KEY, currentUserId);
     void refresh();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUserId, canViewAll, canViewTeam, canViewMonthlyAttendance, selectedMonth, userOptions]);
+  }, [currentUserId, canViewAll, canViewTeam, canViewMonthlyAttendance, selectedMonth, detailListMonth, userOptions]);
 
   async function onCheckIn() {
     setLoading(true);
@@ -425,6 +430,18 @@ export default function AttendancePage() {
       await refreshLeaveRequests();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "취소에 실패했습니다.");
+    }
+  }
+
+  async function onRemoveCancelledMyRequest(id: string) {
+    const ok = window.confirm("목록에서 제거하시겠습니까?");
+    if (!ok) return;
+    try {
+      await deleteLeaveRequest(id);
+      toast.success("목록에서 삭제했습니다.");
+      await refreshLeaveRequests();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "삭제에 실패했습니다.");
     }
   }
 
@@ -517,6 +534,7 @@ export default function AttendancePage() {
             requests={myLeaveRequests}
             canCancel={canApproveLeave}
             onCancel={(id) => void onCancelLeaveRequest(id)}
+            onRemoveCancelled={(id) => void onRemoveCancelledMyRequest(id)}
           />
 
           {canApproveLeave ? (
@@ -544,6 +562,7 @@ export default function AttendancePage() {
               onStatusPatched={() => void refresh()}
               approvedLeaveTodayByUserId={approvedLeaveTodayByUserIdMap}
               pendingFieldWorkTodayUserIds={pendingFieldWorkTodayIds}
+              memberDetailEnabled={canViewAll || canViewTeam}
             />
           ) : null}
 
@@ -555,11 +574,12 @@ export default function AttendancePage() {
                 onChangeMonth={setSelectedMonth}
               />
               <MonthAttendanceDetail
-                month={selectedMonth}
+                detailMonth={detailListMonth}
                 rows={monthlyDetailRows}
                 users={monthDetailUsers}
                 canPatch={canPatchAttendance}
                 onPatched={() => void refresh()}
+                onApplyDetailMonth={(ym) => setDetailListMonth(ym)}
               />
             </>
           ) : null}

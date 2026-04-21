@@ -1,5 +1,6 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import type { AttendanceRow } from "../../_lib/attendanceSupabase";
 import {
   type AttendancePatchStatus,
@@ -42,6 +43,8 @@ type Props = {
   approvedLeaveTodayByUserId?: Map<string, LeaveRequestType>;
   /** 해당일 대기 중인 외근 요청이 있는 직원 id */
   pendingFieldWorkTodayUserIds?: string[];
+  /** 잔여 연차 행 클릭 시 /attendance/member/:userId 이동 */
+  memberDetailEnabled?: boolean;
 };
 
 /** DB에 리터럴 "\\uXXXX"로 저장된 레거시 값 → 표시·매칭용 한글로 복원 */
@@ -100,7 +103,9 @@ export default function TodayAttendanceList({
   onStatusPatched,
   approvedLeaveTodayByUserId,
   pendingFieldWorkTodayUserIds,
+  memberDetailEnabled = false,
 }: Props) {
+  const router = useRouter();
   async function onSelectChange(row: AttendanceRow, value: AttendancePatchStatus) {
     try {
       await patchAttendanceRecordStatus(row.id, value, {
@@ -220,7 +225,26 @@ export default function TodayAttendanceList({
               </thead>
               <tbody>
                 {leaveBalances.map((item) => (
-                  <tr key={item.userId} className="border-t border-zinc-100">
+                  <tr
+                    key={item.userId}
+                    role={memberDetailEnabled ? "link" : undefined}
+                    tabIndex={memberDetailEnabled ? 0 : undefined}
+                    onClick={() => {
+                      if (memberDetailEnabled) router.push(`/attendance/member/${encodeURIComponent(item.userId)}`);
+                    }}
+                    onKeyDown={(e) => {
+                      if (!memberDetailEnabled) return;
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        router.push(`/attendance/member/${encodeURIComponent(item.userId)}`);
+                      }
+                    }}
+                    className={
+                      memberDetailEnabled
+                        ? "cursor-pointer border-t border-zinc-100 hover:bg-indigo-50/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
+                        : "border-t border-zinc-100"
+                    }
+                  >
                     <td className="px-3 py-2 font-medium text-zinc-900">{item.name}</td>
                     <td className="px-3 py-2 text-zinc-600">{item.rank || "-"} / {item.teamName || "-"}</td>
                     <td className="px-3 py-2 text-zinc-700">{item.usedAnnualCount}회</td>

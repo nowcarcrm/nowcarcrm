@@ -604,36 +604,34 @@ export async function listAttendance(limit = 200, userIds?: string[]): Promise<A
   return (data as AttendanceRow[]) ?? [];
 }
 
-function lastDayOfCalendarMonth(month: string): number {
+/** 해당 연-월의 근태 조회용 반개구간 [from, toLt) — work_date/date 모두 동일 규칙 적용 */
+function monthHalfOpenRange(month: string): { from: string; toLt: string } {
   const [ys, ms] = month.split("-");
   const y = Number(ys);
   const m = Number(ms);
-  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) return 31;
-  return new Date(y, m, 0).getDate();
+  if (!Number.isFinite(y) || !Number.isFinite(m) || m < 1 || m > 12) {
+    const d = new Date();
+    const fy = d.getFullYear();
+    const fm = d.getMonth() + 1;
+    return { from: `${fy}-${String(fm).padStart(2, "0")}-01`, toLt: `${fy}-${String(fm + 1).padStart(2, "0")}-01` };
+  }
+  const from = `${y}-${String(m).padStart(2, "0")}-01`;
+  const toLt = m === 12 ? `${y + 1}-01-01` : `${y}-${String(m + 1).padStart(2, "0")}-01`;
+  return { from, toLt };
 }
 
 export async function listAttendanceByMonth(
   month: string, // yyyy-mm
   userIds?: string[]
 ): Promise<AttendanceRow[]> {
-  const from = `${month}-01`;
-  const last = lastDayOfCalendarMonth(month);
-  const to = `${month}-${String(last).padStart(2, "0")}`;
+  const { from, toLt } = monthHalfOpenRange(month);
 
-  let byDateQuery = supabase
-    .from("attendance")
-    .select("*")
-    .gte("date", from)
-    .lte("date", to);
+  let byDateQuery = supabase.from("attendance").select("*").gte("date", from).lt("date", toLt);
   if (userIds && userIds.length > 0) byDateQuery = byDateQuery.in("user_id", userIds);
   const byDate = await byDateQuery;
   if (byDate.error && !isUndefinedColumnError(byDate.error)) throw byDate.error;
 
-  let byWorkQuery = supabase
-    .from("attendance")
-    .select("*")
-    .gte("work_date", from)
-    .lte("work_date", to);
+  let byWorkQuery = supabase.from("attendance").select("*").gte("work_date", from).lt("work_date", toLt);
   if (userIds && userIds.length > 0) byWorkQuery = byWorkQuery.in("user_id", userIds);
   const byWork = await byWorkQuery;
   if (byWork.error && !isUndefinedColumnError(byWork.error)) throw byWork.error;

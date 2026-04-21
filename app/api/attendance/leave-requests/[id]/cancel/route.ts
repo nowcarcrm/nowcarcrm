@@ -54,7 +54,7 @@ export async function POST(
 
     const { data: targetRow, error: targetErr } = await supabaseAdmin
       .from("leave_requests")
-      .select("id,user_id,status,used_amount")
+      .select("id,user_id,status,used_amount,request_type")
       .eq("id", id)
       .maybeSingle();
     if (targetErr) throw new Error(targetErr.message);
@@ -73,20 +73,26 @@ export async function POST(
     if (updateErr) throw new Error(updateErr.message);
     if (!updated) return NextResponse.json({ error: "이미 취소된 요청입니다." }, { status: 400 });
 
-    if (targetRow.status === "approved") {
-      const { data: targetUser, error: targetUserErr } = await supabaseAdmin
-        .from("users")
-        .select("id,remaining_annual_leave")
-        .eq("id", targetRow.user_id)
-        .maybeSingle();
-      if (targetUserErr) throw new Error(targetUserErr.message);
-      if (targetUser) {
-        const restored = Number(targetUser.remaining_annual_leave ?? 12) + Number(targetRow.used_amount ?? 0);
-        const { error: restoreErr } = await supabaseAdmin
+    const rt = String((targetRow as { request_type?: string | null }).request_type ?? "annual");
+    const restoresAnnualBalance = rt === "annual" || rt === "half";
+
+    if (targetRow.status === "approved" && restoresAnnualBalance) {
+      const used = Number((targetRow as { used_amount?: number | null }).used_amount ?? 0);
+      if (used > 0) {
+        const { data: targetUser, error: targetUserErr } = await supabaseAdmin
           .from("users")
-          .update({ remaining_annual_leave: restored })
-          .eq("id", targetRow.user_id);
-        if (restoreErr) throw new Error(restoreErr.message);
+          .select("id,remaining_annual_leave")
+          .eq("id", targetRow.user_id)
+          .maybeSingle();
+        if (targetUserErr) throw new Error(targetUserErr.message);
+        if (targetUser) {
+          const restored = Number(targetUser.remaining_annual_leave ?? 12) + used;
+          const { error: restoreErr } = await supabaseAdmin
+            .from("users")
+            .update({ remaining_annual_leave: restored })
+            .eq("id", targetRow.user_id);
+          if (restoreErr) throw new Error(restoreErr.message);
+        }
       }
     }
 
