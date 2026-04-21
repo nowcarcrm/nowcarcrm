@@ -25,7 +25,7 @@ import {
 import { ensureDefaultUsers, listActiveUsers, type UserRow } from "../_lib/usersSupabase";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { filterUsersByScreenScope, getAttendanceScope } from "../_lib/screenScopes";
-import { canPatchAttendanceStatusByRank, canProxyLeaveRequestByRank } from "../_lib/rolePermissions";
+import { canPatchAttendanceStatus, canProxyLeaveRequestByRank } from "../_lib/rolePermissions";
 import AttendanceStatusCard from "./_components/AttendanceStatusCard";
 import LeaveRequestCard from "./_components/LeaveRequestCard";
 import LeaveApprovalList from "./_components/LeaveApprovalList";
@@ -85,7 +85,11 @@ export default function AttendancePage() {
   const canApproveLeave = canApproveLeaveByRank(profile?.rank);
   const canViewMonthlyAttendance =
     profile?.rank === "본부장" || profile?.rank === "대표" || profile?.rank === "총괄대표";
-  const canPatchAttendance = canPatchAttendanceStatusByRank(profile?.rank);
+  const canPatchAttendance = canPatchAttendanceStatus(
+    profile
+      ? { email: profile.email, role: profile.role, rank: profile.rank }
+      : null
+  );
   const canProxyLeave = canProxyLeaveRequestByRank(profile?.rank);
   const todayDate = getLocalDateKey();
 

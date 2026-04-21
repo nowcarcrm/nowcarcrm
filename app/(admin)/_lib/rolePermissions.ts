@@ -107,6 +107,13 @@ export function canPatchAttendanceStatusByRank(rank: string | null | undefined):
   return r === "본부장" || r === "대표" || r === "총괄대표";
 }
 
+/** 근태 상태 수동 변경: 본부장·대표·총괄대표(직급) + role super_admin(총괄대표 계정 등) */
+export function canPatchAttendanceStatus(user: MaybeUserLike | null | undefined): boolean {
+  if (!user) return false;
+  if (effectiveRole(user) === "super_admin") return true;
+  return canPatchAttendanceStatusByRank(user.rank);
+}
+
 export function canProxyLeaveRequestByRank(rank: string | null | undefined): boolean {
   const r = (rank ?? "").trim();
   return r === "팀장" || r === "본부장" || r === "대표" || r === "총괄대표";

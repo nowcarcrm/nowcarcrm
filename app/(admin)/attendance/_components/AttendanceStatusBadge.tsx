@@ -30,8 +30,16 @@ function normalize(status: string): string {
   return status.replaceAll(" ", "_");
 }
 
+/** DB에 "\\uXXXX" 리터럴로 들어간 값을 뱃지 표시용 한글로 복원 */
+function decodeAttendanceStatusLabel(raw: string): string {
+  const s = raw.trim();
+  if (!s.includes("\\u")) return s;
+  return s.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 export default function AttendanceStatusBadge({ status }: Props) {
-  const key = normalize(status);
-  const cls = STYLE_MAP[key] ?? STYLE_MAP[status] ?? "bg-zinc-100 text-zinc-700 border-zinc-200";
-  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}>{status}</span>;
+  const label = decodeAttendanceStatusLabel(status);
+  const key = normalize(label);
+  const cls = STYLE_MAP[key] ?? STYLE_MAP[label] ?? "bg-zinc-100 text-zinc-700 border-zinc-200";
+  return <span className={`inline-flex items-center rounded-full border px-2.5 py-1 text-xs font-semibold ${cls}`}>{label}</span>;
 }

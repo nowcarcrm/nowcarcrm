@@ -1,6 +1,7 @@
 import { supabase } from "./supabaseClient";
 import { DEFAULT_HOLIDAYS } from "./holidayConfig";
 import { effectiveApprovalStatus, type UserRow } from "./usersSupabase";
+import { checkInIsLateBySeoul0931Rule } from "./attendanceKst";
 
 export type AttendanceStatus =
   | "정상 출근"
@@ -857,18 +858,9 @@ export async function getActivitySummaryMapByDate(date: string, userIds?: string
   return map;
 }
 
-/** 로컬 기준 출근 시각이 해당일 09:30 초과인지 (09:30:00 정각은 정상). */
-function checkInIsStrictlyAfterLocal0930(checkInIso: string): boolean {
-  const d = new Date(checkInIso);
-  if (Number.isNaN(d.getTime())) return false;
-  const th = new Date(d.getTime());
-  th.setHours(9, 30, 0, 0);
-  return d.getTime() > th.getTime();
-}
-
 /**
  * DB의 오늘(또는 지정일) 출근 행에 대해, 주말·공휴일이 아니고 총괄대표가 아닌 경우
- * 출근 시각이 09:30 초과이면 status·checkin_status를 지각으로 맞춘다(정상 출근/지각 행만).
+ * 출근 시각이 KST 기준 09:31 이상이면 status·checkin_status를 지각으로 맞춘다(정상 출근/지각 행만).
  */
 export async function syncAutomaticLateForAttendanceRowsOnDate(
   dateKey: string,
@@ -892,7 +884,7 @@ export async function syncAutomaticLateForAttendanceRowsOnDate(
     const st = (row.status ?? "").trim();
     if (st === "휴무일 근무" || st === "외근") continue;
     if (st !== "정상 출근" && st !== "지각") continue;
-    if (!checkInIsStrictlyAfterLocal0930(checkIn)) continue;
+    if (!checkInIsLateBySeoul0931Rule(checkIn)) continue;
     if (st === "지각" && row.checkin_status === "지각") continue;
 
     const { error } = await updateAttendanceByIdStrippingUnknown(String(row.id), {

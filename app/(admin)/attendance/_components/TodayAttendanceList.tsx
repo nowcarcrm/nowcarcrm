@@ -7,6 +7,8 @@ import {
   patchAttendanceRecordStatus,
 } from "../../_lib/leaveRequestService";
 import AttendanceStatusBadge from "./AttendanceStatusBadge";
+import { checkInIsLateBySeoul0931Rule } from "../../_lib/attendanceKst";
+import toast from "react-hot-toast";
 
 const SICK = "\uBCD1\uAC00";
 const LEAVE_LEGACY = "\uD734\uAC00";
@@ -42,9 +44,16 @@ type Props = {
   pendingFieldWorkTodayUserIds?: string[];
 };
 
+/** DB에 리터럴 "\\uXXXX"로 저장된 레거시 값 → 표시·매칭용 한글로 복원 */
+function decodeAttendanceStatusLabel(raw: string): string {
+  const s = raw.trim();
+  if (!s.includes("\\u")) return s;
+  return s.replace(/\\u([0-9a-fA-F]{4})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
+
 function statusToPatch(status: string): AttendancePatchStatus {
-  if (status === "\uC815\uC0C1 \uCD9C\uADFC") return "normal";
-  if (status === "\uC9C0\uAC01") return "late";
+  if (status === "정상 출근" || status === "정상출근") return "normal";
+  if (status === "지각") return "late";
   if (status === "\uC5F0\uCC28") return "annual_leave";
   if (status === "\uBC18\uCC28") return "half_day";
   if (status === SICK) return "sick_leave";
@@ -54,12 +63,12 @@ function statusToPatch(status: string): AttendancePatchStatus {
 }
 
 const PATCH_OPTIONS: { v: AttendancePatchStatus; label: string }[] = [
-  { v: "normal", label: "\uC815\uC0C1\uCD9C\uADFC" },
-  { v: "late", label: "\uC9C0\uAC01" },
-  { v: "annual_leave", label: "\uC5F0\uCC28" },
-  { v: "half_day", label: "\uBC18\uCC28" },
+  { v: "normal", label: "정상출근" },
+  { v: "late", label: "지각" },
+  { v: "annual_leave", label: "연차" },
+  { v: "half_day", label: "반차" },
   { v: "sick_leave", label: SICK },
-  { v: "field_work", label: "\uC678\uADFC" },
+  { v: "field_work", label: "외근" },
 ];
 
 function isLeaveLikeDbStatus(status: string): boolean {
@@ -92,24 +101,16 @@ export default function TodayAttendanceList({
   approvedLeaveTodayByUserId,
   pendingFieldWorkTodayUserIds,
 }: Props) {
-  const isLateAfter0930 = (value: string | null | undefined) => {
-    if (!value) return false;
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return false;
-    const threshold = new Date(d.getTime());
-    threshold.setHours(9, 30, 0, 0);
-    return d.getTime() > threshold.getTime();
-  };
-
   async function onSelectChange(row: AttendanceRow, value: AttendancePatchStatus) {
     try {
       await patchAttendanceRecordStatus(row.id, value, {
         userId: row.user_id,
         date: row.work_date || row.date || undefined,
       });
+      toast.success("근태 상태가 저장되었습니다.");
       onStatusPatched?.();
     } catch (e) {
-      window.alert(e instanceof Error ? e.message : "\uBCC0\uACBD \uC2E4\uD328");
+      toast.error(e instanceof Error ? e.message : "변경 실패");
     }
   }
 
@@ -135,13 +136,13 @@ export default function TodayAttendanceList({
                 const meta = users.get(row.user_id);
                 const isSuperAdmin = meta?.role === "super_admin";
                 const checkInValue = row.check_in || row.check_in_at || null;
-                const dbStatus = (row.status ?? "").trim();
+                const dbStatus = decodeAttendanceStatusLabel((row.status ?? "").trim());
                 const approvedType = approvedLeaveTodayByUserId?.get(row.user_id);
                 const pendingFw = pendingFieldWorkTodayUserIds?.includes(row.user_id) ?? false;
                 let status: string = row.status || row.checkin_status || row.checkout_status || "미출근";
 
                 if (checkInValue) {
-                  if (!isSuperAdmin && isLateAfter0930(checkInValue)) {
+                  if (!isSuperAdmin && checkInIsLateBySeoul0931Rule(checkInValue)) {
                     status = "지각";
                   } else if (isSuperAdmin && status === "지각") {
                     status = "정상 출근";
@@ -163,7 +164,7 @@ export default function TodayAttendanceList({
                 }
 
                 const patchValue = statusToPatch(dbStatus);
-                const showLateBadge = checkInValue && !isSuperAdmin && isLateAfter0930(checkInValue);
+                const showLateBadge = checkInValue && !isSuperAdmin && checkInIsLateBySeoul0931Rule(checkInValue);
                 const showPatch = canPatchStatus;
                 return (
                   <tr key={row.id} className="border-t border-zinc-100 hover:bg-zinc-50/70">
@@ -172,7 +173,7 @@ export default function TodayAttendanceList({
                     <td className="px-3 py-2">
                       {showPatch ? (
                         <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:gap-2">
-                          {showLateBadge ? <AttendanceStatusBadge status="\uC9C0\uAC01" /> : null}
+                          {showLateBadge ? <AttendanceStatusBadge status="지각" /> : null}
                           <select
                             className="max-w-[220px] rounded border border-zinc-300 px-2 py-1 text-xs"
                             value={patchValue}
@@ -188,7 +189,7 @@ export default function TodayAttendanceList({
                           </select>
                         </div>
                       ) : showLateBadge ? (
-                        <AttendanceStatusBadge status="\uC9C0\uAC01" />
+                        <AttendanceStatusBadge status="지각" />
                       ) : (
                         <AttendanceStatusBadge status={status} />
                       )}

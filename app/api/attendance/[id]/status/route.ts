@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin, supabaseAuthVerifier } from "@/app/_lib/supabaseAdminServer";
-import { canPatchAttendanceStatusByRank } from "@/app/(admin)/_lib/rolePermissions";
+import { canPatchAttendanceStatus } from "@/app/(admin)/_lib/rolePermissions";
 
 function getBearerToken(req: Request) {
   const auth = req.headers.get("authorization") ?? "";
@@ -27,20 +27,21 @@ function isWeekendDateKey(day: string): boolean {
 }
 
 async function getRequester(authUserId: string) {
-  const { data, error } = await supabaseAdmin
+  const selectCols = "id,rank,approval_status,role,email";
+  const { data: linked, error: linkErr } = await supabaseAdmin
     .from("users")
-    .select("id,rank,approval_status")
-    .eq("id", authUserId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  if (data) return data;
-  const { data: legacy, error: legacyErr } = await supabaseAdmin
-    .from("users")
-    .select("id,rank,approval_status")
+    .select(selectCols)
     .eq("auth_user_id", authUserId)
     .maybeSingle();
-  if (legacyErr) throw new Error(legacyErr.message);
-  return legacy;
+  if (linkErr) throw new Error(linkErr.message);
+  if (linked) return linked;
+  const { data: byPk, error: pkErr } = await supabaseAdmin
+    .from("users")
+    .select(selectCols)
+    .eq("id", authUserId)
+    .maybeSingle();
+  if (pkErr) throw new Error(pkErr.message);
+  return byPk;
 }
 
 export async function PATCH(req: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -62,7 +63,7 @@ export async function PATCH(req: Request, { params }: { params: Promise<{ id: st
         { status: 403 }
       );
     }
-    if (!canPatchAttendanceStatusByRank(requester.rank)) {
+    if (!canPatchAttendanceStatus(requester)) {
       return NextResponse.json(
         {
           error:
