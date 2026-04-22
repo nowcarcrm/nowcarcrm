@@ -29,6 +29,8 @@ import SessionIdleGuard from "@/app/_components/auth/SessionIdleGuard";
 import NotificationBell from "@/app/_components/notifications/NotificationBell";
 import AiFloatingButton from "@/app/_components/ai-secretary/AiFloatingButton";
 import { openNowAi } from "@/app/_components/ai-secretary/events";
+import { SidebarCountBadge } from "./SidebarCountBadge";
+import { useSidebarCounts, type SidebarCountKey } from "./useSidebarCounts";
 
 type LeadListSearchContextValue = {
   query: string;
@@ -70,6 +72,8 @@ type NavItem = {
   href: string;
   description: string;
   section: NavSectionKey;
+  /** 영업 단계별 사이드바 배지 키 */
+  leadStatus?: SidebarCountKey;
   /** 관리자만 사이드바에 표시 */
   adminOnly?: boolean;
   /** 총괄대표(super_admin)만 */
@@ -104,42 +108,49 @@ const NAV_ITEMS: NavItem[] = [
     label: "신규",
     href: "/leads/new-db",
     description: "상담결과 · 신규",
+    leadStatus: "new",
   },
   {
     section: "sales",
     label: "상담중",
     href: "/leads/counseling-progress",
     description: "상담결과 · 상담 진행 중",
+    leadStatus: "counseling",
   },
   {
     section: "sales",
     label: "부재",
     href: "/leads/unresponsive",
     description: "상담결과 · 미응답·부재",
+    leadStatus: "unresponsive",
   },
   {
     section: "sales",
     label: "계약",
     href: "/leads/contract-progress",
     description: "계약완료·확정 (출고 전)",
+    leadStatus: "contract",
   },
   {
     section: "sales",
     label: "인도완료",
     href: "/leads/delivery-complete",
     description: "상담결과 · 인도 완료",
+    leadStatus: "delivered",
   },
   {
     section: "sales",
     label: "보류",
     href: "/leads/hold",
     description: "상담결과 · 재개 가능",
+    leadStatus: "hold",
   },
   {
     section: "sales",
     label: "취소",
     href: "/leads/cancel",
     description: "상담결과 · 종료",
+    leadStatus: "cancel",
   },
   {
     section: "sales",
@@ -371,10 +382,12 @@ function Icon({
 function SidebarNavLink({
   item,
   active,
+  count,
   onNavigate,
 }: {
   item: NavItem;
   active: boolean;
+  count?: number;
   onNavigate?: () => void;
 }) {
   const reduce = useReducedMotion();
@@ -414,6 +427,9 @@ function SidebarNavLink({
             >
               {item.label}
             </span>
+            {item.leadStatus ? (
+              <SidebarCountBadge count={count ?? 0} variant={item.leadStatus} />
+            ) : null}
             {active ? (
               <span className="hidden rounded-full bg-sky-500/90 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white shadow-sm sm:inline">
                 현재
@@ -449,6 +465,7 @@ function SidebarContents({
 }) {
   const router = useRouter();
   const pathname = usePathname();
+  const counts = useSidebarCounts();
   const [staffOptions, setStaffOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedUserId, setSelectedUserId] = useState("");
   const showAdminManagerFilter =
@@ -636,6 +653,7 @@ function SidebarContents({
                     key={item.href}
                     item={item}
                     active={item.href === activeHref}
+                    count={item.leadStatus ? counts[item.leadStatus] : undefined}
                     onNavigate={onNavigate}
                   />
                 ))}
