@@ -18,7 +18,7 @@ export async function GET(req: Request) {
   let query = supabaseAdmin
     .from("settlement_monthly_reports")
     .select(
-      "id,user_id,rate_month,total_ag_commission,total_dealer_commission,total_etc_revenue,total_revenue,total_customer_support,net_revenue,base_rate,eligible_incentive,incentive_tier,incentive_rate,rate_based_amount,support_50_amount,adjustment_amount,final_amount,status,confirmed_at,confirmed_by,paid_at,locked_at,created_at,updated_at"
+      "id,user_id,rate_month,total_ag_commission,total_dealer_commission,total_etc_revenue,total_revenue,total_customer_support,net_revenue,base_rate,eligible_incentive,incentive_tier,incentive_rate,rate_based_amount,support_50_amount,adjustment_amount,prepayment_amount,final_amount,status,confirmed_at,confirmed_by,paid_at,locked_at,created_at,updated_at"
     )
     .eq("rate_month", month);
 

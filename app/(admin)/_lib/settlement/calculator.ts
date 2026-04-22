@@ -8,6 +8,7 @@ export type SettlementCalculationInput = {
   incentive_per_tier_percent: number;
   is_excluded: boolean;
   adjustment_amount?: number;
+  total_prepayment_applied?: number;
 };
 
 export type SettlementCalculationOutput = {
@@ -19,6 +20,7 @@ export type SettlementCalculationOutput = {
   rate_based_amount: number;
   support_50_amount: number;
   adjustment_amount: number;
+  prepayment_amount: number;
   final_amount: number;
 };
 
@@ -37,6 +39,7 @@ export function calculateSettlement(input: SettlementCalculationInput): Settleme
       rate_based_amount: 0,
       support_50_amount: 0,
       adjustment_amount: 0,
+      prepayment_amount: 0,
       final_amount: 0,
     };
   }
@@ -48,6 +51,7 @@ export function calculateSettlement(input: SettlementCalculationInput): Settleme
   const baseRate = Number(input.base_rate ?? 0);
   const tierPercent = Number(input.incentive_per_tier_percent ?? 0);
   const adjustment = asMoney(input.adjustment_amount ?? 0);
+  const prepayment = asMoney(input.total_prepayment_applied ?? 0);
 
   const total_revenue = totalAg + totalDealer + totalEtc;
   const net_revenue = total_revenue - totalSupport;
@@ -62,7 +66,7 @@ export function calculateSettlement(input: SettlementCalculationInput): Settleme
   const applied_rate = baseRate + incentive_rate;
   const rate_based_amount = Math.round((total_revenue * applied_rate) / 100);
   const support_50_amount = Math.round(totalSupport * 0.5 * 1.1);
-  const final_amount = rate_based_amount + support_50_amount + adjustment;
+  const final_amount = rate_based_amount + support_50_amount + adjustment - prepayment;
 
   return {
     total_revenue,
@@ -73,6 +77,7 @@ export function calculateSettlement(input: SettlementCalculationInput): Settleme
     rate_based_amount,
     support_50_amount,
     adjustment_amount: adjustment,
+    prepayment_amount: prepayment,
     final_amount,
   };
 }

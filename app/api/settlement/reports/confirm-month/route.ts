@@ -45,6 +45,12 @@ export async function POST(req: Request) {
     .in("id", ids);
   if (updateErr) return NextResponse.json({ error: "월 확정 처리 실패" }, { status: 500 });
 
+  await supabaseAdmin
+    .from("settlement_prepayments")
+    .update({ applied: true, applied_at: nowIso })
+    .eq("target_month", month)
+    .eq("applied", false);
+
   await Promise.all(
     targets.map((r) =>
       logSettlementAudit({

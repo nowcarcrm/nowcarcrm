@@ -11,7 +11,7 @@ import { formatCurrency } from "../../../_lib/settlement/formatters";
 import { getDeliveryScope, isDirector, isTeamLeader } from "../../../_lib/settlement/permissions";
 import { isSuperAdmin } from "../../../_lib/rolePermissions";
 import { supabase } from "../../../_lib/supabaseClient";
-import type { Adjustment, DeliveryWithNames, MonthlyReportWithUser } from "../../../_types/settlement";
+import type { Adjustment, DeliveryWithNames, Dispute, MonthlyReportWithUser } from "../../../_types/settlement";
 
 function monthNow() {
   const d = new Date();
@@ -35,6 +35,11 @@ export default function SettlementReportDetailPage() {
   const [adjustReason, setAdjustReason] = useState("");
   const [adjustRelatedMonth, setAdjustRelatedMonth] = useState("");
   const [actionBusy, setActionBusy] = useState<"" | "compute" | "adjust">("");
+  const [disputes, setDisputes] = useState<Dispute[]>([]);
+  const [newDispute, setNewDispute] = useState("");
+  const [respondingId, setRespondingId] = useState("");
+  const [responseText, setResponseText] = useState("");
+  const [responseStatus, setResponseStatus] = useState<"resolved" | "rejected">("resolved");
 
   const scope = useMemo(
     () =>
@@ -109,8 +114,14 @@ export default function SettlementReportDetailPage() {
         const adjRes = await fetch(`/api/settlement/reports/${found.id}/adjustments`, { headers: { Authorization: `Bearer ${token}` } });
         const adjJson = (await adjRes.json()) as { rows?: Adjustment[] };
         if (adjRes.ok) setAdjustments(adjJson.rows ?? []);
+        const disRes = await fetch(`/api/settlement/disputes?report_id=${encodeURIComponent(found.id)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        const disJson = (await disRes.json()) as { rows?: Dispute[] };
+        if (disRes.ok) setDisputes(disJson.rows ?? []);
       } else {
         setAdjustments([]);
+        setDisputes([]);
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "조회 실패");
@@ -173,6 +184,44 @@ export default function SettlementReportDetailPage() {
       toast.error(e instanceof Error ? e.message : "조정 항목 추가 실패");
     } finally {
       setActionBusy("");
+    }
+  }
+
+  async function submitDispute() {
+    if (!report) return;
+    try {
+      const token = await getToken();
+      const res = await fetch("/api/settlement/disputes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ report_id: report.id, content: newDispute.trim() }),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(json.error ?? "이의 제기 등록 실패");
+      setNewDispute("");
+      toast.success("이의 제기가 등록되었습니다.");
+      await loadPage();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "이의 제기 등록 실패");
+    }
+  }
+
+  async function respondDispute(disputeId: string) {
+    try {
+      const token = await getToken();
+      const res = await fetch(`/api/settlement/disputes/${disputeId}/respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ response: responseText.trim(), status: responseStatus }),
+      });
+      const json = (await res.json()) as { error?: string };
+      if (!res.ok) throw new Error(json.error ?? "답변 등록 실패");
+      setRespondingId("");
+      setResponseText("");
+      toast.success("답변이 등록되었습니다.");
+      await loadPage();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "답변 등록 실패");
     }
   }
 
@@ -251,6 +300,7 @@ export default function SettlementReportDetailPage() {
               <div className="flex justify-between"><span>요율 수당</span><span>{formatCurrency(report.rate_based_amount)}</span></div>
               <div className="flex justify-between"><span>지원금 50% (부가세 포함)</span><span>{formatCurrency(report.support_50_amount)}</span></div>
               <div className="flex justify-between"><span>조정 항목</span><span>{formatCurrency(report.adjustment_amount)}</span></div>
+              <div className="flex justify-between"><span>선지급 차감</span><span>-{formatCurrency(report.prepayment_amount ?? 0)}</span></div>
               <div className="flex justify-between border-t pt-2 text-base font-bold"><span>최종 지급액</span><span>{formatCurrency(report.final_amount)}</span></div>
             </div>
           </section>
@@ -355,6 +405,51 @@ export default function SettlementReportDetailPage() {
                     <div className="font-medium">{formatCurrency(a.amount)}</div>
                     <div className="text-zinc-600 dark:text-zinc-300">{a.reason}</div>
                     <div className="text-xs text-zinc-500">{new Date(a.created_at).toLocaleString("ko-KR")}</div>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+
+          <section className="crm-card p-5 sm:p-6">
+            <h2 className="text-base font-semibold">이의 제기</h2>
+            {!canManage && profile.userId === userId ? (
+              <div className="mt-3 space-y-2">
+                <textarea
+                  className="crm-field min-h-[88px]"
+                  value={newDispute}
+                  onChange={(e) => setNewDispute(e.target.value)}
+                  maxLength={500}
+                  placeholder="이의 제기 내용을 입력하세요. (최대 500자)"
+                />
+                <div className="flex justify-end">
+                  <button type="button" className="crm-btn-primary" onClick={() => void submitDispute()}>
+                    + 새 이의 제기
+                  </button>
+                </div>
+              </div>
+            ) : null}
+            <div className="mt-3 space-y-2">
+              {disputes.length === 0 ? (
+                <div className="text-sm text-zinc-500">등록된 이의 제기가 없습니다.</div>
+              ) : (
+                disputes.map((d) => (
+                  <div key={d.id} className="rounded-lg border border-zinc-200 px-3 py-2 text-sm dark:border-zinc-700">
+                    <div className="font-medium">{new Date(d.created_at).toLocaleDateString("ko-KR")} - {d.status}</div>
+                    <div className="mt-1">{d.content}</div>
+                    {d.response ? <div className="mt-2 text-zinc-600 dark:text-zinc-300">→ 답변: {d.response}</div> : null}
+                    {canManage && d.status === "pending" ? (
+                      <div className="mt-2 space-y-2 rounded-md bg-zinc-50 p-2 dark:bg-zinc-800">
+                        <select className="crm-field w-36" value={responseStatus} onChange={(e) => setResponseStatus(e.target.value as "resolved" | "rejected")}>
+                          <option value="resolved">resolved</option>
+                          <option value="rejected">rejected</option>
+                        </select>
+                        <textarea className="crm-field min-h-[72px]" value={respondingId === d.id ? responseText : ""} onChange={(e) => { setRespondingId(d.id); setResponseText(e.target.value); }} />
+                        <button type="button" className="crm-btn-secondary" onClick={() => void respondDispute(d.id)}>
+                          답변 작성
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                 ))
               )}

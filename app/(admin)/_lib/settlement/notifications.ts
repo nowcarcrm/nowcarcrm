@@ -96,3 +96,23 @@ export async function notifyDeliveryReopened(
     data: { delivery_id: deliveryId, reason },
   });
 }
+
+export async function notifyDisputeCreated(disputeId: string, reportId: string, submitterName: string, recipientUserId: string) {
+  await sendSettlementNotification({
+    user_id: recipientUserId,
+    type: "settlement-dispute-created",
+    title: "정산 이의 제기",
+    message: `${submitterName}님이 정산 이의를 제기했습니다.`,
+    data: { dispute_id: disputeId, report_id: reportId },
+  });
+}
+
+export async function notifyDisputeResolved(disputeId: string, status: string, recipientUserId: string) {
+  await sendSettlementNotification({
+    user_id: recipientUserId,
+    type: "settlement-dispute-resolved",
+    title: status === "resolved" ? "이의 제기 해결됨" : "이의 제기 반려됨",
+    message: "이의 제기에 대한 답변이 등록되었습니다.",
+    data: { dispute_id: disputeId },
+  });
+}

@@ -24,6 +24,7 @@ import { listActiveUsers } from "@/app/(admin)/_lib/usersSupabase";
 import UserRankSummary from "@/app/_components/ui/UserRankSummary";
 import UserRankCard from "@/app/_components/ui/UserRankCard";
 import { canAccessAdminPage, isSuperAdmin } from "@/app/(admin)/_lib/rolePermissions";
+import { isCeo, isDirector } from "@/app/(admin)/_lib/settlement/permissions";
 import SessionIdleGuard from "@/app/_components/auth/SessionIdleGuard";
 import NotificationBell from "@/app/_components/notifications/NotificationBell";
 import AiFloatingButton from "@/app/_components/ai-secretary/AiFloatingButton";
@@ -73,6 +74,8 @@ type NavItem = {
   adminOnly?: boolean;
   /** 총괄대표(super_admin)만 */
   superAdminOnly?: boolean;
+  /** 본부장 이상 */
+  requireSettlementDirectorOrAbove?: boolean;
 };
 
 type ShellUser = {
@@ -193,6 +196,34 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     section: "operations",
+    label: "정산 - 선지급 예치금",
+    href: "/settlement/prepayments",
+    description: "정산 월 차감용 선지급 등록·관리",
+    superAdminOnly: true,
+  },
+  {
+    section: "operations",
+    label: "정산 - 모딜카",
+    href: "/settlement/modilca",
+    description: "모딜카 엑셀 업로드·확정/이월",
+    superAdminOnly: true,
+  },
+  {
+    section: "operations",
+    label: "정산 - 대리점수당",
+    href: "/settlement/dealer-commissions",
+    description: "AI 파싱 기반 대리점 수당 주입",
+    superAdminOnly: true,
+  },
+  {
+    section: "operations",
+    label: "정산 - 감사 로그",
+    href: "/settlement/audit",
+    description: "정산 변경 이력 조회 (본부장 이상)",
+    requireSettlementDirectorOrAbove: true,
+  },
+  {
+    section: "operations",
     label: "로그인 이력",
     href: "/admin/login-logs",
     description: "IP·기기·성공/실패 (총괄대표)",
@@ -257,6 +288,10 @@ const PAGE_TITLE_ROUTES: { prefix: string; title: string }[] = [
   { prefix: "/settlement/deliveries", title: "정산 - 출고 관리" },
   { prefix: "/settlement/reports", title: "정산 - 월별 정산" },
   { prefix: "/settlement/my-report", title: "정산 - 월별 정산" },
+  { prefix: "/settlement/modilca", title: "정산 - 모딜카" },
+  { prefix: "/settlement/dealer-commissions", title: "정산 - 대리점수당" },
+  { prefix: "/settlement/prepayments", title: "정산 - 선지급 예치금" },
+  { prefix: "/settlement/audit", title: "정산 - 감사 로그" },
   { prefix: "/dashboard", title: "대시보드" },
   { prefix: "/notices", title: "공지사항" },
   { prefix: "/counseling", title: "상담" },
@@ -488,6 +523,12 @@ function SidebarContents({
           rank: currentUser?.rank ?? null,
           email: currentUser?.email ?? null,
         })
+      ) {
+        return false;
+      }
+      if (
+        i.requireSettlementDirectorOrAbove &&
+        !(isSuperAdmin(currentUser) || isDirector(currentUser) || isCeo(currentUser))
       ) {
         return false;
       }

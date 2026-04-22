@@ -137,6 +137,7 @@ export type MonthlyReport = {
   rate_based_amount: number;
   support_50_amount: number;
   adjustment_amount: number;
+  prepayment_amount: number;
   final_amount: number;
   status: "draft" | "confirmed" | "paid";
   confirmed_at: string | null;
@@ -162,4 +163,31 @@ export type Adjustment = {
   related_month: string | null;
   created_at: string;
   created_by: string;
+};
+
+export type Prepayment = {
+  id: string;
+  payment_date: string;
+  source: string;
+  amount: number;
+  target_user_id: string;
+  target_month: string;
+  delivery_id: string | null;
+  notes: string | null;
+  applied: boolean;
+  applied_at: string | null;
+  created_at: string;
+  created_by: string;
+};
+
+export type Dispute = {
+  id: string;
+  report_id: string;
+  submitted_by: string;
+  content: string;
+  status: "pending" | "resolved" | "rejected";
+  response: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
 };

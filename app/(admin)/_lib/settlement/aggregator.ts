@@ -70,6 +70,16 @@ async function fetchAdjustmentSum(reportId: string): Promise<number> {
   return (data ?? []).reduce((sum, a) => sum + asMoney((a as { amount?: number | null }).amount), 0);
 }
 
+async function fetchPrepaymentSum(userId: string, month: string): Promise<number> {
+  const { data } = await supabaseAdmin
+    .from("settlement_prepayments")
+    .select("amount")
+    .eq("target_user_id", userId)
+    .eq("target_month", month)
+    .eq("applied", false);
+  return (data ?? []).reduce((sum, p) => sum + asMoney((p as { amount?: number | null }).amount), 0);
+}
+
 async function fetchApplicableRate(userId: string, month: string): Promise<RateRow | null> {
   const { data: monthlyRate } = await supabaseAdmin
     .from("settlement_monthly_rates")
@@ -101,6 +111,7 @@ export async function computeUserSettlement(userId: string, month: string) {
     .maybeSingle();
 
   const adjustmentAmount = existingReport?.id ? await fetchAdjustmentSum(String(existingReport.id)) : 0;
+  const totalPrepayment = await fetchPrepaymentSum(userId, month);
   const calculation = calculateSettlement({
     ...aggregation,
     base_rate: Number(rate.base_rate),
@@ -108,6 +119,7 @@ export async function computeUserSettlement(userId: string, month: string) {
     incentive_per_tier_percent: Number(rate.incentive_per_tier_percent ?? 5),
     is_excluded: !!rate.is_excluded,
     adjustment_amount: adjustmentAmount,
+    total_prepayment_applied: totalPrepayment,
   });
 
   return {
@@ -166,6 +178,7 @@ export async function upsertMonthlyReport(userId: string, month: string, _perfor
     rate_based_amount: calculation.rate_based_amount,
     support_50_amount: calculation.support_50_amount,
     adjustment_amount: calculation.adjustment_amount,
+    prepayment_amount: calculation.prepayment_amount,
     final_amount: calculation.final_amount,
     status: "draft",
     updated_at: new Date().toISOString(),
