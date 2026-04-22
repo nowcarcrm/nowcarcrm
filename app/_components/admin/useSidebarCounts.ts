@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { supabase } from "@/app/(admin)/_lib/supabaseClient";
 
 export type SidebarCountKey =
   | "new"
@@ -28,9 +29,16 @@ export function useSidebarCounts(): SidebarCounts {
 
   const fetchCounts = useCallback(async () => {
     try {
+      const {
+        data: { session },
+      } = await supabase.auth.getSession();
+      const token = session?.access_token;
+      if (!token) return;
+
       const res = await fetch("/api/leads/sidebar-counts", {
         cache: "no-store",
         credentials: "include",
+        headers: { Authorization: `Bearer ${token}` },
       });
       if (!res.ok) return;
       const data = (await res.json()) as Partial<SidebarCounts>;

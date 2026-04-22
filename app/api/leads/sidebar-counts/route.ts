@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { canViewAllLeads, isTeamLeader, normalizeUserTeam } from "@/app/(admin)/_lib/rolePermissions";
 import { getRequesterFromToken } from "@/app/api/notifications/_lib";
 import { supabaseAdmin } from "@/app/_lib/supabaseAdminServer";
 
@@ -37,81 +36,40 @@ function toCountKey(status: string): SidebarCountKey | null {
 }
 
 export async function GET(req: Request) {
-  const auth = await getRequesterFromToken(req);
-  if (!auth.requester) {
-    return NextResponse.json({ error: auth.error }, { status: auth.status });
-  }
-
-  const viewer = {
-    id: auth.requester.id,
-    role: auth.requester.role,
-    rank: auth.requester.rank,
-    email: auth.requester.email,
-    team_name: auth.requester.team_name,
-  };
-
-  let query = supabaseAdmin
-    .from("leads")
-    .select("status, count:count()")
-    .not("deleted_at", "is", null);
-
-  if (canViewAllLeads(viewer)) {
-    query = supabaseAdmin.from("leads").select("status, count:count()").is("deleted_at", null);
-  } else if (isTeamLeader(viewer)) {
-    const teamName = normalizeUserTeam(viewer.team_name);
-    if (!teamName) {
-      query = supabaseAdmin
-        .from("leads")
-        .select("status, count:count()")
-        .is("deleted_at", null)
-        .eq("manager_user_id", viewer.id);
-    } else {
-      const { data: users, error: usersErr } = await supabaseAdmin
-        .from("users")
-        .select("id,rank,team_name,approval_status")
-        .eq("team_name", teamName)
-        .or("approval_status.eq.approved,approval_status.is.null");
-      if (usersErr) {
-        return NextResponse.json({ error: "팀 사용자 조회 실패" }, { status: 500 });
-      }
-      const visibleIds = (users ?? [])
-        .filter((u) => {
-          const rank = String((u as { rank?: string | null }).rank ?? "").trim();
-          return rank !== "대표" && rank !== "총괄대표";
-        })
-        .map((u) => String((u as { id?: string | null }).id ?? "").trim())
-        .filter(Boolean);
-      if (visibleIds.length === 0) {
-        return NextResponse.json(EMPTY_COUNTS);
-      }
-      query = supabaseAdmin
-        .from("leads")
-        .select("status, count:count()")
-        .is("deleted_at", null)
-        .in("manager_user_id", visibleIds);
+  try {
+    const auth = await getRequesterFromToken(req);
+    if (!auth.requester) {
+      return NextResponse.json({ error: auth.error }, { status: auth.status });
     }
-  } else {
-    query = supabaseAdmin
+    const query = supabaseAdmin
       .from("leads")
-      .select("status, count:count()")
-      .is("deleted_at", null)
-      .eq("manager_user_id", viewer.id);
-  }
+      .select("status")
+      .eq("manager_user_id", auth.requester.id);
 
-  const { data, error } = await query;
-  if (error) {
-    return NextResponse.json({ error: "카운트 조회 실패" }, { status: 500 });
-  }
-
-  const counts: SidebarCounts = { ...EMPTY_COUNTS };
-  for (const row of (data ?? []) as Array<{ status?: string | null; count?: number | string | null }>) {
-    const key = toCountKey(String(row.status ?? ""));
-    if (!key) continue;
-    const n = Number(row.count ?? 0);
-    if (Number.isFinite(n)) {
-      counts[key] += n;
+    const { data, error } = await query;
+    if (error) {
+      console.error("[sidebar-counts] query error:", error);
+      return NextResponse.json({ error: "카운트 조회 실패" }, { status: 500 });
     }
-  }
 
-  return NextResponse.json(counts);
+    const counts: SidebarCounts = { ...EMPTY_COUNTS };
+    for (const row of (data ?? []) as Array<{ status?: string | null }>) {
+      const key = toCountKey(String(row.status ?? ""));
+      if (!key) continue;
+      counts[key] += 1;
+    }
+
+    return NextResponse.json(counts);
+  } catch (error) {
+    console.error("[sidebar-counts] 500 error:", error);
+    console.error(
+      "[sidebar-counts] error message:",
+      error instanceof Error ? error.message : String(error)
+    );
+    console.error(
+      "[sidebar-counts] error stack:",
+      error instanceof Error ? error.stack : undefined
+    );
+    return NextResponse.json({ error: "사이드바 카운트 조회 중 오류가 발생했습니다." }, { status: 500 });
+  }
 }

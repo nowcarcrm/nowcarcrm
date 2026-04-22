@@ -37,8 +37,8 @@ export function SidebarCountBadge({ count, variant }: Props) {
   return (
     <span
       className={[
-        "ml-auto inline-flex items-center justify-center rounded-full px-1.5 text-[11px] font-semibold transition-all duration-200",
-        "min-w-[22px] h-[22px] sm:min-w-[22px] sm:h-[22px] max-sm:min-w-[18px] max-sm:h-[18px] max-sm:text-[9px]",
+        "ml-auto inline-flex items-center justify-center rounded-full px-2 text-[13px] font-bold transition-all duration-200",
+        "min-w-[28px] h-[28px] sm:min-w-[28px] sm:h-[28px] max-sm:min-w-[18px] max-sm:h-[18px] max-sm:text-[9px]",
         VARIANT_STYLES[variant],
         pulseClass,
         isChanging ? "scale-110" : "scale-100",
