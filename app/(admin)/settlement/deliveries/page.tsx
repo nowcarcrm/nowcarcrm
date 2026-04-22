@@ -3,6 +3,7 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { getDeliveryScope, isDirector, isTeamLeader } from "../../_lib/settlement/permissions";
@@ -12,6 +13,18 @@ import { formatCurrency } from "../../_lib/settlement/formatters";
 import type { DeliveryWithNames, DeliveryStatus } from "../../_types/settlement";
 
 type OwnerOption = { id: string; name: string; team_name: string | null };
+const FINANCE_COMPANIES = [
+  "현대캐피탈",
+  "KB캐피탈",
+  "신한캐피탈",
+  "하나캐피탈",
+  "우리캐피탈",
+  "기아캐피탈",
+  "롯데캐피탈",
+  "NH캐피탈",
+  "JB우리캐피탈",
+  "BNK캐피탈",
+];
 
 function monthNow() {
   const d = new Date();
@@ -47,10 +60,16 @@ function statusClass(status: DeliveryStatus | string) {
 
 export default function SettlementDeliveriesPage() {
   const { profile, loading } = useAuth();
+  const searchParams = useSearchParams();
   const [month, setMonth] = useState(monthNow());
   const [status, setStatus] = useState("");
   const [ownerId, setOwnerId] = useState("");
   const [team, setTeam] = useState("");
+  const [search, setSearch] = useState("");
+  const [allPeriod, setAllPeriod] = useState(false);
+  const [financialCompany, setFinancialCompany] = useState("");
+  const [productType, setProductType] = useState("");
+  const [deliveryType, setDeliveryType] = useState("");
   const [includeDeleted, setIncludeDeleted] = useState(false);
   const [myPendingOnly, setMyPendingOnly] = useState(false);
   const [rows, setRows] = useState<DeliveryWithNames[]>([]);
@@ -96,7 +115,12 @@ export default function SettlementDeliveriesPage() {
       const token = await getToken();
       if (!token) return;
       const sp = new URLSearchParams();
-      sp.set("month", month);
+      if (!allPeriod) sp.set("month", month);
+      if (search.trim()) sp.set("search", search.trim());
+      if (allPeriod) sp.set("all_period", "true");
+      if (financialCompany) sp.set("financial_company", financialCompany);
+      if (productType) sp.set("product_type", productType);
+      if (deliveryType) sp.set("delivery_type", deliveryType);
       if (myPendingOnly && profile) {
         if (isSuperAdmin(profile) || profile.role === "super_admin") {
           sp.set("status", "pending_leader,pending_director");
@@ -126,11 +150,33 @@ export default function SettlementDeliveriesPage() {
   }
 
   useEffect(() => {
+    if (!searchParams) return;
+    const qsMonth = (searchParams.get("month") ?? "").trim();
+    const qsStatus = (searchParams.get("status") ?? "").trim();
+    const qsOwnerId = (searchParams.get("owner_id") ?? "").trim();
+    const qsTeam = (searchParams.get("team") ?? "").trim();
+    const qsSearch = (searchParams.get("search") ?? "").trim();
+    const qsAllPeriod = searchParams.get("all_period") === "true";
+    const qsFinancial = (searchParams.get("financial_company") ?? "").trim();
+    const qsProduct = (searchParams.get("product_type") ?? "").trim();
+    const qsDeliveryType = (searchParams.get("delivery_type") ?? "").trim();
+    if (qsMonth) setMonth(qsMonth);
+    if (qsStatus) setStatus(qsStatus);
+    if (qsOwnerId) setOwnerId(qsOwnerId);
+    if (qsTeam) setTeam(qsTeam);
+    if (qsSearch) setSearch(qsSearch);
+    if (qsAllPeriod) setAllPeriod(true);
+    if (qsFinancial) setFinancialCompany(qsFinancial);
+    if (qsProduct) setProductType(qsProduct);
+    if (qsDeliveryType) setDeliveryType(qsDeliveryType);
+  }, [searchParams]);
+
+  useEffect(() => {
     if (!loading && profile) {
       void loadOwners();
       void loadRows();
     }
-  }, [loading, profile, month, status, ownerId, team, includeDeleted, myPendingOnly]);
+  }, [loading, profile, month, status, ownerId, team, includeDeleted, myPendingOnly, search, allPeriod, financialCompany, productType, deliveryType]);
 
   const teamOptions = useMemo(() => Array.from(new Set(ownerOptions.map((o) => o.team_name).filter(Boolean))) as string[], [ownerOptions]);
 
@@ -166,6 +212,16 @@ export default function SettlementDeliveriesPage() {
           <button type="button" className="crm-btn-secondary px-3 py-1.5 text-xs" onClick={() => setMonth((m) => moveMonth(m, 1))}>
             ▶
           </button>
+          <input
+            className="crm-field ml-2 w-56"
+            placeholder="🔍 고객명/차종/계약번호 검색"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+          <label className="inline-flex items-center gap-1 text-xs text-zinc-600">
+            <input type="checkbox" checked={allPeriod} onChange={(e) => setAllPeriod(e.target.checked)} />
+            전체 기간에서 검색
+          </label>
 
           <select className="crm-field crm-field-select ml-2" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">상태: 전체</option>
@@ -176,6 +232,24 @@ export default function SettlementDeliveriesPage() {
             <option value="confirmed">confirmed</option>
             <option value="carried_over">carried_over</option>
             <option value="finalized">finalized</option>
+          </select>
+          <select className="crm-field crm-field-select" value={financialCompany} onChange={(e) => setFinancialCompany(e.target.value)}>
+            <option value="">금융사: 전체</option>
+            {FINANCE_COMPANIES.map((f) => (
+              <option key={f} value={f}>
+                {f}
+              </option>
+            ))}
+          </select>
+          <select className="crm-field crm-field-select" value={productType} onChange={(e) => setProductType(e.target.value)}>
+            <option value="">상품유형: 전체</option>
+            <option value="rent">장기렌트</option>
+            <option value="lease">리스</option>
+          </select>
+          <select className="crm-field crm-field-select" value={deliveryType} onChange={(e) => setDeliveryType(e.target.value)}>
+            <option value="">출고방식: 전체</option>
+            <option value="special">특판</option>
+            <option value="dealer">대리점</option>
           </select>
 
           {showOwnerFilter ? (

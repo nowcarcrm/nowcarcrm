@@ -7,7 +7,7 @@ import toast from "react-hot-toast";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { MonthNavigator } from "@/app/_components/settlement/MonthNavigator";
 import { formatCurrency } from "../../_lib/settlement/formatters";
-import { getDeliveryScope } from "../../_lib/settlement/permissions";
+import { getDeliveryScope, isCeo, isDirector, isTeamLeader } from "../../_lib/settlement/permissions";
 import { isSuperAdmin } from "../../_lib/rolePermissions";
 import { supabase } from "../../_lib/supabaseClient";
 import type { MonthlyReportWithUser } from "../../_types/settlement";
@@ -33,6 +33,14 @@ export default function SettlementReportsPage() {
   const [rows, setRows] = useState<MonthlyReportWithUser[]>([]);
   const [busy, setBusy] = useState(false);
   const [actionBusy, setActionBusy] = useState<"" | "compute-all" | "confirm-month">("");
+  const [pendingStats, setPendingStats] = useState({
+    draft: 0,
+    pending_leader: 0,
+    pending_director: 0,
+    carried_from_previous: 0,
+    team_pending_leader: 0,
+    scope: "",
+  });
 
   const scope = useMemo(
     () =>
@@ -50,6 +58,10 @@ export default function SettlementReportsPage() {
 
   const canManage = useMemo(
     () => (profile ? isSuperAdmin({ email: profile.email, role: profile.role, rank: profile.rank }) : false),
+    [profile]
+  );
+  const canExportAll = useMemo(
+    () => (profile ? isSuperAdmin(profile) || isDirector(profile) || isCeo(profile) : false),
     [profile]
   );
 
@@ -80,6 +92,21 @@ export default function SettlementReportsPage() {
     }
   }
 
+  async function loadPendingStats() {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const res = await fetch(`/api/settlement/reports/pending-stats?month=${encodeURIComponent(month)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) return;
+      const json = (await res.json()) as typeof pendingStats;
+      setPendingStats(json);
+    } catch {
+      // keep page usable even if widget fails
+    }
+  }
+
   useEffect(() => {
     if (!loading && profile && scope.scope === "own") {
       router.replace(`/settlement/my-report?month=${month}`);
@@ -89,6 +116,7 @@ export default function SettlementReportsPage() {
   useEffect(() => {
     if (!loading && profile && scope.scope !== "own") {
       void loadReports();
+      void loadPendingStats();
     }
   }, [loading, profile, scope.scope, month]);
 
@@ -141,6 +169,31 @@ export default function SettlementReportsPage() {
     }
   }
 
+  async function downloadMonthlyExcel() {
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("로그인이 필요합니다.");
+      const res = await fetch(`/api/settlement/reports/export?month=${encodeURIComponent(month)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const json = (await res.json()) as { error?: string };
+        throw new Error(json.error ?? "엑셀 다운로드 실패");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `월별정산_${month}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "엑셀 다운로드 실패");
+    }
+  }
+
   if (loading || !profile) return <div className="py-16 text-center text-sm text-zinc-500">로딩 중…</div>;
   if (scope.scope === "own") return <div className="py-16 text-center text-sm text-zinc-500">내 정산서로 이동 중…</div>;
 
@@ -182,6 +235,13 @@ export default function SettlementReportsPage() {
             </button>
           </div>
         ) : null}
+        {canExportAll ? (
+          <div className="mt-2">
+            <button type="button" className="crm-btn-secondary" onClick={() => void downloadMonthlyExcel()}>
+              📥 전체 엑셀 다운로드
+            </button>
+          </div>
+        ) : null}
       </header>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -206,6 +266,42 @@ export default function SettlementReportsPage() {
           </div>
         </article>
       </section>
+
+      {(canExportAll || (profile && isTeamLeader(profile))) && (
+        <section className="crm-card p-5">
+          {canExportAll ? (
+            <>
+              <h2 className="text-base font-semibold">처리 필요 건수</h2>
+              <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <Link href={`/settlement/deliveries?month=${month}&status=draft`} className="rounded-xl border border-zinc-200 p-3 hover:bg-zinc-50">
+                  <div className="text-xs text-zinc-500">초안</div>
+                  <div className="mt-1 text-2xl font-bold">{pendingStats.draft}건</div>
+                </Link>
+                <Link href={`/settlement/deliveries?month=${month}&status=pending_leader`} className="rounded-xl border border-zinc-200 p-3 hover:bg-zinc-50">
+                  <div className="text-xs text-zinc-500">팀장대기</div>
+                  <div className="mt-1 text-2xl font-bold">{pendingStats.pending_leader}건</div>
+                </Link>
+                <Link href={`/settlement/deliveries?month=${month}&status=pending_director`} className="rounded-xl border border-zinc-200 p-3 hover:bg-zinc-50">
+                  <div className="text-xs text-zinc-500">본부장대기</div>
+                  <div className="mt-1 text-2xl font-bold">{pendingStats.pending_director}건</div>
+                </Link>
+                <Link href={`/settlement/deliveries?month=${month}&status=carried_over`} className="rounded-xl border border-zinc-200 p-3 hover:bg-zinc-50">
+                  <div className="text-xs text-zinc-500">지난달이월</div>
+                  <div className="mt-1 text-2xl font-bold">{pendingStats.carried_from_previous}건</div>
+                </Link>
+              </div>
+            </>
+          ) : profile && isTeamLeader(profile) ? (
+            <div className="rounded-xl border border-zinc-200 p-4">
+              <div className="text-sm font-semibold">내 승인 대기</div>
+              <div className="mt-1 text-zinc-700">{profile.teamName || "소속팀"} 팀장 승인 대기: {pendingStats.team_pending_leader}건</div>
+              <Link href={`/settlement/deliveries?status=pending_leader&team=${encodeURIComponent(profile.teamName || "")}`} className="crm-btn-secondary mt-3 inline-flex">
+                승인하러 가기
+              </Link>
+            </div>
+          ) : null}
+        </section>
+      )}
 
       <section className="crm-card p-5">
         {busy ? (

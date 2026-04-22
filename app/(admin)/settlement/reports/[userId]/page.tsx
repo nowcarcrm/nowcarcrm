@@ -73,6 +73,31 @@ export default function SettlementReportDetailPage() {
     return session?.access_token ?? "";
   }
 
+  async function downloadExcel() {
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("로그인이 필요합니다.");
+      const res = await fetch(`/api/settlement/reports/${encodeURIComponent(userId)}/export?month=${encodeURIComponent(month)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const json = (await res.json()) as { error?: string };
+        throw new Error(json.error ?? "엑셀 다운로드 실패");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `정산서_${report?.user_name ?? "직원"}_${month}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "엑셀 다운로드 실패");
+    }
+  }
+
   useEffect(() => {
     if (loading || !profile) return;
     if (scope.scope === "own" && scope.user_id !== userId) {
@@ -240,16 +265,21 @@ export default function SettlementReportDetailPage() {
           <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">
             {(report?.user_name ?? "직원")} ({report?.user_team_name ?? "-"} {report?.user_rank ?? "-"}) - {month} 정산서
           </h1>
-          {canManage ? (
-            <button
-              type="button"
-              className="crm-btn-primary"
-              disabled={report?.status === "confirmed" || actionBusy !== ""}
-              onClick={() => void recomputeSingle()}
-            >
-              {actionBusy === "compute" ? "재계산 중…" : "재계산"}
+          <div className="flex items-center gap-2">
+            <button type="button" className="crm-btn-secondary" onClick={() => void downloadExcel()}>
+              📥 엑셀 다운로드
             </button>
-          ) : null}
+            {canManage ? (
+              <button
+                type="button"
+                className="crm-btn-primary"
+                disabled={report?.status === "confirmed" || actionBusy !== ""}
+                onClick={() => void recomputeSingle()}
+              >
+                {actionBusy === "compute" ? "재계산 중…" : "재계산"}
+              </button>
+            ) : null}
+          </div>
         </div>
       </header>
 

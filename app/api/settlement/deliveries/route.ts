@@ -41,6 +41,10 @@ function monthNow() {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
+function sanitizeSearchTerm(raw: string): string {
+  return raw.replace(/[%_,()]/g, " ").replace(/\s+/g, " ").trim();
+}
+
 export async function GET(req: Request) {
   const auth = await getRequesterFromToken(req);
   if (!auth.requester) return NextResponse.json({ error: auth.error }, { status: auth.status });
@@ -51,15 +55,21 @@ export async function GET(req: Request) {
   const status = (url.searchParams.get("status") ?? "").trim();
   const ownerId = (url.searchParams.get("owner_id") ?? "").trim();
   const team = (url.searchParams.get("team") ?? "").trim();
+  const search = sanitizeSearchTerm((url.searchParams.get("search") ?? "").trim());
+  const financialCompany = (url.searchParams.get("financial_company") ?? "").trim();
+  const productType = (url.searchParams.get("product_type") ?? "").trim();
+  const deliveryType = (url.searchParams.get("delivery_type") ?? "").trim();
+  const allPeriod = url.searchParams.get("all_period") === "true";
   const includeDeleted = url.searchParams.get("include_deleted") === "true";
 
-  const { start, end } = monthRangeFilter(month);
   let query = supabaseAdmin
     .from("settlement_deliveries")
     .select("*")
-    .gte("delivery_date", start)
-    .lt("delivery_date", end)
     .order("delivery_date", { ascending: false });
+  if (!allPeriod) {
+    const { start, end } = monthRangeFilter(month);
+    query = query.gte("delivery_date", start).lt("delivery_date", end);
+  }
 
   if (!(includeDeleted && isSuperAdmin(requester))) {
     query = query.is("deleted_at", null);
@@ -76,6 +86,12 @@ export async function GET(req: Request) {
 
   if (ownerId && scope.scope !== "own") query = query.eq("owner_id", ownerId);
   if (team && scope.scope === "all") query = query.eq("team_name", team);
+  if (financialCompany) query = query.eq("financial_company", financialCompany);
+  if (productType === "rent" || productType === "lease") query = query.eq("product_type", productType);
+  if (deliveryType === "special" || deliveryType === "dealer") query = query.eq("delivery_type", deliveryType);
+  if (search) {
+    query = query.or(`customer_name.ilike.%${search}%,car_model.ilike.%${search}%,dealer_contract_no.ilike.%${search}%`);
+  }
 
   const { data, error } = await query;
   if (error) return NextResponse.json({ error: "출고 목록 조회 실패" }, { status: 500 });
