@@ -119,3 +119,47 @@ export type Approval = {
   notes: string | null;
   created_at: string;
 };
+
+export type MonthlyReport = {
+  id: string;
+  user_id: string;
+  rate_month: string;
+  total_ag_commission: number;
+  total_dealer_commission: number;
+  total_etc_revenue: number;
+  total_revenue: number;
+  total_customer_support: number;
+  net_revenue: number;
+  base_rate: number;
+  eligible_incentive: boolean;
+  incentive_tier: number;
+  incentive_rate: number;
+  rate_based_amount: number;
+  support_50_amount: number;
+  adjustment_amount: number;
+  final_amount: number;
+  status: "draft" | "confirmed" | "paid";
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  paid_at: string | null;
+  locked_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type MonthlyReportWithUser = MonthlyReport & {
+  user_name: string;
+  user_email: string;
+  user_rank: string;
+  user_team_name: string | null;
+};
+
+export type Adjustment = {
+  id: string;
+  report_id: string;
+  amount: number;
+  reason: string;
+  related_month: string | null;
+  created_at: string;
+  created_by: string;
+};

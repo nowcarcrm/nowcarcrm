@@ -12,6 +12,7 @@ import {
   type Requester,
 } from "../_lib";
 import { logSettlementAudit } from "@/app/(admin)/_lib/settlement/auditLog";
+import { triggerReportRecompute } from "@/app/(admin)/_lib/settlement/reportTrigger";
 import { isSuperAdmin } from "@/app/(admin)/_lib/rolePermissions";
 import type { Delivery, DeliveryUpdateInput } from "@/app/(admin)/_types/settlement";
 
@@ -124,6 +125,18 @@ export async function PATCH(req: Request, context: { params: Promise<{ id: strin
       changed_fields: changedFields,
     },
   });
+
+  if (["approved_director", "modilca_submitted", "confirmed"].includes(after.status)) {
+    void triggerReportRecompute({
+      deliveryId: after.id,
+      ownerId: after.owner_id,
+      agMonth: after.ag_settlement_month,
+      dealerMonth: after.dealer_settlement_month,
+      performedBy: requester.id,
+    }).catch((e) => {
+      console.error("[REPORT RECOMPUTE FAIL]", e);
+    });
+  }
 
   return NextResponse.json({ delivery: after });
 }

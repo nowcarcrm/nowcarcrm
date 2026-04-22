@@ -11,6 +11,7 @@ type Props = {
   min?: number;
   max?: number;
   className?: string;
+  allowNegative?: boolean;
 };
 
 export function CurrencyInput({
@@ -21,6 +22,7 @@ export function CurrencyInput({
   min = 0,
   max,
   className,
+  allowNegative = false,
 }: Props) {
   const [display, setDisplay] = useState(() => formatNumberInput(value));
 
@@ -31,7 +33,8 @@ export function CurrencyInput({
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const raw = e.target.value;
     const parsed = parseNumberInput(raw);
-    if (min !== undefined && parsed < min) return;
+    const effectiveMin = allowNegative ? (min ?? Number.MIN_SAFE_INTEGER) : min;
+    if (effectiveMin !== undefined && parsed < effectiveMin) return;
     if (max !== undefined && parsed > max) return;
     setDisplay(formatNumberInput(parsed));
     onChange(parsed);

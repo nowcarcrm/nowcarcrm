@@ -6,6 +6,7 @@ import { canApproveAsDirector, canApproveAsLeader } from "@/app/(admin)/_lib/set
 import { findDirectorId } from "@/app/(admin)/_lib/settlement/approvalHelpers";
 import { logSettlementAudit } from "@/app/(admin)/_lib/settlement/auditLog";
 import { notifyDeliveryApproved, notifyDeliverySubmitted } from "@/app/(admin)/_lib/settlement/notifications";
+import { triggerReportRecompute } from "@/app/(admin)/_lib/settlement/reportTrigger";
 import type { Delivery } from "@/app/(admin)/_types/settlement";
 
 const BodySchema = z.object({
@@ -82,6 +83,15 @@ export async function POST(req: Request, context: { params: Promise<{ id: string
         String(auth.requester.name ?? "승인자"),
         nextStatus
       );
+      void triggerReportRecompute({
+        deliveryId: delivery.id,
+        ownerId: delivery.owner_id,
+        agMonth: delivery.ag_settlement_month,
+        dealerMonth: delivery.dealer_settlement_month,
+        performedBy: auth.requester.id,
+      }).catch((e) => {
+        console.error("[REPORT RECOMPUTE FAIL]", e);
+      });
     }
   } catch {
     // 알림 실패 무시

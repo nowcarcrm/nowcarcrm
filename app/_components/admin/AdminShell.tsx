@@ -187,6 +187,12 @@ const NAV_ITEMS: NavItem[] = [
   },
   {
     section: "operations",
+    label: "정산 - 월별 정산",
+    href: "/settlement/reports",
+    description: "월별 정산 대시보드·개인 정산서",
+  },
+  {
+    section: "operations",
     label: "로그인 이력",
     href: "/admin/login-logs",
     description: "IP·기기·성공/실패 (총괄대표)",
@@ -249,6 +255,8 @@ const PAGE_TITLE_ROUTES: { prefix: string; title: string }[] = [
   { prefix: "/operations/all-customers", title: "전체 상담 고객" },
   { prefix: "/settlement/rates", title: "정산 - 요율 관리" },
   { prefix: "/settlement/deliveries", title: "정산 - 출고 관리" },
+  { prefix: "/settlement/reports", title: "정산 - 월별 정산" },
+  { prefix: "/settlement/my-report", title: "정산 - 월별 정산" },
   { prefix: "/dashboard", title: "대시보드" },
   { prefix: "/notices", title: "공지사항" },
   { prefix: "/counseling", title: "상담" },
