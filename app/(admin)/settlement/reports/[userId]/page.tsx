@@ -161,7 +161,7 @@ export default function SettlementReportDetailPage() {
       if (deliveryRes.ok) setDeliveries(deliveryJson.deliveries ?? []);
 
       if (found?.id) {
-        const adjRes = await fetch(`/api/settlement/reports/${found.id}/adjustments`, { headers: { Authorization: `Bearer ${token}` } });
+        const adjRes = await fetch(`/api/settlement/reports/by-report/${found.id}/adjustments`, { headers: { Authorization: `Bearer ${token}` } });
         const adjJson = (await adjRes.json()) as { rows?: Adjustment[] };
         if (adjRes.ok) setAdjustments(adjJson.rows ?? []);
         const disRes = await fetch(`/api/settlement/disputes?report_id=${encodeURIComponent(found.id)}`, {
@@ -213,7 +213,7 @@ export default function SettlementReportDetailPage() {
     try {
       const token = await getToken();
       if (!token) throw new Error("로그인이 필요합니다.");
-      const res = await fetch(`/api/settlement/reports/${report.id}/adjustments`, {
+      const res = await fetch(`/api/settlement/reports/by-report/${report.id}/adjustments`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
