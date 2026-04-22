@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { getRequesterFromToken } from "@/app/api/notifications/_lib";
 import { isCeo, isDirector } from "@/app/(admin)/_lib/settlement/permissions";

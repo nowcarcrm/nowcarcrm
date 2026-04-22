@@ -11,6 +11,7 @@ type SettlementUserLike = {
 
 export const RANK = {
   CEO: "대표",
+  SUPER_CEO: "총괄대표",
   DIRECTOR: "본부장",
   LEADER: "팀장",
 } as const;
@@ -28,7 +29,7 @@ export function isTeamLeader(user: SettlementUserLike | null | undefined): boole
 export function isCeo(user: SettlementUserLike | null | undefined): boolean {
   if (!user) return false;
   const rank = (user.rank ?? "").trim();
-  return rank === RANK.CEO || rank === "총괄대표";
+  return rank === RANK.CEO || rank === RANK.SUPER_CEO;
 }
 
 export function isSettlementManager(user: SettlementUserLike | null | undefined): boolean {

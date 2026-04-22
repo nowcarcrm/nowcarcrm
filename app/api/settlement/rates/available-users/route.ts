@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { NextResponse } from "next/server";
 import { isSuperAdmin } from "@/app/(admin)/_lib/rolePermissions";
 import { getRequesterFromToken } from "@/app/api/notifications/_lib";

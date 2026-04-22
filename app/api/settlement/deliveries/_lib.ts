@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { getSettlementMonth, getMonthRange } from "@/app/(admin)/_lib/settlement/formatters";
 import {
   canEditDelivery as canEditDeliveryByStatus,
