@@ -98,6 +98,31 @@ export default function SettlementReportDetailPage() {
     }
   }
 
+  async function downloadPDF() {
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("로그인이 필요합니다.");
+      const res = await fetch(`/api/settlement/reports/${encodeURIComponent(userId)}/export-pdf?month=${encodeURIComponent(month)}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const json = (await res.json()) as { error?: string };
+        throw new Error(json.error ?? "PDF 다운로드 실패");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `정산서_${report?.user_name ?? "직원"}_${month}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "PDF 다운로드 실패");
+    }
+  }
+
   useEffect(() => {
     if (loading || !profile) return;
     if (scope.scope === "own" && scope.user_id !== userId) {
@@ -268,6 +293,9 @@ export default function SettlementReportDetailPage() {
           <div className="flex items-center gap-2">
             <button type="button" className="crm-btn-secondary" onClick={() => void downloadExcel()}>
               📥 엑셀 다운로드
+            </button>
+            <button type="button" className="crm-btn-secondary" onClick={() => void downloadPDF()}>
+              📄 PDF
             </button>
             {canManage ? (
               <button

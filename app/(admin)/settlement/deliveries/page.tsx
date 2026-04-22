@@ -197,9 +197,14 @@ export default function SettlementDeliveriesPage() {
       <header className="crm-card p-5 sm:p-6">
         <div className="flex items-center justify-between gap-3">
           <h1 className="text-xl font-bold text-zinc-900 dark:text-zinc-50">출고 관리</h1>
-          <Link href="/settlement/deliveries/new" className="crm-btn-primary">
-            + 새 출고 등록
-          </Link>
+          <div className="flex items-center gap-2">
+            <Link href="/settlement/deliveries/new" className="crm-btn-primary">
+              + 새 출고 등록
+            </Link>
+            <Link href="/settlement/deliveries/bulk-upload" className="crm-btn-secondary">
+              📋 일괄 등록
+            </Link>
+          </div>
         </div>
       </header>
 
