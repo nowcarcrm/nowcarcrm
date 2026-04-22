@@ -310,6 +310,11 @@ export type Lead = {
   /** 연간 주행거리 — DB `annual_mileage` (예: 10000, unlimited) */
   annualMileage?: string | null;
 
+  /** 상담 희망 시간대 — DB `consultation_time_slot` (예: 09-12) */
+  consultationTimeSlot?: string | null;
+  /** 대량 배포 등으로 생성 시 배포자 `users.id` — DB `created_by` */
+  createdBy?: string | null;
+
   base: CustomerBase;
 
   counselingStatus: CounselingStatus; // 상담결과 (DB `leads.status`; 사이드바 진행단계와 별개)

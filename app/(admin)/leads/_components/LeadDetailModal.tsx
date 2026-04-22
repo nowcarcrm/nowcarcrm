@@ -62,6 +62,7 @@ import {
 import { supabase } from "../../_lib/supabaseClient";
 import { EMPLOYEES } from "../../_lib/leaseCrmSeed";
 import { listActiveUsers } from "../../_lib/usersSupabase";
+import { CONSULTATION_TIME_SLOT_LABELS, type ConsultationTimeSlotValue } from "../../_lib/bulkLeadPhone";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
@@ -229,6 +230,13 @@ function fromDateInputValue(dateOnly: string) {
 }
 
 /** 저장 직전: 배열·null 필드만 보정 (스프레드로 기존 lead 유지) */
+function consultationTimeBadgeLabel(slot: string): string {
+  const s = slot.trim() as ConsultationTimeSlotValue;
+  const full = CONSULTATION_TIME_SLOT_LABELS[s as ConsultationTimeSlotValue];
+  if (full) return full.replace("시~", "~");
+  return slot;
+}
+
 function ensureLeadShape(lead: Lead): Lead {
   const depositAmt =
     typeof lead.base.depositOrPrepaymentAmount === "string"
@@ -256,6 +264,8 @@ function ensureLeadShape(lead: Lead): Lead {
     deliveredAt: lead.deliveredAt ?? null,
     nextContactAt: lead.nextContactAt ?? null,
     annualMileage: lead.annualMileage ?? null,
+    consultationTimeSlot: lead.consultationTimeSlot ?? null,
+    createdBy: lead.createdBy ?? null,
   };
 }
 
@@ -941,6 +951,14 @@ export default function LeadDetailModal({
                 >
                   {status}
                 </span>
+                {draft.consultationTimeSlot?.trim() ? (
+                  <span
+                    title="상담 희망 시간대"
+                    className="inline-flex items-center rounded-full border border-violet-300 bg-violet-50 px-2 py-0.5 text-xs font-semibold text-violet-800 dark:border-violet-500/40 dark:bg-violet-950/50 dark:text-violet-200"
+                  >
+                    상담시간: {consultationTimeBadgeLabel(draft.consultationTimeSlot)}
+                  </span>
+                ) : null}
               </div>
               <div className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                 연락처 {base.phone} · 유입 {base.source}

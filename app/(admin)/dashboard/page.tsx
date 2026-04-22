@@ -29,6 +29,8 @@ import {
   getTeamVisibleUserIds,
   isTeamLeader,
 } from "../_lib/screenScopes";
+import { isAdmin } from "../_lib/rolePermissions";
+import BulkLeadDistributeModal from "../leads/_components/BulkLeadDistributeModal";
 import { openAiSecretary } from "@/app/_components/ai-secretary/events";
 
 export default function DashboardPage() {
@@ -60,6 +62,8 @@ export default function DashboardPage() {
   const [showEntrance, setShowEntrance] = useState(false);
   const [entranceActive, setEntranceActive] = useState(false);
   const [showAiBubble, setShowAiBubble] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [dashRefreshKey, setDashRefreshKey] = useState(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -169,7 +173,7 @@ export default function DashboardPage() {
     return () => {
       mounted = false;
     };
-  }, [profile, authLoading]);
+  }, [profile, authLoading, dashRefreshKey]);
 
   useEffect(() => {
     if (authLoading || !profile?.userId) return;
@@ -211,7 +215,7 @@ export default function DashboardPage() {
     return () => {
       mounted = false;
     };
-  }, [profile?.userId, authLoading]);
+  }, [profile?.userId, authLoading, dashRefreshKey]);
 
   const metrics = useMemo(() => {
     if (!leads) return null;
@@ -337,6 +341,23 @@ export default function DashboardPage() {
                 : "본인에게 배정된 고객만 집계합니다. 오늘 연락·부재 정리·최근 유입을 우선 확인해 보세요."}
             </p>
             <div className="mt-6 flex flex-wrap gap-2">
+              {profile &&
+              isAdmin({
+                id: profile.userId,
+                role: profile.role,
+                rank: profile.rank,
+                email: profile.email,
+                team_name: profile.teamName,
+              }) ? (
+                <button
+                  type="button"
+                  onClick={() => setBulkOpen(true)}
+                  className="inline-flex items-baseline gap-2 rounded-full border border-indigo-950/90 bg-indigo-950 px-4 py-2.5 text-[14px] font-semibold text-white shadow-sm hover:bg-indigo-900 dark:border-indigo-800 dark:bg-indigo-950 dark:text-white dark:hover:bg-indigo-900 [&_span]:text-white dark:[&_span]:text-white"
+                >
+                  <span className="text-white dark:text-white">📋</span>
+                  <span className="text-white dark:text-white">대량 디비 배포</span>
+                </button>
+              ) : null}
               <Link href="/leads/new-db?create=1" className="crm-pill-primary inline-flex items-baseline gap-2">
                 <span>고객 추가</span>
                 <span className="text-[11px] font-medium opacity-80">Ctrl+B</span>
@@ -505,6 +526,26 @@ export default function DashboardPage() {
       </motion.div>
 
       </motion.div>
+
+      <BulkLeadDistributeModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        profile={
+          profile
+            ? {
+                userId: profile.userId,
+                role: profile.role,
+                rank: profile.rank,
+                email: profile.email,
+                teamName: profile.teamName,
+                name: profile.name,
+              }
+            : null
+        }
+        onDistributed={() => {
+          setDashRefreshKey((k) => k + 1);
+        }}
+      />
     </>
   );
 }

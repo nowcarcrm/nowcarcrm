@@ -33,6 +33,7 @@ import {
 } from "../../_lib/leaseCrmStorage";
 import { getSupabaseConfigStatus, supabase } from "../../_lib/supabaseClient";
 import LeadCreateModal from "./LeadCreateModal";
+import BulkLeadDistributeModal from "./BulkLeadDistributeModal";
 import { useLeadDetailModal, useLeadListSearch } from "@/app/_components/admin/AdminShell";
 import { useAuth } from "@/app/_components/auth/AuthProvider";
 import { listActiveUsers } from "../../_lib/usersSupabase";
@@ -52,6 +53,7 @@ import {
   canDeleteLeads,
   canViewAllLeads,
   canViewLead,
+  isAdmin,
 } from "../../_lib/rolePermissions";
 import { maskPhone } from "@/app/_lib/mask";
 import { assertLeadExportAllowed } from "@/app/_lib/verifiedLeadExport";
@@ -178,6 +180,8 @@ function LeadsCategoryView({
   const safeSearchParams = searchParams ?? new URLSearchParams();
   const [leads, setLeads] = useState<Lead[] | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  const [listRefreshKey, setListRefreshKey] = useState(0);
   const [selectedLeadId, setSelectedLeadId] = useState<string | null>(null);
   const { openLeadById } = useLeadDetailModal();
   const { query: searchInput, setQuery: setSearchInput } = useLeadListSearch();
@@ -307,7 +311,7 @@ function LeadsCategoryView({
     return () => {
       mounted = false;
     };
-  }, [profile, authLoading]);
+  }, [profile, authLoading, listRefreshKey]);
 
   useEffect(() => {
     if (authLoading || !profile?.userId) return;
@@ -351,7 +355,7 @@ function LeadsCategoryView({
     return () => {
       mounted = false;
     };
-  }, [profile?.userId, authLoading]);
+  }, [profile?.userId, authLoading, listRefreshKey]);
 
   useEffect(() => {
     if (safeSearchParams.get("create") === "1") {
@@ -980,6 +984,23 @@ function LeadsCategoryView({
               엑셀 다운로드
             </TapButton>
           ) : null}
+          {profile &&
+          isAdmin({
+            id: profile.userId,
+            role: profile.role,
+            rank: profile.rank,
+            email: profile.email,
+            team_name: profile.teamName,
+          }) ? (
+            <TapButton
+              type="button"
+              onClick={() => setBulkOpen(true)}
+              className="inline-flex shrink-0 items-baseline gap-2 self-start rounded-xl border border-indigo-950/90 bg-indigo-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-900 dark:border-indigo-800 dark:bg-indigo-950 dark:text-white dark:hover:bg-indigo-900 [&_span]:text-white dark:[&_span]:text-white"
+            >
+              <span className="text-white dark:text-white">📋</span>
+              <span className="text-white dark:text-white">대량 디비 배포</span>
+            </TapButton>
+          ) : null}
           <TapButton
             type="button"
             onClick={() => setCreateOpen(true)}
@@ -1499,6 +1520,26 @@ function LeadsCategoryView({
           </div>
         </>
       ) : null}
+
+      <BulkLeadDistributeModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        profile={
+          profile
+            ? {
+                userId: profile.userId,
+                role: profile.role,
+                rank: profile.rank,
+                email: profile.email,
+                teamName: profile.teamName,
+                name: profile.name,
+              }
+            : null
+        }
+        onDistributed={() => {
+          setListRefreshKey((k) => k + 1);
+        }}
+      />
 
       {createOpen ? (
         <LeadCreateModal

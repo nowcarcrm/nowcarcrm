@@ -432,6 +432,8 @@ type LeadRow = {
   car_model: string;
   source: string;
   annual_mileage?: string | null;
+  consultation_time_slot?: string | null;
+  created_by?: string | null;
   status: string;
   sensitivity: string;
   manager: string;
@@ -905,6 +907,11 @@ function mapRowToLead(
       row.annual_mileage != null && String(row.annual_mileage).trim() !== ""
         ? String(row.annual_mileage).trim()
         : null,
+    consultationTimeSlot:
+      row.consultation_time_slot != null && String(row.consultation_time_slot).trim() !== ""
+        ? String(row.consultation_time_slot).trim()
+        : null,
+    createdBy: nullableDbStringId(row.created_by),
     base: {
       name: row.name,
       phone: row.phone,
@@ -967,6 +974,11 @@ function toLeadInsertRow(lead: Lead) {
       lead.annualMileage != null && String(lead.annualMileage).trim() !== ""
         ? String(lead.annualMileage).trim().slice(0, 20)
         : null,
+    consultation_time_slot:
+      lead.consultationTimeSlot != null && String(lead.consultationTimeSlot).trim() !== ""
+        ? String(lead.consultationTimeSlot).trim().slice(0, 10)
+        : null,
+    created_by: nullableDbStringId(lead.createdBy),
     status: lead.counselingStatus,
     sensitivity: lead.base.leadTemperature,
     manager: lead.base.ownerStaff,
@@ -989,6 +1001,10 @@ function toLeadUpdateRow(lead: Lead) {
     annual_mileage:
       lead.annualMileage != null && String(lead.annualMileage).trim() !== ""
         ? String(lead.annualMileage).trim().slice(0, 20)
+        : null,
+    consultation_time_slot:
+      lead.consultationTimeSlot != null && String(lead.consultationTimeSlot).trim() !== ""
+        ? String(lead.consultationTimeSlot).trim().slice(0, 10)
         : null,
     status: lead.counselingStatus,
     sensitivity: lead.base.leadTemperature,
