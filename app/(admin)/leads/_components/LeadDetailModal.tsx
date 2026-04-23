@@ -750,7 +750,11 @@ export default function LeadDetailModal({
         toast.error("담당 직원은 본인만 지정할 수 있습니다.");
         return;
       }
-      if (myName && draft.base.ownerStaff?.trim() !== myName) {
+      if (
+        myName &&
+        draft.managerUserId !== uid &&
+        draft.base.ownerStaff?.trim() !== myName
+      ) {
         toast.error("담당 직원은 본인만 지정할 수 있습니다.");
         return;
       }

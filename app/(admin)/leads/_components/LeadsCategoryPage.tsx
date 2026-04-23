@@ -777,7 +777,12 @@ function LeadsCategoryView({
           toast.error("담당 직원은 본인만 지정할 수 있습니다.");
           throw new Error("담당 직원은 본인만 지정할 수 있습니다.");
         }
-        if (myName && next.base.ownerStaff?.trim() !== myName) {
+        // manager_user_id가 이미 본인이면 표시명(ownerStaff)만 다른 경우(직급 접미 등)는 저장 시 applyStaffLeadClientLocks로 정리됨
+        if (
+          myName &&
+          next.managerUserId !== profile.userId &&
+          next.base.ownerStaff?.trim() !== myName
+        ) {
           toast.error("담당 직원은 본인만 지정할 수 있습니다.");
           throw new Error("담당 직원은 본인만 지정할 수 있습니다.");
         }
