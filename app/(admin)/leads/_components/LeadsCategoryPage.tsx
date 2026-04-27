@@ -22,7 +22,7 @@ import {
   isToday,
   lastContactReferenceIso,
 } from "../../_lib/leaseCrmLogic";
-import { formatSupabaseError } from "../../_lib/leaseCrmSupabase";
+import { formatSupabaseError, patchLead } from "../../_lib/leaseCrmSupabase";
 import {
   applyStaffLeadClientLocks,
   createLead,
@@ -733,20 +733,43 @@ function LeadsCategoryView({
 
   async function commitCounselingStatus(row: Lead, nextStatus: CounselingStatus, fr?: string, note?: string) {
     const nextIso = new Date().toISOString();
-    const next: Lead = {
-      ...row,
-      counselingStatus: nextStatus,
-      statusUpdatedAt: nextIso,
-      updatedAt: nextIso,
-      lastHandledAt: nextIso,
-      ...(requiresFailureReasonStatus(nextStatus)
-        ? {
-            failureReason: fr ?? row.failureReason ?? "",
-            failureReasonNote: note ?? row.failureReasonNote ?? "",
-          }
-        : {}),
-    };
-    await handleUpdateLead(next);
+
+    // 실패 사유 필요 status는 consultations 동기화가 필요해 기존 full-update 경로 유지
+    if (requiresFailureReasonStatus(nextStatus)) {
+      const next: Lead = {
+        ...row,
+        counselingStatus: nextStatus,
+        statusUpdatedAt: nextIso,
+        updatedAt: nextIso,
+        lastHandledAt: nextIso,
+        failureReason: fr ?? row.failureReason ?? "",
+        failureReasonNote: note ?? row.failureReasonNote ?? "",
+      };
+      await handleUpdateLead(next);
+      return;
+    }
+
+    // 단순 status 변경: leads PATCH (memo 등 다른 컬럼 stale 값으로 덮어쓰기 방지)
+    try {
+      await patchLead(row.id, { status: nextStatus });
+      commitLeads(
+        (leads ?? []).map((l) =>
+          l.id === row.id
+            ? {
+                ...l,
+                counselingStatus: nextStatus,
+                statusUpdatedAt: nextIso,
+                updatedAt: nextIso,
+                lastHandledAt: nextIso,
+              }
+            : l
+        )
+      );
+    } catch (error) {
+      console.error("[commitCounselingStatus] PATCH 실패", formatSupabaseError(error), error);
+      toast.error(error instanceof Error ? error.message : "상담결과 변경에 실패했습니다.");
+      throw error;
+    }
   }
 
   async function handleUpdateLead(next: Lead, options?: { syncConsultations?: boolean }) {

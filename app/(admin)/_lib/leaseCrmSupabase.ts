@@ -1703,6 +1703,54 @@ export async function updateLead(lead: Lead, scope?: ViewerScope, options?: Upda
   }
 }
 
+/**
+ * leads 테이블 부분 업데이트(PATCH). 인라인 드롭다운 변경처럼 *주어진 컬럼만* 갱신해야 할 때 사용.
+ * full-row UPDATE(`updateLead` + `toLeadUpdateRow`) 와 달리 stale 클라이언트 state로 다른 컬럼을 덮어쓰지 않음.
+ *
+ * 허용 컬럼은 leads 스키마에 실제 존재하는 것만 화이트리스트.
+ * 권한·관계 테이블 동기화가 필요한 경우(예: failureReason → consultations)는 `updateLead` 경로 사용 권장.
+ */
+export type LeadPatch = Partial<{
+  status: string;
+  counseling_status: string;
+  lead_status: string;
+  contract_status: string;
+  next_contact_at: string | null;
+  review_status: string;
+  manager: string;
+  manager_user_id: string | null;
+  sensitivity: string;
+}>;
+
+export async function patchLead(leadId: string | number, patch: LeadPatch) {
+  ensureSupabaseConfigured();
+  if (leadId === null || leadId === undefined || (typeof leadId === "string" && !leadId.trim())) {
+    throw new Error("patchLead: leadId is required");
+  }
+
+  const cleanPatch: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (value !== undefined) cleanPatch[key] = value;
+  }
+  if (Object.keys(cleanPatch).length === 0) {
+    throw new Error("patchLead: empty patch");
+  }
+  cleanPatch.updated_at = new Date().toISOString();
+
+  const { data, error } = await supabase
+    .from("leads")
+    .update(cleanPatch)
+    .eq("id", leadId)
+    .select()
+    .single();
+
+  if (error) {
+    console.error("[patchLead] error:", error, "leadId:", leadId, "patch:", cleanPatch);
+    throw new Error(`고객 부분 수정 실패: ${formatSupabaseError(error)}`);
+  }
+  return data;
+}
+
 export async function deleteLead(leadId: string, scope?: ViewerScope) {
   ensureSupabaseConfigured();
   const idForDelete = coerceDbStringId(leadId);
