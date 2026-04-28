@@ -60,6 +60,15 @@ const STAGE_TABS: Array<{ key: StageTabKey; label: string }> = [
 
 const STAGE_TAB_KEYS = new Set<string>(STAGE_TABS.map((t) => t.key));
 
+const STAGE_CATEGORIES: Array<{ key: LeadCategoryKey; label: string }> = STAGE_TABS
+  .filter((t): t is { key: LeadCategoryKey; label: string } => t.key !== "all");
+
+const MATRIX_VIEWS: Array<{ value: "year" | "month" | "day"; label: string }> = [
+  { value: "year", label: "연도별" },
+  { value: "month", label: "월별" },
+  { value: "day", label: "일별" },
+];
+
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }
@@ -86,6 +95,7 @@ export default function AllCustomersOperationalPage() {
   const [monthFilter, setMonthFilter] = useState("");
   const [dayFilter, setDayFilter] = useState("");
   const [periodView, setPeriodView] = useState<"year" | "month">("month");
+  const [matrixView, setMatrixView] = useState<"year" | "month" | "day">("month");
   const [listPage, setListPage] = useState(1);
   const [stageFilter, setStageFilter] = useState<StageTabKey>(() => {
     const fromUrl = (searchParams?.get("stage") ?? "").trim();
@@ -369,6 +379,102 @@ export default function AllCustomersOperationalPage() {
     return [...bucket.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
   }, [leadsForDateBuckets]);
 
+  /** 매트릭스 모집단: 검색·직원 필터만 적용. 단계 탭/날짜 필터는 매트릭스에 영향 없음 */
+  const matrixSourceLeads = useMemo(
+    () => sortedLeads.filter(matchesSearchAndManager),
+    [sortedLeads, matchesSearchAndManager]
+  );
+
+  const matrixData = useMemo(() => {
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    const currentMonth = now.getMonth() + 1;
+    const targetYear =
+      matrixView === "year"
+        ? null
+        : yearFilter
+          ? Number(yearFilter)
+          : currentYear;
+    const targetMonth =
+      matrixView === "day" ? (monthFilter ? Number(monthFilter) : currentMonth) : null;
+
+    let timeAxis: Array<{ key: string; label: string }> = [];
+    if (matrixView === "year") {
+      const yearSet = new Set<number>();
+      for (const l of matrixSourceLeads) {
+        const d = new Date(l.createdAt);
+        if (!Number.isNaN(d.getTime())) yearSet.add(d.getFullYear());
+      }
+      if (yearSet.size === 0) yearSet.add(currentYear);
+      timeAxis = [...yearSet]
+        .sort((a, b) => a - b)
+        .map((y) => ({ key: String(y), label: `${y}` }));
+    } else if (matrixView === "month") {
+      timeAxis = Array.from({ length: 12 }, (_, i) => ({
+        key: String(i + 1),
+        label: `${i + 1}월`,
+      }));
+    } else {
+      const lastDay = new Date(targetYear ?? currentYear, targetMonth ?? currentMonth, 0).getDate();
+      timeAxis = Array.from({ length: lastDay }, (_, i) => ({
+        key: String(i + 1),
+        label: `${i + 1}일`,
+      }));
+    }
+
+    const counts: Record<string, Record<string, number>> = {};
+    for (const stage of STAGE_CATEGORIES) {
+      counts[stage.key] = {};
+      for (const slot of timeAxis) counts[stage.key][slot.key] = 0;
+    }
+
+    for (const l of matrixSourceLeads) {
+      const d = new Date(l.createdAt);
+      if (Number.isNaN(d.getTime())) continue;
+      const ly = d.getFullYear();
+      const lm = d.getMonth() + 1;
+      const ld = d.getDate();
+      let slotKey: string | null = null;
+      if (matrixView === "year") {
+        slotKey = String(ly);
+      } else if (matrixView === "month") {
+        if (ly !== targetYear) continue;
+        slotKey = String(lm);
+      } else {
+        if (ly !== targetYear || lm !== targetMonth) continue;
+        slotKey = String(ld);
+      }
+      const stageKey = resolveLeadStageKeyFromCounselingResult(l.counselingStatus);
+      if (counts[stageKey] && counts[stageKey][slotKey] !== undefined) {
+        counts[stageKey][slotKey] += 1;
+      }
+    }
+
+    const rows = STAGE_CATEGORIES.map((stage) => {
+      const cellCounts = timeAxis.map((slot) => counts[stage.key][slot.key] ?? 0);
+      const total = cellCounts.reduce((a, b) => a + b, 0);
+      return {
+        stageKey: stage.key,
+        stageLabel: stage.label,
+        counts: cellCounts,
+        total,
+      };
+    });
+    const columnTotals = timeAxis.map((_, i) =>
+      rows.reduce((sum, r) => sum + r.counts[i], 0)
+    );
+    const grandTotal = columnTotals.reduce((a, b) => a + b, 0);
+
+    let scopeNote: string | null = null;
+    if (matrixView === "month" && !yearFilter) {
+      scopeNote = `현재 ${currentYear}년 기준`;
+    } else if (matrixView === "day" && (!yearFilter || !monthFilter)) {
+      scopeNote = `현재 ${targetYear}년 ${targetMonth}월 기준`;
+    }
+
+    return { timeAxis, rows, columnTotals, grandTotal, scopeNote };
+  }, [matrixSourceLeads, matrixView, yearFilter, monthFilter]);
+
   const openLead = useCallback(
     async (id: string) => {
       await openLeadById(id);
@@ -452,40 +558,6 @@ export default function AllCustomersOperationalPage() {
           >
             엑셀 다운로드
           </button>
-        </div>
-        <div className="mt-4">
-          <p className="mb-2 text-[12px] font-medium text-slate-500 dark:text-zinc-400">
-            상담결과 단계
-          </p>
-          <div className="flex flex-wrap gap-2">
-            {STAGE_TABS.map((tab) => {
-              const active = stageFilter === tab.key;
-              const count = stageCounts[tab.key] ?? 0;
-              return (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => handleStageChange(tab.key)}
-                  className={cn(
-                    "rounded-lg border bg-white px-3 py-1.5 text-[13px] font-semibold transition",
-                    active
-                      ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
-                      : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
-                  )}
-                >
-                  {tab.label}
-                  <span
-                    className={cn(
-                      "ml-1.5 text-[12px] font-medium",
-                      active ? "text-sky-700 dark:text-sky-300" : "text-slate-500 dark:text-zinc-400"
-                    )}
-                  >
-                    ({count})
-                  </span>
-                </button>
-              );
-            })}
-          </div>
         </div>
         <div className="mt-4 max-w-md">
           <label className="mb-1 block text-[12px] font-medium text-slate-500 dark:text-zinc-400">
@@ -587,7 +659,144 @@ export default function AllCustomersOperationalPage() {
             })}
           </select>
         </div>
+        <div className="mt-4">
+          <p className="mb-2 text-[12px] font-medium text-slate-500 dark:text-zinc-400">
+            상담결과 단계
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {STAGE_TABS.map((tab) => {
+              const active = stageFilter === tab.key;
+              const count = stageCounts[tab.key] ?? 0;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => handleStageChange(tab.key)}
+                  className={cn(
+                    "rounded-lg border bg-white px-3 py-1.5 text-[13px] font-semibold transition",
+                    active
+                      ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                      : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                  )}
+                >
+                  {tab.label}
+                  <span
+                    className={cn(
+                      "ml-1.5 text-[12px] font-medium",
+                      active ? "text-sky-700 dark:text-sky-300" : "text-slate-500 dark:text-zinc-400"
+                    )}
+                  >
+                    ({count})
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
         <div className="mt-4 border-t border-slate-100 pt-4 dark:border-zinc-800/80">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <p className="text-[12px] font-medium text-slate-500 dark:text-zinc-400">
+                상담결과 단계 분포
+              </p>
+              {matrixData.scopeNote ? (
+                <span className="text-[11px] text-slate-400 dark:text-zinc-500">
+                  · {matrixData.scopeNote}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {MATRIX_VIEWS.map((opt) => {
+                const active = matrixView === opt.value;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => setMatrixView(opt.value)}
+                    className={cn(
+                      "rounded-lg border bg-white px-3 py-1.5 text-[12px] font-semibold transition",
+                      active
+                        ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                        : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                    )}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-zinc-800">
+            <table className="min-w-full border-collapse text-[12px]">
+              <thead className="bg-slate-50 dark:bg-zinc-900/80">
+                <tr className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-zinc-400">
+                  <th className="sticky left-0 z-10 border-b border-slate-200 bg-slate-50 px-3 py-2 text-left dark:border-zinc-800 dark:bg-zinc-900/80">
+                    단계
+                  </th>
+                  {matrixData.timeAxis.map((slot) => (
+                    <th
+                      key={slot.key}
+                      className="whitespace-nowrap border-b border-slate-200 px-3 py-2 text-right dark:border-zinc-800"
+                    >
+                      {slot.label}
+                    </th>
+                  ))}
+                  <th className="border-b border-slate-200 bg-slate-100 px-3 py-2 text-right text-slate-700 dark:border-zinc-800 dark:bg-zinc-800/80 dark:text-zinc-200">
+                    합계
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {matrixData.rows.map((row) => (
+                  <tr
+                    key={row.stageKey}
+                    className="border-t border-slate-100 hover:bg-sky-50/40 dark:border-zinc-800/80 dark:hover:bg-sky-950/20"
+                  >
+                    <td className="sticky left-0 z-10 bg-white px-3 py-2 text-left font-medium text-slate-800 dark:bg-zinc-950 dark:text-zinc-100">
+                      {row.stageLabel}
+                    </td>
+                    {row.counts.map((cnt, i) => (
+                      <td
+                        key={i}
+                        className={cn(
+                          "px-3 py-2 text-right tabular-nums",
+                          cnt > 0 ? "text-slate-800 dark:text-zinc-200" : "text-slate-300 dark:text-zinc-600"
+                        )}
+                      >
+                        {cnt > 0 ? cnt.toLocaleString("ko-KR") : "-"}
+                      </td>
+                    ))}
+                    <td className="bg-slate-50 px-3 py-2 text-right font-semibold text-slate-800 tabular-nums dark:bg-zinc-900/60 dark:text-zinc-100">
+                      {row.total.toLocaleString("ko-KR")}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 border-slate-200 bg-slate-100 font-semibold dark:border-zinc-700 dark:bg-zinc-800/80">
+                  <td className="sticky left-0 z-10 bg-slate-100 px-3 py-2 text-left text-slate-800 dark:bg-zinc-800/80 dark:text-zinc-100">
+                    합계
+                  </td>
+                  {matrixData.columnTotals.map((cnt, i) => (
+                    <td
+                      key={i}
+                      className="px-3 py-2 text-right text-slate-800 tabular-nums dark:text-zinc-100"
+                    >
+                      {cnt.toLocaleString("ko-KR")}
+                    </td>
+                  ))}
+                  <td className="bg-slate-200 px-3 py-2 text-right text-slate-900 tabular-nums dark:bg-zinc-700 dark:text-zinc-50">
+                    {matrixData.grandTotal.toLocaleString("ko-KR")}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+          <p className="mt-2 text-[11px] text-slate-500 dark:text-zinc-500">
+            ※ 검색·직원 필터만 반영합니다. 단계 탭과 날짜 필터는 매트릭스에 영향 없음 (자체 시간 축).
+          </p>
+        </div>
+        <div className="mt-4">
           <p className="mb-2 text-[12px] font-medium text-slate-500 dark:text-zinc-400">
             등록일 기준 집계
           </p>
