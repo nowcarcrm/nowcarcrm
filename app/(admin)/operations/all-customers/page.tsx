@@ -176,13 +176,12 @@ export default function AllCustomersOperationalPage() {
         const nameMap = new Map(
           scopedUsers.map((u) => [u.id, { name: u.name?.trim() || "", rank: u.rank ?? "직급 미설정" }])
         );
-        const loadedRaw = await loadLeadsFromStorage({
+        const visibleIdList = [...visibleUserIds];
+        // 권한 강제는 server-side `manager_user_id IN visibleUserIds` 필터로만. 클라이언트 후처리 의존 제거.
+        const loaded = await loadLeadsFromStorage({
           ...opScope,
-          visibleUserIds: [...visibleUserIds],
-        });
-        const loaded = loadedRaw.filter((l) => {
-          const managerId = (l.managerUserId ?? "").trim();
-          return !!managerId && visibleUserIds.has(managerId);
+          operationalFullAccess: false,
+          visibleUserIds: visibleIdList,
         });
         const ids = loaded.map((l) => l.id);
         const [consultMap, contractMap] = await Promise.all([
