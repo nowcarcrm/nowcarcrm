@@ -11,7 +11,7 @@ import {
 import {
   loadLeadsFromStorage,
 } from "../../_lib/leaseCrmStorage";
-import type { Lead } from "../../_lib/leaseCrmTypes";
+import type { Lead, LeadCategoryKey } from "../../_lib/leaseCrmTypes";
 import { pipelineStageLabelForLead } from "../../_lib/staffOverviewMetrics";
 import {
   downloadXlsxRows,
@@ -21,7 +21,10 @@ import {
   todayYmdKst,
 } from "../../_lib/excelExport";
 import { assertLeadExportAllowed } from "@/app/_lib/verifiedLeadExport";
-import { lastContactReferenceIso } from "../../_lib/leaseCrmLogic";
+import {
+  lastContactReferenceIso,
+  resolveLeadStageKeyFromCounselingResult,
+} from "../../_lib/leaseCrmLogic";
 import { effectiveContractNetProfitForMetrics } from "../../_lib/leaseCrmContractPersist";
 import { listActiveUsers } from "../../_lib/usersSupabase";
 import { useLeadDetailModal } from "@/app/_components/admin/AdminShell";
@@ -41,6 +44,21 @@ import {
 } from "@/app/_components/ui/CrmListPagination";
 
 const STORAGE_MANAGER_KEY = "nowcar_all_customers_manager_user_id";
+
+type StageTabKey = LeadCategoryKey | "all";
+
+const STAGE_TABS: Array<{ key: StageTabKey; label: string }> = [
+  { key: "all", label: "전체" },
+  { key: "new-db", label: "신규" },
+  { key: "counseling-progress", label: "상담중" },
+  { key: "unresponsive", label: "부재" },
+  { key: "contract-progress", label: "계약" },
+  { key: "delivery-complete", label: "인도완료" },
+  { key: "hold", label: "보류" },
+  { key: "cancel", label: "취소" },
+];
+
+const STAGE_TAB_KEYS = new Set<string>(STAGE_TABS.map((t) => t.key));
 
 function cn(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
@@ -69,6 +87,10 @@ export default function AllCustomersOperationalPage() {
   const [dayFilter, setDayFilter] = useState("");
   const [periodView, setPeriodView] = useState<"year" | "month">("month");
   const [listPage, setListPage] = useState(1);
+  const [stageFilter, setStageFilter] = useState<StageTabKey>(() => {
+    const fromUrl = (searchParams?.get("stage") ?? "").trim();
+    return STAGE_TAB_KEYS.has(fromUrl) ? (fromUrl as StageTabKey) : "all";
+  });
   const hydratedManagerRef = useRef(false);
   const { openLeadById } = useLeadDetailModal();
   const selectedUserId = (safeSearchParams.get("managerUserId") ?? "").trim();
@@ -181,18 +203,12 @@ export default function AllCustomersOperationalPage() {
     return [...leads].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }, [leads]);
 
-  const filteredLeads = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const qd = search.replace(/\D/g, "");
-    return sortedLeads.filter((l) => {
+  const matchesSearchAndManager = useCallback(
+    (l: Lead) => {
       if (selectedUserId && canUseManagerFilter && (l.managerUserId ?? "") !== selectedUserId) return false;
-      const created = new Date(l.createdAt);
-      if (!Number.isNaN(created.getTime())) {
-        if (yearFilter && String(created.getFullYear()) !== yearFilter) return false;
-        if (monthFilter && String(created.getMonth() + 1).padStart(2, "0") !== monthFilter) return false;
-        if (dayFilter && String(created.getDate()).padStart(2, "0") !== dayFilter) return false;
-      }
+      const q = search.trim().toLowerCase();
       if (!q) return true;
+      const qd = search.replace(/\D/g, "");
       const name = l.base.name.toLowerCase();
       const phone = l.base.phone.toLowerCase();
       const phoneD = l.base.phone.replace(/\D/g, "");
@@ -202,12 +218,72 @@ export default function AllCustomersOperationalPage() {
       if (name.includes(q) || phone.includes(q) || mgrLower.includes(q)) return true;
       if (qd.length >= 2 && phoneD.includes(qd)) return true;
       return false;
-    });
-  }, [sortedLeads, search, managerNameById, selectedUserId, yearFilter, monthFilter, dayFilter, canUseManagerFilter]);
+    },
+    [search, selectedUserId, canUseManagerFilter, managerNameById]
+  );
+
+  const matchesDate = useCallback(
+    (l: Lead) => {
+      const created = new Date(l.createdAt);
+      if (Number.isNaN(created.getTime())) return true;
+      if (yearFilter && String(created.getFullYear()) !== yearFilter) return false;
+      if (monthFilter && String(created.getMonth() + 1).padStart(2, "0") !== monthFilter) return false;
+      if (dayFilter && String(created.getDate()).padStart(2, "0") !== dayFilter) return false;
+      return true;
+    },
+    [yearFilter, monthFilter, dayFilter]
+  );
+
+  const matchesStage = useCallback(
+    (l: Lead) => {
+      if (stageFilter === "all") return true;
+      return resolveLeadStageKeyFromCounselingResult(l.counselingStatus) === stageFilter;
+    },
+    [stageFilter]
+  );
+
+  /** stageFilter 만 빼고 검색·담당자·날짜 필터를 적용한 후보 (탭별 카운트 모집단) */
+  const leadsForStageCounts = useMemo(
+    () => sortedLeads.filter((l) => matchesSearchAndManager(l) && matchesDate(l)),
+    [sortedLeads, matchesSearchAndManager, matchesDate]
+  );
+
+  /** 날짜 필터만 빼고 검색·담당자·stageFilter를 적용한 후보 (등록일 집계 버튼 모집단) */
+  const leadsForDateBuckets = useMemo(
+    () => sortedLeads.filter((l) => matchesSearchAndManager(l) && matchesStage(l)),
+    [sortedLeads, matchesSearchAndManager, matchesStage]
+  );
+
+  const filteredLeads = useMemo(
+    () => leadsForStageCounts.filter(matchesStage),
+    [leadsForStageCounts, matchesStage]
+  );
+
+  const stageCounts = useMemo(() => {
+    const counts: Record<string, number> = { all: leadsForStageCounts.length };
+    for (const l of leadsForStageCounts) {
+      const key = resolveLeadStageKeyFromCounselingResult(l.counselingStatus);
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    return counts;
+  }, [leadsForStageCounts]);
 
   useEffect(() => {
     setListPage(1);
-  }, [search, selectedUserId, yearFilter, monthFilter, dayFilter]);
+  }, [search, selectedUserId, yearFilter, monthFilter, dayFilter, stageFilter]);
+
+  const handleStageChange = useCallback(
+    (key: StageTabKey) => {
+      setStageFilter(key);
+      const next = new URLSearchParams(safeSearchParams.toString());
+      if (key === "all") next.delete("stage");
+      else next.set("stage", key);
+      const qs = next.toString();
+      const base = pathname || "/operations/all-customers";
+      router.replace(qs ? `${base}?${qs}` : base, { scroll: false });
+    },
+    [pathname, router, safeSearchParams]
+  );
 
   const safeListPage = Math.min(
     Math.max(1, listPage),
@@ -273,25 +349,25 @@ export default function AllCustomersOperationalPage() {
 
   const yearlyBuckets = useMemo(() => {
     const bucket = new Map<string, number>();
-    for (const lead of sortedLeads) {
+    for (const lead of leadsForDateBuckets) {
       const d = new Date(lead.createdAt);
       if (Number.isNaN(d.getTime())) continue;
       const y = String(d.getFullYear());
       bucket.set(y, (bucket.get(y) ?? 0) + 1);
     }
     return [...bucket.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
-  }, [sortedLeads]);
+  }, [leadsForDateBuckets]);
 
   const monthlyBuckets = useMemo(() => {
     const bucket = new Map<string, number>();
-    for (const lead of sortedLeads) {
+    for (const lead of leadsForDateBuckets) {
       const d = new Date(lead.createdAt);
       if (Number.isNaN(d.getTime())) continue;
       const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       bucket.set(key, (bucket.get(key) ?? 0) + 1);
     }
     return [...bucket.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
-  }, [sortedLeads]);
+  }, [leadsForDateBuckets]);
 
   const openLead = useCallback(
     async (id: string) => {
@@ -376,6 +452,40 @@ export default function AllCustomersOperationalPage() {
           >
             엑셀 다운로드
           </button>
+        </div>
+        <div className="mt-4">
+          <p className="mb-2 text-[12px] font-medium text-slate-500 dark:text-zinc-400">
+            상담결과 단계
+          </p>
+          <div className="flex flex-wrap gap-2">
+            {STAGE_TABS.map((tab) => {
+              const active = stageFilter === tab.key;
+              const count = stageCounts[tab.key] ?? 0;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  onClick={() => handleStageChange(tab.key)}
+                  className={cn(
+                    "rounded-lg border bg-white px-3 py-1.5 text-[13px] font-semibold transition",
+                    active
+                      ? "border-sky-500 text-sky-800 ring-2 ring-sky-500/30 dark:border-sky-400 dark:text-sky-200"
+                      : "border-slate-200 text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900"
+                  )}
+                >
+                  {tab.label}
+                  <span
+                    className={cn(
+                      "ml-1.5 text-[12px] font-medium",
+                      active ? "text-sky-700 dark:text-sky-300" : "text-slate-500 dark:text-zinc-400"
+                    )}
+                  >
+                    ({count})
+                  </span>
+                </button>
+              );
+            })}
+          </div>
         </div>
         <div className="mt-4 max-w-md">
           <label className="mb-1 block text-[12px] font-medium text-slate-500 dark:text-zinc-400">
