@@ -6,7 +6,8 @@ import { countInclusiveCalendarDays } from "../../_lib/leaveDateRange";
 
 type Props = {
   requests: LeaveRequestItem[];
-  canCancel?: boolean;
+  /** row별 취소 가능 여부 — 본부장+ 는 모든 status, 본인은 pending 만 허용 등 호출자가 결정 */
+  canCancelRequest?: (item: LeaveRequestItem) => boolean;
   onCancel?: (id: string) => void;
   /** 취소된 본인 요청을 목록에서 삭제 (DELETE API) */
   onRemoveCancelled?: (id: string) => void;
@@ -28,7 +29,7 @@ function leaveTypeLabel(item: LeaveRequestItem) {
   return `연차 (${days}일·${amt}회)`;
 }
 
-export default function LeaveRequestCard({ requests, canCancel = false, onCancel, onRemoveCancelled }: Props) {
+export default function LeaveRequestCard({ requests, canCancelRequest, onCancel, onRemoveCancelled }: Props) {
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
       <h2 className="text-base font-semibold text-zinc-900">내 연차·반차·외근·병가 요청</h2>
@@ -59,7 +60,7 @@ export default function LeaveRequestCard({ requests, canCancel = false, onCancel
                 ) : (
                   <AttendanceStatusBadge status={leaveStatusLabel(r.status)} />
                 )}
-                {canCancel && r.status !== "cancelled" ? (
+                {canCancelRequest?.(r) && r.status !== "cancelled" ? (
                   <button
                     type="button"
                     onClick={() => onCancel?.(r.id)}

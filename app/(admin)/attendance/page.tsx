@@ -154,22 +154,31 @@ export default function AttendancePage() {
 
   const isCheckedIn = !!today?.check_in;
   const isCheckedOut = !!today?.check_out;
-  const approvedLeaveToday = myLeaveRequests.some((r) => r.status === "approved" && r.fromDate <= todayDate && r.toDate >= todayDate);
+  const isViewingSelf = !!profile?.userId && currentUserId === profile.userId;
+  /**
+   * dropdown 으로 선택한 사용자의 오늘 승인된 leave 종류.
+   * - 본인 선택 시: myLeaveRequests(인증자 본인 전체 leave) 에서 조회
+   * - 타인 선택 시: approvedLeaveTodayHints(scope 사용자들의 오늘 승인 leave)에서 조회
+   * scope='self' 직원은 hints 가 비어 오므로 회귀 방지를 위해 본인 분기는 myLeaveRequests 유지.
+   */
+  const selectedApprovedLeaveType: LeaveRequestType | undefined = isViewingSelf
+    ? myLeaveRequests.find(
+        (r) => r.status === "approved" && r.fromDate <= todayDate && r.toDate >= todayDate
+      )?.requestType
+    : approvedLeaveTodayHints.find((h) => h.userId === currentUserId)?.requestType;
+  const approvedLeaveToday = !!selectedApprovedLeaveType;
   const lateThreshold = useMemo(() => {
     const d = new Date();
     d.setHours(9, 30, 0, 0);
     return d.getTime();
   }, []);
   const isPastLateThreshold = Date.now() > lateThreshold;
-  const approvedLeaveTodayItem = myLeaveRequests.find(
-    (r) => r.status === "approved" && r.fromDate <= todayDate && r.toDate >= todayDate
-  );
-  const statusText = approvedLeaveTodayItem
-    ? approvedLeaveTodayItem.requestType === "field_work"
+  const statusText = selectedApprovedLeaveType
+    ? selectedApprovedLeaveType === "field_work"
       ? "승인된 외근"
-      : approvedLeaveTodayItem.requestType === "half"
+      : selectedApprovedLeaveType === "half"
         ? "승인된 반차"
-        : approvedLeaveTodayItem.requestType === "sick"
+        : selectedApprovedLeaveType === "sick"
           ? "승인된 병가"
           : "승인된 연차"
     : isCheckedOut
@@ -428,6 +437,7 @@ export default function AttendancePage() {
       await cancelLeaveRequest(id);
       toast.success("근태 요청을 취소했습니다.");
       await refreshLeaveRequests();
+      await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "취소에 실패했습니다.");
     }
@@ -530,12 +540,29 @@ export default function AttendancePage() {
             onOpenSickLeaveModal={() => openLeaveModal("sick")}
           />
 
-          <LeaveRequestCard
-            requests={myLeaveRequests}
-            canCancel={canApproveLeave}
-            onCancel={(id) => void onCancelLeaveRequest(id)}
-            onRemoveCancelled={(id) => void onRemoveCancelledMyRequest(id)}
-          />
+          {isViewingSelf ? (
+            <LeaveRequestCard
+              requests={myLeaveRequests}
+              /**
+               * 본부장+ 는 모든 status(pending/approved) 취소 가능,
+               * 일반 직원 본인은 pending 만 취소 가능.
+               * myLeaveRequests 는 인증자 본인 row 만 들어오므로 r.userId 체크는 사실상 항상 true 이지만 명시적으로 둠.
+               */
+              canCancelRequest={(r) =>
+                canApproveLeave ||
+                (!!profile?.userId && r.userId === profile.userId && r.status === "pending")
+              }
+              onCancel={(id) => void onCancelLeaveRequest(id)}
+              onRemoveCancelled={(id) => void onRemoveCancelledMyRequest(id)}
+            />
+          ) : (
+            <section className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm">
+              <h2 className="text-base font-semibold text-zinc-900">내 연차·반차·외근·병가 요청</h2>
+              <p className="mt-3 rounded-xl bg-zinc-50 px-3 py-3 text-sm text-zinc-500">
+                현재 다른 직원의 화면을 조회 중입니다. 본인 요청을 보려면 상단 직원 선택을 본인으로 변경하세요.
+              </p>
+            </section>
+          )}
 
           {canApproveLeave ? (
             <LeaveApprovalList

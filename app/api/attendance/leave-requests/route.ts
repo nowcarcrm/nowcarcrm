@@ -428,6 +428,32 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "잔여 연차가 부족합니다." }, { status: 400 });
     }
 
+    /**
+     * 같은 직원의 신청 날짜 범위와 겹치는 활성(pending/approved) 휴가가 있으면 차단.
+     * cancelled/rejected 는 영향 없으므로 제외. DB UNIQUE 제약 대신 application 검증.
+     */
+    const { data: overlapping, error: overlapErr } = await supabaseAdmin
+      .from("leave_requests")
+      .select("id,request_type,status,from_date,to_date")
+      .eq("user_id", requestTargetUserId)
+      .in("status", ["pending", "approved"])
+      .lte("from_date", toDate)
+      .gte("to_date", fromDate);
+    if (overlapErr) throw new Error(overlapErr.message);
+    if (overlapping && overlapping.length > 0) {
+      const ex = overlapping[0]!;
+      const typeMap: Record<string, string> = { annual: "연차", half: "반차", sick: "병가", field_work: "외근" };
+      const statusMap: Record<string, string> = { pending: "대기", approved: "승인" };
+      const exType = typeMap[String(ex.request_type ?? "annual")] ?? "휴가";
+      const exStatus = statusMap[String(ex.status ?? "")] ?? String(ex.status ?? "");
+      return NextResponse.json(
+        {
+          error: `해당 날짜에 이미 신청된 휴가가 있습니다 (${exType}, ${exStatus}, ${ex.from_date}~${ex.to_date}).`,
+        },
+        { status: 409 }
+      );
+    }
+
     const { data, error } = await supabaseAdmin
       .from("leave_requests")
       .insert({

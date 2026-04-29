@@ -145,14 +145,16 @@ export default function TodayAttendanceList({
                 const approvedType = approvedLeaveTodayByUserId?.get(row.user_id);
                 const pendingFw = pendingFieldWorkTodayUserIds?.includes(row.user_id) ?? false;
                 let status: string = row.status || row.checkin_status || row.checkout_status || "미출근";
+                const isLeaveLike = !!dbStatus && isLeaveLikeDbStatus(dbStatus);
 
                 if (checkInValue) {
-                  if (!isSuperAdmin && checkInIsLateBySeoul0931Rule(checkInValue)) {
+                  if (isLeaveLike) {
+                    /** 지각·정상 분기보다 leave-like(반차/연차/외근/병가) 우선 — 9:31 이후 출근 + 반차 승인 케이스 보호 */
+                    status = dbStatus;
+                  } else if (!isSuperAdmin && checkInIsLateBySeoul0931Rule(checkInValue)) {
                     status = "지각";
                   } else if (isSuperAdmin && status === "지각") {
                     status = "정상 출근";
-                  } else if (dbStatus && isLeaveLikeDbStatus(dbStatus)) {
-                    status = dbStatus;
                   }
                 } else {
                   if (approvedType) {
@@ -169,7 +171,8 @@ export default function TodayAttendanceList({
                 }
 
                 const patchValue = statusToPatch(dbStatus);
-                const showLateBadge = checkInValue && !isSuperAdmin && checkInIsLateBySeoul0931Rule(checkInValue);
+                const showLateBadge =
+                  checkInValue && !isSuperAdmin && checkInIsLateBySeoul0931Rule(checkInValue) && !isLeaveLike;
                 const showPatch = canPatchStatus;
                 return (
                   <tr key={row.id} className="border-t border-zinc-100 hover:bg-zinc-50/70">
