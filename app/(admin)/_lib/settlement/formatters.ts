@@ -1,3 +1,5 @@
+import { formatKst } from "../kst";
+
 export function formatCurrency(amount: number | null | undefined): string {
   if (amount === null || amount === undefined) return "-";
   return `${Math.round(amount).toLocaleString("ko-KR")}원`;
@@ -17,10 +19,13 @@ export function parseNumberInput(value: string): number {
 }
 
 export function getSettlementMonth(date: string | Date): string {
-  const d = typeof date === "string" ? new Date(date) : date;
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  return `${year}-${month}`;
+  // 'YYYY-MM-DD' 순수 날짜 입력은 TZ 변환 없이 보존 (정산월 결정 안정성).
+  if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) {
+    return date.trim().slice(0, 7);
+  }
+  const ymd = formatKst(date, "date");
+  if (!ymd) return "";
+  return ymd.slice(0, 7);
 }
 
 export function getMonthRange(month: string) {

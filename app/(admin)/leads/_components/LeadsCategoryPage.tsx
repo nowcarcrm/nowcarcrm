@@ -41,6 +41,7 @@ import toast from "react-hot-toast";
 import { devLog } from "@/app/_lib/devLog";
 import { AnimatedStatNumber, LeadTableSkeleton, TapButton } from "@/app/_components/ui/crm-motion";
 import { downloadXlsxRows, formatDateOnlyForExcel, todayYmdKst } from "../../_lib/excelExport";
+import { kstYmd } from "../../_lib/kst";
 import {
   CrmListPaginationBar,
   CRM_LIST_PAGE_SIZE,
@@ -136,16 +137,16 @@ type AiRow = {
 
 function toDateKey(isoLike: string | null | undefined) {
   if (!isoLike) return "";
-  return isoLike.slice(0, 10);
+  // 'YYYY-MM-DD' 순수 날짜는 그대로, ISO 시각 포함은 KST 기준으로 변환.
+  const s = String(isoLike).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return kstYmd(s);
 }
 
 function monthRangeKeys() {
-  const now = new Date();
-  const start = new Date(now.getFullYear(), now.getMonth(), 1);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  const from = `${start.getFullYear()}-${pad(start.getMonth() + 1)}-${pad(start.getDate())}`;
-  const to = now.toISOString().slice(0, 10);
-  return { from, to };
+  const today = todayYmdKst(); // KST 기준 오늘
+  const from = `${today.slice(0, 7)}-01`;
+  return { from, to: today };
 }
 
 function compareDateAsc(a: string | null | undefined, b: string | null | undefined) {
@@ -451,7 +452,7 @@ function LeadsCategoryView({
         })
       : byCategory;
 
-    const todayKey = toDateKey(new Date().toISOString());
+    const todayKey = todayYmdKst();
     const fromDash = safeSearchParams.get("fromDash");
     let listForDash = bySearch;
 
@@ -501,9 +502,9 @@ function LeadsCategoryView({
   const yearBuckets = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of prePeriodFiltered) {
-      const d = new Date(l.createdAt);
-      if (Number.isNaN(d.getTime())) continue;
-      const y = String(d.getFullYear());
+      const ymd = kstYmd(l.createdAt);
+      if (!ymd) continue;
+      const y = ymd.slice(0, 4);
       m.set(y, (m.get(y) ?? 0) + 1);
     }
     return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
@@ -511,9 +512,9 @@ function LeadsCategoryView({
   const monthBuckets = useMemo(() => {
     const m = new Map<string, number>();
     for (const l of prePeriodFiltered) {
-      const d = new Date(l.createdAt);
-      if (Number.isNaN(d.getTime())) continue;
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const ymd = kstYmd(l.createdAt);
+      if (!ymd) continue;
+      const key = ymd.slice(0, 7);
       m.set(key, (m.get(key) ?? 0) + 1);
     }
     return [...m.entries()].sort((a, b) => (a[0] < b[0] ? 1 : -1));
@@ -522,17 +523,16 @@ function LeadsCategoryView({
     let list = prePeriodFiltered;
     if (regYear) {
       list = list.filter((l) => {
-        const d = new Date(l.createdAt);
-        return !Number.isNaN(d.getTime()) && String(d.getFullYear()) === regYear;
+        const ymd = kstYmd(l.createdAt);
+        return !!ymd && ymd.slice(0, 4) === regYear;
       });
     }
     if (regMonth) {
       list = list.filter((l) => {
-        const d = new Date(l.createdAt);
-        if (Number.isNaN(d.getTime())) return false;
-        const mm = String(d.getMonth() + 1).padStart(2, "0");
-        if (mm !== regMonth) return false;
-        if (regYear && String(d.getFullYear()) !== regYear) return false;
+        const ymd = kstYmd(l.createdAt);
+        if (!ymd) return false;
+        if (ymd.slice(5, 7) !== regMonth) return false;
+        if (regYear && ymd.slice(0, 4) !== regYear) return false;
         return true;
       });
     }

@@ -1,4 +1,5 @@
 import * as XLSX from "xlsx";
+import { formatKst, kstYmd, todayYmdKst as todayYmdKstHelper } from "./kst";
 
 function sanitizeFilenameBase(name: string): string {
   return name.replace(/[<>:"/\\|?*]/g, "_").trim() || "export";
@@ -24,34 +25,20 @@ export function downloadXlsxRows(
 export function formatDateForExcel(iso: string | null | undefined): string {
   if (!iso || !String(iso).trim()) return "";
   const s = String(iso).trim();
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return s.slice(0, 16);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  const h = String(d.getHours()).padStart(2, "0");
-  const min = String(d.getMinutes()).padStart(2, "0");
-  return `${y}-${m}-${day} ${h}:${min}`;
+  const formatted = formatKst(s, "datetime");
+  return formatted || s.slice(0, 16);
 }
 
 export function formatDateOnlyForExcel(iso: string | null | undefined): string {
   if (!iso || !String(iso).trim()) return "";
   const s = String(iso).trim();
-  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
-  const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return "";
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  // 'YYYY-MM-DD' 또는 'YYYY-MM-DDT...' 형태의 순수 날짜 문자열은 TZ 변환 없이 그대로 (시각 미포함 날짜는 KST 변환 시 하루 밀릴 위험).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  return kstYmd(s);
 }
 
 export function todayYmdKst(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+  return todayYmdKstHelper();
 }
 
 /** 엑셀 셀용 금액 문자열 (1,234,567원) */
